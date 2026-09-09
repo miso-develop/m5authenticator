@@ -7,6 +7,7 @@ These skills support the repository's Loop Engineering workflow.
 - `wayfinder`: create and work `[Map]` / `[Decision]` planning graphs
 - `to-spec`: synthesize settled decisions into a `[Spec]`
 - `to-tickets`: decompose a `[Spec]` into vertical `[Task]` issues
+- `loop-status`: summarize the current GitHub-backed Loop state without mutating it
 
 ## Implementation
 
