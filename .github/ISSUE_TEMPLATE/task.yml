@@ -1,0 +1,40 @@
+name: Loop Task
+description: Implement one narrow vertical slice under an existing Spec.
+title: "[Task] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for one implementation slice under an existing Spec. Do not include unrelated cleanup.
+        Never paste real TOTP secrets, otpauth URIs, migration payloads, QR images, passwords, tokens, keys, or credential-bearing dumps into an Issue.
+  - type: input
+    id: parent-spec
+    attributes:
+      label: Parent spec
+      description: Reference the parent `[Spec]` Issue.
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: what-to-build
+    attributes:
+      label: What to build
+      description: Describe exactly what this Task changes.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: List externally observable completion conditions. Security-sensitive work must include relevant `SECURITY.md` constraints.
+      placeholder: "- [ ] Criterion"
+    validations:
+      required: true
+  - type: textarea
+    id: blocked-by
+    attributes:
+      label: Blocked by
+      description: "List one prerequisite `[Task]` Issue per line using `- #123`, or keep `- None` when unblocked."
+      value: "- None"
+    validations:
+      required: true
