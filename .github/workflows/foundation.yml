@@ -1,0 +1,79 @@
+name: Foundation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          cache: ""
+
+      - name: Generate lockfile for foundation bootstrap
+        working-directory: web
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Install exact dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Test Web App
+        working-directory: web
+        run: npm test
+
+      - name: Build Web App
+        working-directory: web
+        run: npm run build
+
+      - name: Upload generated Web lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-lockfile
+          path: web/package-lock.json
+          if-no-files-found: error
+          retention-days: 1
+
+  firmware:
+    name: firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build with ESP-IDF 5.5.5
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/project"
+          -w /project/firmware
+          espressif/idf:v5.5.5
+          bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build'
+
+      - name: Upload generated ESP-IDF dependency lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: firmware-lockfile
+          path: firmware/dependencies.lock
+          if-no-files-found: error
+          retention-days: 1

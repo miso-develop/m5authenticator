@@ -7,7 +7,7 @@ A compact TOTP authenticator project for M5Stack devices, starting with **M5Stic
 
 ## Project status
 
-Early design / implementation phase.
+V1 implementation is in progress.
 
 The initial target is M5StickS3 with:
 
@@ -21,6 +21,16 @@ The initial target is M5StickS3 with:
 - NTP time synchronization with USB time sync as a fallback
 
 See `PROJECT.md` for project-wide constraints and `SECURITY.md` for mandatory security policy.
+
+## Foundation development
+
+The canonical firmware build is ESP-IDF / CMake for M5StickS3. The Web App is Vanilla TypeScript + Vite + Vitest.
+
+See:
+
+- `docs/DEVELOPMENT.md` for pinned toolchains and reproducible build/test commands.
+- `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON handshake foundation.
+- `docs/REPOSITORY_SECURITY.md` for repository-level security controls.
 
 ## Development process
 
@@ -41,6 +51,4 @@ python3 -m unittest discover -s tests -p "test_security_scan.py"
 python3 scripts/security_scan.py
 ```
 
-The repository operation `security:scan` is enforced in GitHub Actions for pull
-requests and `main`. See `docs/REPOSITORY_SECURITY.md` for the two-layer secret
-protection baseline and allowlist policy.
+The repository operation `security:scan` is enforced in GitHub Actions for pull requests and `main`. See `docs/REPOSITORY_SECURITY.md` for the two-layer secret protection baseline and allowlist policy.
