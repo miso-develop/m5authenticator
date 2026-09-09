@@ -1,0 +1,32 @@
+name: Loop Decision
+description: Resolve one planning or investigation question under a Map.
+title: "[Decision] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for one concrete decision or investigation under an existing Map. This is planning work, not production implementation.
+  - type: input
+    id: parent-map
+    attributes:
+      label: Parent map
+      description: Reference the parent `[Map]` Issue.
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: State exactly one question this Issue must resolve.
+      placeholder: What must be decided or established?
+    validations:
+      required: true
+  - type: textarea
+    id: blocked-by
+    attributes:
+      label: Blocked by
+      description: "List one prerequisite `[Decision]` Issue per line using `- #123`, or keep `- None` when unblocked."
+      value: "- None"
+    validations:
+      required: true
