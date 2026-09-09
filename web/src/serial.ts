@@ -2,12 +2,32 @@ import { buildHelloRequest, parseHelloResponse, type HelloData } from "./protoco
 
 const MAX_RESPONSE_BYTES = 4096;
 
+interface SerialPortOptions {
+  baudRate: number;
+}
+
+interface SerialPortLike {
+  readable: ReadableStream<Uint8Array> | null;
+  writable: WritableStream<Uint8Array> | null;
+  open(options: SerialPortOptions): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface SerialLike {
+  requestPort(): Promise<SerialPortLike>;
+}
+
+function browserSerial(): SerialLike | undefined {
+  return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
+}
+
 export async function requestHello(): Promise<HelloData> {
-  if (!navigator.serial) {
+  const serial = browserSerial();
+  if (!serial) {
     throw new Error("Web Serial is unavailable. Use the latest stable Desktop Chrome.");
   }
 
-  const port = await navigator.serial.requestPort();
+  const port = await serial.requestPort();
   await port.open({ baudRate: 115200 });
 
   try {
