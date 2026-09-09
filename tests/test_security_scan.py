@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import tempfile
+import unittest
+import sys
+from pathlib import Path
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "security_scan.py"
+SPEC = importlib.util.spec_from_file_location("security_scan", MODULE_PATH)
+assert SPEC and SPEC.loader
+security_scan = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = security_scan
+SPEC.loader.exec_module(security_scan)
+
+
+def synthetic_totp_uri() -> str:
+    return (
+        "otp"
+        + "auth://Example:user@example.invalid?"
+        + "sec"
+        + "ret=JBSWY3DPEHPK3PXP&issuer=Example"
+    )
+
+
+def synthetic_migration_uri() -> str:
+    return "otp" + "auth-" + "migration://offline?data=AAAA-SYNTHETIC-ONLY"
+
+
+def private_key_marker() -> str:
+    return "-" * 5 + "BEGIN " + "PRIVATE KEY" + "-" * 5
+
+
+class SecurityScanTests(unittest.TestCase):
+    def test_detects_totp_uri_with_secret(self) -> None:
+        findings = security_scan.scan_content(
+            "sample.txt", synthetic_totp_uri().encode("utf-8")
+        )
+        self.assertEqual(["totp-uri-secret"], [f.rule for f in findings])
+
+    def test_bare_totp_scheme_is_not_a_finding(self) -> None:
+        findings = security_scan.scan_content(
+            "README.md", ("otp" + "auth:// URI is documented here").encode("utf-8")
+        )
+        self.assertEqual([], findings)
+
+    def test_detects_google_migration_payload(self) -> None:
+        findings = security_scan.scan_content(
+            "sample.txt", synthetic_migration_uri().encode("utf-8")
+        )
+        self.assertEqual(["migration-payload"], [f.rule for f in findings])
+
+    def test_bare_migration_scheme_is_not_a_finding(self) -> None:
+        findings = security_scan.scan_content(
+            "SECURITY.md", ("otp" + "auth-" + "migration://").encode("utf-8")
+        )
+        self.assertEqual([], findings)
+
+    def test_detects_private_key_marker(self) -> None:
+        findings = security_scan.scan_content(
+            "sample.txt", private_key_marker().encode("utf-8")
+        )
+        self.assertEqual(["private-key"], [f.rule for f in findings])
+
+    def test_detects_credential_literal_in_config(self) -> None:
+        content = ("wifi_" + "pass" + 'word = "synthetic-password-only"').encode("utf-8")
+        findings = security_scan.scan_content("config.toml", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_dangerous_log_in_code(self) -> None:
+        content = ("Serial." + "println(secret)").encode("utf-8")
+        findings = security_scan.scan_content("main.cpp", content)
+        self.assertEqual(["dangerous-log"], [f.rule for f in findings])
+
+    def test_detects_forbidden_dump_path(self) -> None:
+        findings = security_scan.scan_path("captures/device-flash-dump.bin")
+        self.assertEqual(["forbidden-path"], [f.rule for f in findings])
+
+    def test_allowlist_requires_safe_fixture_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / security_scan.ALLOWLIST_FILE).write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "entries": [
+                            {
+                                "path": "src/example.txt",
+                                "rule": "totp-uri-secret",
+                                "kind": "synthetic-fixture",
+                                "file_sha256": "0" * 64,
+                                "reason": "synthetic test",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(security_scan.ScanError):
+                security_scan.load_allowlist(root)
+
+    def test_exact_synthetic_fixture_hash_can_be_allowlisted(self) -> None:
+        data = synthetic_totp_uri().encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        finding = security_scan.scan_content(
+            "tests/fixtures/synthetic/example.txt", data
+        )[0]
+        entry = security_scan.AllowEntry(
+            path="tests/fixtures/synthetic/example.txt",
+            rule="totp-uri-secret",
+            kind="synthetic-fixture",
+            file_sha256=digest,
+            reason="synthetic scanner fixture",
+        )
+
+        remaining, stale = security_scan.apply_allowlist(
+            [finding],
+            {"tests/fixtures/synthetic/example.txt": digest},
+            [entry],
+        )
+        self.assertEqual([], remaining)
+        self.assertEqual([], stale)
+
+    def test_changed_fixture_does_not_match_allowlist(self) -> None:
+        data = synthetic_totp_uri().encode("utf-8")
+        finding = security_scan.scan_content(
+            "tests/fixtures/synthetic/example.txt", data
+        )[0]
+        entry = security_scan.AllowEntry(
+            path="tests/fixtures/synthetic/example.txt",
+            rule="totp-uri-secret",
+            kind="synthetic-fixture",
+            file_sha256="0" * 64,
+            reason="synthetic scanner fixture",
+        )
+
+        remaining, stale = security_scan.apply_allowlist(
+            [finding],
+            {
+                "tests/fixtures/synthetic/example.txt": hashlib.sha256(data).hexdigest()
+            },
+            [entry],
+        )
+        self.assertEqual([finding], remaining)
+        self.assertEqual([entry], stale)
+
+
+if __name__ == "__main__":
+    unittest.main()
