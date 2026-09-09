@@ -31,3 +31,16 @@ This repository follows Loop Engineering using GitHub `[Map]` â†’ `[Decision]` â
 Security of authentication material is the highest-priority invariant of this project. Real secrets must never enter Git history, Issues, Pull Requests, CI logs, test fixtures, screenshots, artifacts, or external web requests.
 
 If a real secret is exposed, treat it as compromised and rotate/revoke it at the source service. Do not rely on deleting a Git commit or comment as remediation.
+
+### Repository security check
+
+Before pushing security-sensitive changes, run:
+
+```text
+python3 -m unittest discover -s tests -p "test_security_scan.py"
+python3 scripts/security_scan.py
+```
+
+The repository operation `security:scan` is enforced in GitHub Actions for pull
+requests and `main`. See `docs/REPOSITORY_SECURITY.md` for the two-layer secret
+protection baseline and allowlist policy.
