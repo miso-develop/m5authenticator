@@ -1,0 +1,81 @@
+name: Loop Spec
+description: Capture a settled feature specification before implementation tickets are created.
+title: "[Spec] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form after the important decisions are settled. Project-wide constraints belong in `PROJECT.md`; security constraints belong in `SECURITY.md`.
+        Never paste real TOTP secrets, otpauth URIs, migration payloads, QR images, passwords, tokens, keys, or credential-bearing dumps into an Issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the problem from the user or operator perspective.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Describe the result that must be true when this Spec is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements
+      description: List observable requirements, one per bullet where practical.
+      placeholder: "- Requirement"
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions
+      description: Record only settled behavior or implementation decisions that materially constrain implementation.
+      placeholder: "- None beyond PROJECT.md / SECURITY.md"
+    validations:
+      required: false
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: State observable checks or test seams. Use only public test vectors or synthetic credentials.
+      placeholder: "- Verification condition"
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: List behavior explicitly excluded from this Spec.
+      placeholder: "- None"
+    validations:
+      required: false
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link relevant Map, Decision, architecture, security, or external references.
+      value: |
+        - `PROJECT.md`
+        - `SECURITY.md`
+    validations:
+      required: true
+  - type: textarea
+    id: repository-knowledge
+    attributes:
+      label: Repository knowledge
+      description: Initial advisory assessment. Note durable architecture/security/specification knowledge that may need promotion during closeout.
+      placeholder: "- No durable repository knowledge identified yet."
+    validations:
+      required: false
+  - type: textarea
+    id: implementation-tasks
+    attributes:
+      label: Implementation tasks
+      description: `to-tickets` replaces this placeholder with the canonical Task index after decomposition.
+      value: "- Pending `to-tickets` decomposition."
+    validations:
+      required: true
