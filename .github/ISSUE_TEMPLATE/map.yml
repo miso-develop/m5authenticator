@@ -1,0 +1,40 @@
+name: Loop Map
+description: Create a decision map for large or ambiguous work.
+title: "[Map] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for large or ambiguous work that needs multiple decisions before a Spec can be written. See `agent/WORK-TRACKING.md`.
+  - type: textarea
+    id: destination
+    attributes:
+      label: Destination
+      description: What must be decided or understood before this Map can be completed?
+      placeholder: Describe the state that should be reached when this Map is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions so far
+      description: Link closed Decision issues and give a one-line outcome for each. Leave "None yet" for a new Map.
+      value: "- None yet"
+    validations:
+      required: true
+  - type: textarea
+    id: not-yet-specified
+    attributes:
+      label: Not yet specified
+      description: In-scope areas that are still too unclear to express as a concrete Decision question.
+      placeholder: "- None"
+    validations:
+      required: false
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What this Map explicitly will not decide.
+      placeholder: "- None"
+    validations:
+      required: false
