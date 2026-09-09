@@ -1,0 +1,57 @@
+# Local environment / editor
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Dependencies / build output
+node_modules/
+dist/
+build/
+.pio/
+
+# ESP-IDF / local build state
+sdkconfig.old
+managed_components/
+
+# Local-only provisioning and sensitive material
+.local/
+local-private/
+private/
+secrets/
+credentials/
+captures/
+dumps/
+
+# Common credential/key formats
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+
+# Device / memory / storage captures
+*.pcap
+*.pcapng
+*.core
+*.dump
+*.dmp
+*.nvs
+*.nvs.bin
+*nvs-dump*
+*flash-dump*
+*ram-dump*
+
+# Local QR/authenticator imports
+*authenticator-export*
+*authenticator-migration*
+*otpauth-import*
+*totp-secret*
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
