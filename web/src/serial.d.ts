@@ -13,10 +13,6 @@ interface SerialLike {
   requestPort(): Promise<SerialPortLike>;
 }
 
-declare global {
-  interface Navigator {
-    serial?: SerialLike;
-  }
+interface Navigator {
+  serial?: SerialLike;
 }
-
-export {};
