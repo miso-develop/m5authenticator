@@ -78,6 +78,10 @@ class SecurityScanTests(unittest.TestCase):
         findings = security_scan.scan_path("captures/device-flash-dump.bin")
         self.assertEqual(["forbidden-path"], [f.rule for f in findings])
 
+    def test_documentation_name_is_not_treated_as_dump(self) -> None:
+        findings = security_scan.scan_path("docs/authenticator-migration.md")
+        self.assertEqual([], findings)
+
     def test_allowlist_requires_safe_fixture_location(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -33,6 +33,7 @@ FORBIDDEN_SUFFIXES = (
     ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
     ".pcap", ".pcapng", ".core", ".dump", ".dmp", ".nvs", ".nvs.bin",
 )
+DOCUMENTATION_SUFFIXES = {".md", ".rst", ".adoc"}
 FORBIDDEN_NAME_PARTS = (
     "nvs-dump", "flash-dump", "ram-dump",
     "authenticator-export", "authenticator-migration",
@@ -216,9 +217,11 @@ def scan_path(path: str) -> list[Finding]:
     lowered = path.lower()
     findings: list[Finding] = []
 
-    if lowered.endswith(FORBIDDEN_SUFFIXES) or any(
+    suffix = PurePosixPath(path).suffix.lower()
+    suspicious_name = suffix not in DOCUMENTATION_SUFFIXES and any(
         part in lowered for part in FORBIDDEN_NAME_PARTS
-    ):
+    )
+    if lowered.endswith(FORBIDDEN_SUFFIXES) or suspicious_name:
         findings.append(
             Finding(
                 path=path,
