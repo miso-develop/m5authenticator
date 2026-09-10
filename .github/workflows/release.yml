@@ -55,7 +55,6 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin \
-            /tmp/m5auth-release/m5authenticator-v*-m5sticks3-m5burner.zip \
             /tmp/m5auth-release/factory-manifest.json \
             /tmp/m5auth-release/update-manifest.json \
             /tmp/m5auth-release/release-metadata.json \
