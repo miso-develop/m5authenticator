@@ -4,10 +4,7 @@ import { ImportSession, type ImportSessionUpdate } from "./import/session";
 import { ImportError, type ImportedAccountPreview } from "./import/types";
 import { requestHello } from "./serial";
 
-const app = document.querySelector<HTMLElement>("#app");
-if (!app) {
-  throw new Error("Application root is missing");
-}
+const app = queryRequired<HTMLElement>("#app", "Application root is missing");
 
 app.innerHTML = `
   <section class="shell">
@@ -39,17 +36,12 @@ app.innerHTML = `
   </section>
 `;
 
-const connectButton = document.querySelector<HTMLButtonElement>("#connect");
-const deviceStatus = document.querySelector<HTMLElement>("#status");
-const qrFileInput = document.querySelector<HTMLInputElement>("#qr-file");
-const importStatus = document.querySelector<HTMLElement>("#import-status");
-const accountList = document.querySelector<HTMLOListElement>("#account-list");
-const clearImportButton = document.querySelector<HTMLButtonElement>("#clear-import");
-
-if (!connectButton || !deviceStatus || !qrFileInput || !importStatus || !accountList || !clearImportButton) {
-  throw new Error("Provisioner UI failed to initialize");
-}
-
+const connectButton = queryRequired<HTMLButtonElement>("#connect", "Device connect button is missing");
+const deviceStatus = queryRequired<HTMLElement>("#status", "Device status area is missing");
+const qrFileInput = queryRequired<HTMLInputElement>("#qr-file", "QR file input is missing");
+const importStatus = queryRequired<HTMLElement>("#import-status", "Import status area is missing");
+const accountList = queryRequired<HTMLOListElement>("#account-list", "Imported account list is missing");
+const clearImportButton = queryRequired<HTMLButtonElement>("#clear-import", "Import clear button is missing");
 const importSession = new ImportSession();
 
 qrFileInput.addEventListener("change", async () => {
@@ -129,6 +121,14 @@ function renderAccountList(accounts: ImportedAccountPreview[]): void {
     item.append(title, details);
     accountList.append(item);
   }
+}
+
+function queryRequired<T extends Element>(selector: string, message: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) {
+    throw new Error(message);
+  }
+  return element;
 }
 
 function escapeText(value: string): string {
