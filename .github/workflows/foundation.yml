@@ -62,6 +62,8 @@ jobs:
           tests/production_security_policy_test.cpp
           -o /tmp/m5auth-production-security-policy-test
           && /tmp/m5auth-production-security-policy-test
+      - name: Test runtime device identity guard
+        run: python -m unittest tests/device_identity_guard_test.py
       - name: Test local environment contract
         run: python -m unittest tests/local_env_contract_test.py
       - name: Test redacted eFuse inspection helper
