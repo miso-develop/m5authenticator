@@ -9,16 +9,36 @@
 
 namespace m5auth::storage::internal {
 
+void secure_zero(void* data, std::size_t size);
+void secure_clear(std::string* value);
+void secure_clear_bytes(std::vector<std::uint8_t>* bytes);
+
+// Internal string for stored secret material. Its copy/move/destruction semantics
+// wipe the previous/source value so vector relocation and erase/sort operations
+// do not leave short-string secret bytes in abandoned objects.
+class SensitiveString final : public std::string {
+public:
+    using std::string::string;
+
+    SensitiveString() = default;
+    SensitiveString(const std::string& other);
+    SensitiveString(std::string&& other) noexcept;
+    SensitiveString(const SensitiveString& other);
+    SensitiveString(SensitiveString&& other) noexcept;
+    SensitiveString& operator=(const std::string& other);
+    SensitiveString& operator=(std::string&& other) noexcept;
+    SensitiveString& operator=(const SensitiveString& other);
+    SensitiveString& operator=(SensitiveString&& other) noexcept;
+    ~SensitiveString();
+};
+
 struct AccountRecord {
     std::uint32_t id{0};
     std::uint16_t order{0};
     std::string issuer;
     std::string account;
     std::string display_name;
-    std::string secret;
-
-    AccountRecord& operator=(const AccountRecord& other);
-    ~AccountRecord();
+    SensitiveString secret;
 };
 
 struct State {
@@ -34,8 +54,5 @@ Status validate_state(const State& state);
 Status encode_state(const State& state, std::vector<std::uint8_t>* output);
 Status decode_state(const std::uint8_t* data, std::size_t size, State* output);
 void wipe_state(State* state);
-void secure_zero(void* data, std::size_t size);
-void secure_clear(std::string* value);
-void secure_clear_bytes(std::vector<std::uint8_t>* bytes);
 
 }  // namespace m5auth::storage::internal
