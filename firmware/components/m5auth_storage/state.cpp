@@ -122,22 +122,62 @@ void secure_clear_bytes(std::vector<std::uint8_t>* bytes) {
     bytes->clear();
 }
 
-AccountRecord& AccountRecord::operator=(const AccountRecord& other) {
-    if (this == &other) {
+SensitiveString::SensitiveString(const std::string& other)
+    : std::string(other) {}
+
+SensitiveString::SensitiveString(std::string&& other) noexcept
+    : std::string(other) {
+    secure_clear(&other);
+}
+
+SensitiveString::SensitiveString(const SensitiveString& other)
+    : std::string(static_cast<const std::string&>(other)) {}
+
+SensitiveString::SensitiveString(SensitiveString&& other) noexcept
+    : std::string(static_cast<const std::string&>(other)) {
+    secure_clear(&other);
+}
+
+SensitiveString& SensitiveString::operator=(const std::string& other) {
+    if (static_cast<const std::string*>(this) == &other) {
         return *this;
     }
-    secure_clear(&secret);
-    id = other.id;
-    order = other.order;
-    issuer = other.issuer;
-    account = other.account;
-    display_name = other.display_name;
-    secret = other.secret;
+    secure_clear(this);
+    std::string::operator=(other);
     return *this;
 }
 
-AccountRecord::~AccountRecord() {
-    secure_clear(&secret);
+SensitiveString& SensitiveString::operator=(std::string&& other) noexcept {
+    if (static_cast<std::string*>(this) == &other) {
+        return *this;
+    }
+    secure_clear(this);
+    std::string::operator=(static_cast<const std::string&>(other));
+    secure_clear(&other);
+    return *this;
+}
+
+SensitiveString& SensitiveString::operator=(const SensitiveString& other) {
+    if (this == &other) {
+        return *this;
+    }
+    secure_clear(this);
+    std::string::operator=(static_cast<const std::string&>(other));
+    return *this;
+}
+
+SensitiveString& SensitiveString::operator=(SensitiveString&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    secure_clear(this);
+    std::string::operator=(static_cast<const std::string&>(other));
+    secure_clear(&other);
+    return *this;
+}
+
+SensitiveString::~SensitiveString() {
+    secure_clear(this);
 }
 
 void wipe_state(State* state) {
@@ -280,8 +320,8 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
         return Status::kCorrupt;
     }
 
-    // Copy into the caller-owned state and wipe the temporary. This avoids
-    // leaving short-string Wi-Fi/account secrets in moved-from SSO buffers.
+    // Copy into the caller-owned state and wipe the temporary. SensitiveString
+    // handles account-secret copies/moves; Wi-Fi password remains explicitly wiped.
     wipe_state(output);
     *output = decoded;
     wipe_state(&decoded);
