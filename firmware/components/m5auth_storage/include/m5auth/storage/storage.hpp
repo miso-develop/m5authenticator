@@ -39,6 +39,13 @@ struct AccountDraft {
     std::string account;
     std::string display_name;
     std::string secret;
+
+    AccountDraft() = default;
+    AccountDraft(const AccountDraft&) = default;
+    AccountDraft& operator=(const AccountDraft&) = default;
+    AccountDraft(AccountDraft&& other) noexcept;
+    AccountDraft& operator=(AccountDraft&& other) noexcept;
+    ~AccountDraft();
 };
 
 Status validate_account_draft(const AccountDraft& draft);
