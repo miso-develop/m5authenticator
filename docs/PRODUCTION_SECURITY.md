@@ -8,9 +8,14 @@ Production Security Initialization is intentionally irreversible.
 
 The normal production-backend boot path may inspect eFuse state and derive NVS encryption keys, but it must not program eFuse. The only firmware path permitted to program eFuse is the explicit production-security initialization path, and that path requires all of the following in one session:
 
-1. a successful non-destructive preflight,
-2. the exact Web confirmation text `INITIALIZE PRODUCTION SECURITY`, and
-3. a physical long-hold confirmation on the StickS3 within the on-device confirmation window.
+1. runtime hardware identity verified by M5Unified as `board_M5StickS3`,
+2. a successful non-destructive preflight,
+3. the exact Web confirmation text `INITIALIZE PRODUCTION SECURITY`, and
+4. a physical long-hold confirmation on the StickS3 within the on-device confirmation window.
+
+Runtime hardware identity is checked immediately after M5Unified initialization and **before the storage backend is constructed**. If the connected hardware is not detected as M5StickS3, firmware halts fail-closed and cannot enter storage or production-security initialization. Do not treat successful ESP32-S3 flashing, `esptool chip_id`, a COM-port identity, or a redacted eFuse inspection result as proof of the physical M5Stack product model; multiple M5Stack devices use ESP32-S3 and can have indistinguishable unused eFuse slots.
+
+The redacted eFuse inspection helper classifies eFuse state only. It does not identify the M5Stack board model.
 
 If any eFuse operation reports an error, do not guess, change slots, or retry the burn. Power-cycle only after recording the non-secret status, inspect eFuse again, and treat the device as fail-closed until the state is understood.
 
@@ -34,22 +39,15 @@ For Windows physical validation, copy the repository template once and keep mach
 
 ```text
 copy .env.example .env
+notepad .env
 call scripts\load-env.cmd
 ```
 
-The current Task #26 values are:
-
-```text
-M5AUTH_IDF_VERSION=v5.5.5
-M5AUTH_CHIP=esp32s3
-M5AUTH_PORT=COM4
-```
-
-Edit the COM port when the connected device changes. Do not place authentication material in `.env`; it is only for non-secret local tooling configuration.
+The tracked `.env.example` defines keys only; all values must remain empty there. Set the required tool version, target, and COM port only in the local ignored `.env`. Do not place authentication material in `.env`; it is only for non-secret local tooling configuration.
 
 ## Phase 1: non-destructive device inspection
 
-Before crossing the irreversible boundary, build and flash the production-backend firmware, then inspect eFuse state. Building, flashing normal firmware partitions, booting into Production Setup, `hello`, `security.status`, `security.prepare`, and `security.cancel` must not burn eFuse.
+Before crossing the irreversible boundary, physically verify that the connected unit is the intended M5StickS3, build and flash the production-backend firmware, confirm that the firmware reaches the on-device `PRODUCTION SETUP` screen, then inspect eFuse state. A non-M5StickS3 must halt before storage initialization and cannot reach Production Setup. Building, flashing normal firmware partitions, booting into Production Setup, `hello`, `security.status`, `security.prepare`, and `security.cancel` must not burn eFuse.
 
 On Windows with Espressif EIM, from the repository root:
 
@@ -60,7 +58,7 @@ eim run "idf.py set-target %M5AUTH_CHIP%" %M5AUTH_IDF_VERSION%
 eim run "idf.py build" %M5AUTH_IDF_VERSION%
 eim run "idf.py -p %M5AUTH_PORT% flash" %M5AUTH_IDF_VERSION%
 cd ..
-python scripts\inspect_production_efuse.py
+eim run "python scripts\inspect_production_efuse.py" %M5AUTH_IDF_VERSION%
 ```
 
 `inspect_production_efuse.py` uses `M5AUTH_PORT` when `--port` is omitted. An explicit `--port` still overrides the environment value.
@@ -77,6 +75,8 @@ For the configured key slot, the helper accepts one of these two structural stat
 If the configured slot is free but another key slot already has `HMAC_UP`, the helper returns a blocked review state. Verify ownership before any new burn; do not create another HMAC key merely because the configured slot is free.
 
 Stop before initialization if the selected key block is populated for another purpose, only partially protected, has an unexpected protection state, or the inspection is otherwise ambiguous.
+
+A `verdict=first-time-init-candidate` result is an eFuse-state result only. It is not authorization to burn eFuse and is not evidence that the board itself is M5StickS3.
 
 ## Phase 2: Web preflight
 
@@ -95,6 +95,7 @@ Run **Run non-destructive preflight**. This only prepares the current protocol s
 
 Before proceeding, verify that:
 
+- the firmware reached the M5StickS3 `PRODUCTION SETUP` path after runtime board identification,
 - `preflight_ok` is true,
 - `burn_attempted` is false,
 - the selected key state is `free` and matches the separately inspected eFuse summary,
@@ -107,7 +108,7 @@ If the selected key is already reusable, normal boot should initialize storage w
 
 ## Phase 3: irreversible initialization
 
-Only after Phases 1 and 2 are complete for a deliberately selected **free** key slot:
+Only after Phases 1 and 2 are complete for a runtime-identified M5StickS3 and a deliberately selected **free** key slot:
 
 1. Type the exact Web confirmation text `INITIALIZE PRODUCTION SECURITY`.
 2. Confirm the Web irreversible-operation dialog.
@@ -125,7 +126,7 @@ Use only synthetic credentials for this validation.
 Confirm all of the following before release promotion:
 
 1. Reconnect after normal boot. Storage reports ready and the security profile is `production-hmac-efuse`.
-2. Re-run `python scripts\inspect_production_efuse.py`. The selected key must now report `reusable` with `HMAC_UP`, read protection, key-write protection, and purpose-write protection.
+2. Re-run the redacted helper through the pinned EIM environment. The selected key must now report `reusable` with `HMAC_UP`, read protection, key-write protection, and purpose-write protection.
 3. Provision a synthetic TOTP account and synthetic Wi-Fi credentials.
 4. Reboot and confirm the synthetic account remains usable.
 5. Rename/reorder/delete or otherwise update synthetic account metadata and confirm persistence.
