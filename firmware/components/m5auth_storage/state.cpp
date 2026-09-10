@@ -122,6 +122,24 @@ void secure_clear_bytes(std::vector<std::uint8_t>* bytes) {
     bytes->clear();
 }
 
+AccountRecord& AccountRecord::operator=(const AccountRecord& other) {
+    if (this == &other) {
+        return *this;
+    }
+    secure_clear(&secret);
+    id = other.id;
+    order = other.order;
+    issuer = other.issuer;
+    account = other.account;
+    display_name = other.display_name;
+    secret = other.secret;
+    return *this;
+}
+
+AccountRecord::~AccountRecord() {
+    secure_clear(&secret);
+}
+
 void wipe_state(State* state) {
     if (state == nullptr) {
         return;
