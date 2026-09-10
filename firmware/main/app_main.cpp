@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -12,6 +13,7 @@
 #include "m5auth/storage/storage.hpp"
 #include "m5auth/time/time_service.hpp"
 #include "m5auth/time/trusted_time.hpp"
+#include "m5auth/totp/generator.hpp"
 
 #ifndef M5AUTH_BUILD_COMMIT
 #define M5AUTH_BUILD_COMMIT "unknown"
@@ -48,6 +50,16 @@ extern "C" void app_main(void) {
     (void)time_service.boot_sync();
     (void)time_service.start_periodic_resync();
 
+    std::mutex storage_access_mutex;
+    m5auth::totp::Generator generator(store, time_service);
+    m5auth::device::sticks3::UiController ui(
+        store,
+        generator,
+        time_service,
+        storage_access_mutex
+    );
+    (void)ui.start();
+
     m5auth::provisioning::Session session(metadata, store, time_service);
     std::array<char, m5auth::provisioning::kMaxMessageBytes + 2> input{};
 
@@ -66,7 +78,12 @@ extern "C" void app_main(void) {
             continue;
         }
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
-        std::string response = session.handle_line(std::string_view(input.data(), length));
+
+        std::string response;
+        {
+            std::lock_guard<std::mutex> lock(storage_access_mutex);
+            response = session.handle_line(std::string_view(input.data(), length));
+        }
         m5auth::storage::secure_zero(input.data(), input.size());
         write_response(response);
     }
