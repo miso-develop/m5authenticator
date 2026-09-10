@@ -1,129 +1,36 @@
 # Provisioning Protocol
 
-`PROTOCOL_VERSION = 1` is independent from firmware SemVer and storage schema version.
+`PROTOCOL_VERSION = 1` is independent from firmware SemVer and storage schema version. V1 transport is USB Serial / Web Serial using newline-delimited JSON (NDJSON).
 
-Transport for V1 is USB Serial / Web Serial. Messages are newline-delimited JSON (NDJSON).
+Requests use `{"v":1,"id":42,"op":"hello","params":{}}`; responses use the same version/id with either `ok:true,data` or a bounded error code. Errors never echo request payloads, and credential-bearing parsed fields are wiped before release.
 
-## Request envelope
-
-```json
-{"v":1,"id":42,"op":"hello","params":{}}
-```
-
-Fields:
-
-- `v`: protocol version integer
-- `id`: non-negative integer used to correlate the response
-- `op`: operation name
-- `params`: operation-specific object
-
-## Response envelope
-
-Success:
-
-```json
-{"v":1,"id":42,"ok":true,"data":{}}
-```
-
-Failure:
-
-```json
-{"v":1,"id":42,"ok":false,"error":{"code":"unsupported_op"}}
-```
-
-Errors identify only the failure class and do not echo request payloads. Credential-bearing request fields are wiped from the parsed request before it is released.
-
-## Device/status operation
+## Device/status
 
 ### `hello`
+Returns device/firmware/protocol/storage/build metadata, security profile/storage readiness/production eligibility, and trusted-time state/source/age/resync metadata. All are non-secret.
 
-Returns non-secret metadata including:
+## Trusted time
 
-- device model
-- firmware version
-- protocol version
-- storage schema version
-- build commit
-- security profile
-- storage readiness
-- whether the active security profile is eligible for production release
+### `time.status`
+Returns `time_state` (`not_synced`, `ready`, `stale`), `time_source` (`none`, `ntp`, `usb`), `last_sync`, `time_age_seconds`, and `time_resync_due`. `last_sync` and age are `null` before the first successful current-boot sync.
 
-The current Task #9 firmware reports the Development Security Profile and is not production-release eligible.
+### `time.sync`
+Accepts exact integer `unix_seconds` from the local Web Provisioner, bounded to 2020-01-01 through 2100-01-01 UTC. Success establishes USB as the trusted source and returns the same non-secret status. It accepts or returns no TOTP material.
 
 ## Account metadata
 
-### `accounts.list`
+`accounts.list` returns stable id, manual order, issuer, account label, and display name only. `account.rename`, `account.delete`, `accounts.reorder`, and `selection.get`/`selection.set` manage non-secret account state. There is no stored-secret read/export operation.
 
-Returns account metadata only:
+## Transactional import
 
-- stable numeric id
-- manual order
-- issuer
-- account label
-- user display name
+Secret-bearing import is write-directional only: `import.begin -> import.item * N -> import.validate -> import.commit`. At most 32 items are accepted. `import.cancel` wipes the in-memory transaction. A validation/commit failure does not intentionally modify the previously committed snapshot. Import secrets never appear in responses or logs.
 
-The response contains no TOTP secret. There is no protocol operation for reading/exporting a stored secret.
+## Wi-Fi
 
-### `account.rename`
+`wifi.set` stores SSID/password in encrypted `auth_nvs`; password is write-only. `wifi.status` returns only configured state and SSID. `wifi.clear` removes the stored credentials. Runtime NTP explicitly uses ESP-IDF `WIFI_STORAGE_RAM`, so default flash-backed Wi-Fi persistence is not canonical.
 
-Updates only the user-defined display name for an existing account id.
+## Fail-closed limits
 
-### `account.delete`
+Maximum request line is 1024 bytes. Malformed JSON, invalid id, unsupported protocol/version/op, oversized requests, and invalid USB timestamps are rejected. Storage schema/security failures block storage operations. Current-boot time starts unsynchronized; TOTP generation remains blocked until NTP or USB succeeds, and becomes blocked again after more than 24 hours without trusted synchronization.
 
-Deletes an account by id and compacts manual order. If it was the last-used account, last-used selection is cleared.
-
-### `accounts.reorder`
-
-Accepts the complete ordered id list. The list must contain each currently stored account exactly once.
-
-### `selection.get` / `selection.set`
-
-Reads or updates the last-used account id. `selection.get` returns `null` when no account is selected.
-
-## Transactional account import
-
-Secret-bearing account import is write-directional only:
-
-```text
-import.begin
-  -> import.item * N
-  -> import.validate
-  -> import.commit
-```
-
-- `import.begin` clears any unfinished in-memory transaction.
-- `import.item` accepts issuer/account/display name plus the secret for one account.
-- at most 32 items are accepted.
-- `import.validate` must succeed before commit.
-- `import.commit` replaces the stored account snapshot in one NVS snapshot update.
-- `import.cancel` wipes the in-memory transaction.
-- a failed validation or failed commit does not intentionally modify the previously committed account snapshot.
-
-Import secrets are not included in success/error responses or logs.
-
-## Wi-Fi settings
-
-### `wifi.set`
-
-Stores SSID/password in the approved encrypted `auth_nvs` boundary. The password is write-only over the provisioning protocol.
-
-### `wifi.status`
-
-Returns only `configured` and SSID. It never returns the Wi-Fi password.
-
-### `wifi.clear`
-
-Removes stored Wi-Fi credential data.
-
-## Limits and fail-closed behavior
-
-- maximum request line: 1024 bytes
-- malformed JSON: rejected
-- invalid request id: rejected
-- unsupported protocol version: rejected
-- unsupported operation: rejected
-- oversized request: rejected
-- storage initialization/schema/security failures block storage operations
-- unknown newer storage schema is not modified or auto-reset
-
-The protocol vocabulary intentionally contains no operation that reads or exports stored TOTP secrets. Factory Reset is not exposed by Task #9; its explicit destructive Web/USB flow remains owned by Task #13.
+Factory Reset remains owned by Task #13. The protocol vocabulary intentionally contains no operation that reads or exports stored TOTP secrets.

@@ -67,7 +67,7 @@ This verifies the encrypted NVS path without exposing credential-bearing data. T
 
 ## Wi-Fi persistence boundary
 
-The canonical Wi-Fi credential copy is stored only in `auth_nvs`. Task #10 must configure the ESP-IDF Wi-Fi driver to use RAM storage for runtime connection configuration rather than making the default ESP-IDF NVS copy authoritative.
+The canonical Wi-Fi credential copy is stored only in `auth_nvs`. Runtime time synchronization explicitly configures ESP-IDF with `WIFI_STORAGE_RAM` before applying the transient station configuration, so ESP-IDF's default flash-backed Wi-Fi persistence does not become a second authoritative credential store.
 
 No serial response returns the Wi-Fi password.
 
