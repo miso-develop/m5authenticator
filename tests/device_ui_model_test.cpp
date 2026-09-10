@@ -24,6 +24,19 @@ m5auth::storage::AccountMetadata account(
     };
 }
 
+std::vector<m5auth::storage::AccountMetadata> make_max_accounts() {
+    std::vector<m5auth::storage::AccountMetadata> accounts;
+    for (std::uint32_t index = 0; index < 32; ++index) {
+        accounts.push_back(account(
+            index + 1,
+            static_cast<std::uint16_t>(index),
+            "Issuer",
+            "account"
+        ));
+    }
+    return accounts;
+}
+
 }  // namespace
 
 int main() {
@@ -80,22 +93,20 @@ int main() {
     assert(!model.select_next());
     assert(!model.select_previous());
 
-    std::vector<m5auth::storage::AccountMetadata> max_accounts;
-    for (std::uint32_t index = 0; index < 32; ++index) {
-        max_accounts.push_back(account(
-            index + 1,
-            static_cast<std::uint16_t>(index),
-            "Issuer",
-            "account"
-        ));
-    }
-    assert(model.update_accounts(std::move(max_accounts), 1));
-    assert(model.selected_id() == 1);
+    // Runtime refresh preserves the current local selection while it still exists.
+    assert(model.update_accounts(make_max_accounts(), 1));
+    assert(model.selected_id() == 7);
     assert(model.account_count() == 32);
-    assert(model.select_previous());
-    assert(model.selected_id() == 32);
-    assert(model.select_next());
-    assert(model.selected_id() == 1);
+
+    // A fresh boot model restores the persisted last-used id and wraps at both ends.
+    UiModel boot_model;
+    assert(boot_model.update_accounts(make_max_accounts(), 1));
+    assert(boot_model.selected_id() == 1);
+    assert(boot_model.account_count() == 32);
+    assert(boot_model.select_previous());
+    assert(boot_model.selected_id() == 32);
+    assert(boot_model.select_next());
+    assert(boot_model.selected_id() == 1);
 
     assert(model.update_accounts({}, 0));
     assert(model.selected_id() == 0);
