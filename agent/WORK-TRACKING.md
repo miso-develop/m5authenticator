@@ -356,3 +356,16 @@ mainが進んだ場合はexact file conflictだけでなくdependency / semantic
 ### Process-only changes
 
 `AGENTS.md` / `agent/` 等のprocess ruleだけを変更する作業もGitHub preflight対象です。ただしproduct implementation PRとfile/semantic conflictがなく、product Taskのcontractを変更しない場合はproduct dependency chainと独立して進められます。
+
+### Atomic remote Task claim
+
+新しいproduction `[Task]` を開始する場合、preflightを通過したworkerはmeaningful implementationを始める前に、observed latest `main` SHAから**remote branch `task/<issue-number>`** を作成してTask ownershipをclaimします。
+
+- 新規Task branchのcanonical nameはexact `task/<issue-number>` とし、slugを付けない。これにより同じTaskを同時にclaimしようとした2 workerのうち、後発のbranch作成をGitHub ref creationで失敗させる。
+- `task/<issue-number>` が既に存在する場合、force update、別slug branch、代替branchを作ってclaimを迂回してはいけない。既存branch / PRのownershipを確認し、継続または明示的cleanupを行う。
+- legacy branch（例: `task/<issue-number>-<slug>`, `feat/issue-<issue-number>-...`）が既にin-flightの場合も既存claimとして認識し、新canonical branchを競合して作らない。
+- branch作成成功後、first meaningful write前にlatest main / open PR / branchesを再取得する。preflightとclaimの間にmainまたはownership stateが変わっていた場合は再評価する。
+- first meaningful commitをremoteへ反映したら、可能な限り早くDraft PRを作成し、`Parent spec: #...` と `Closes #<task-number>` を明示する。長時間branch metadataだけでownershipを推測させない。
+- local-only branchでmeaningful implementationを進め、他workerから不可視のまま保持してはいけない。shared repositoryで並列作業するTask branchはremote coordination surfaceへ早期に公開する。
+
+このremote branch claimはcoordination lockであり、Task完了条件ではありません。Task completionは従来どおりPR mergeとIssue closeで確定します。
