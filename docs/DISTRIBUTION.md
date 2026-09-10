@@ -31,13 +31,12 @@ m5authenticator-v<version>-m5sticks3.bin
 factory-manifest.json
 update-manifest.json
 release-metadata.json
-m5authenticator-v<version>-m5sticks3-m5burner.zip
 SHA256SUMS
 ```
 
 `release-metadata.json` contains only non-secret build/device/version/security-profile metadata. `SHA256SUMS` covers the downloadable package files.
 
-The M5Burner ZIP contains the same merged image as `firmware/m5authenticator_0x0.bin` plus compatibility metadata. There is no separately rebuilt M5Burner firmware.
+There is no separately rebuilt or invented M5Burner firmware package. M5Burner `USER CUSTOM` publication uses the same merged `.bin` that GitHub Releases and the Web Flasher use.
 
 ## State-preserving flash layout
 
@@ -56,7 +55,7 @@ The merged image is generated without `--pad-to-size`, so its normal write range
 - **First install:** erase flash, then flash the merged image at `0x0`.
 - **Normal update:** do not erase flash; flash the same merged image at `0x0`. `auth_nvs` remains outside the write range and therefore preserves accounts, secrets, Wi-Fi credentials, and user settings.
 
-Factory Reset is not an update mechanism. Factory Reset explicitly erases `auth_nvs`; a normal update must not.
+Factory Reset is not an update mechanism. Factory Reset explicitly erases `auth_nvs`; a normal update must not expose or invoke a full-flash erase operation.
 
 Task #14 moved `auth_nvs` from its early development position to the V1 release position before any production release. Existing development data from the old layout is not migration-compatible and must be reprovisioned once after this transition.
 
@@ -67,17 +66,28 @@ The Pages site contains two entries:
 - Provisioner: account/device management over local Web Serial
 - Firmware Flash: ESP Web Tools 10.4.0 bundled from the exact-pinned NPM dependency
 
-No runtime CDN is used. The Provisioner keeps `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so ESP Web Tools can fetch same-origin manifests and firmware binaries.
+No runtime CDN is used. The Provisioner keeps `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so firmware manifests and binaries can be fetched from the same Pages site.
 
-When production release eligibility is enabled, CI places the package binary and manifests under the site's `/firmware/` path. Two clearly separated install choices are shown:
+When production release eligibility is enabled, CI places the package binary and manifests under the site's `/firmware/` path. Two clearly separated operations are shown:
 
 ### First install — destructive
 
-Uses `factory-manifest.json`. This path is intended for an erased/new device and performs the new-install erase behavior.
+Uses the standard ESP Web Tools install button with `factory-manifest.json`. This operation is explicitly for a new device or an intentional clean installation and performs a full-flash erase before installation.
 
 ### Update — preserve authenticator data
 
-Uses `update-manifest.json`, which requests ESP Web Tools to show its new-install erase prompt. For a normal update, the user must choose **not to erase**. The merged firmware itself does not include `auth_nvs` and does not intentionally overwrite it.
+The normal update button does **not** use ESP Web Tools' generic install dialog because the generic no-Improv new-install path can offer or perform a full-flash erase. Instead, M5Authenticator calls ESP Web Tools 10.4.0's low-level flash API with `eraseFirst=false` unconditionally.
+
+The update implementation also requires:
+
+- a same-origin `update-manifest.json`;
+- exactly one ESP32-S3 firmware part;
+- that part at offset `0x0`;
+- the same merged firmware image used by the other distribution paths.
+
+`web/src/firmware-update.test.ts` pins the critical invariant that the update wrapper always calls the low-level flasher with `eraseFirst=false`. There is no erase choice in the normal Update UI. Intentional user-state deletion remains the explicit Factory Reset operation in the Provisioner.
+
+`update-manifest.json` keeps the generic ESP Web Tools erase prompt enabled only as a defense-in-depth warning if someone opens that manifest outside the M5Authenticator Update UI. It is not the normal update execution path.
 
 Until Task #26 enables production release eligibility, the Flasher page remains visible but fail-closed: no firmware manifest is offered.
 
@@ -104,20 +114,20 @@ GitHub Pages deployment requires a Pages staging artifact. It is the only intent
 
 ## M5Burner
 
-M5Stack's current M5Burner workflow uses `USER CUSTOM` -> `Publish` and asks for Name, Version, Description, Device Type, GitHub link, Firmware, and Cover metadata. The release package provides the firmware/build metadata needed for that manual publication step.
+M5Stack's current M5Burner workflow uses `USER CUSTOM` -> `Publish` and asks for Name, Version, Description, Device Type, GitHub link, Firmware, and Cover metadata. The GitHub Release provides the exact `.bin`, version metadata, and checksum needed for that manual publication step.
 
 For M5Authenticator, **do not use M5Burner's Firmware Export function on a provisioned device**, even though generic M5Burner documentation recommends Export as a convenient source for publishing. A full-device export can capture credential-bearing flash contents. That conflicts with `SECURITY.md`.
 
 Instead:
 
-1. use only the secret-free firmware produced by the production Release workflow;
+1. use only `m5authenticator-v<version>-m5sticks3.bin` from the production GitHub Release;
 2. choose M5StickS3 as the device type;
 3. use the project GitHub repository as the source link;
-4. upload the CI-built merged firmware/package from the GitHub Release;
+4. select that CI-built `.bin` as the M5Burner `FirmWare` upload;
 5. verify version/checksum against `release-metadata.json` and `SHA256SUMS`;
 6. never source a public M5Burner upload from a user/provisioned device dump.
 
-M5Burner community publication remains a deliberate manual operation after Task #26 makes the build production eligible. The repository prepares the reproducible source package; it does not store M5Stack account credentials in GitHub Actions.
+M5Burner community publication remains a deliberate manual operation after Task #26 makes the build production eligible. M5Burner is a distribution/install surface, not the designated state-preserving normal-update path; normal updates use the Web Flasher Update operation described above. The repository does not store M5Stack account credentials in GitHub Actions.
 
 ## Build-output retention
 
