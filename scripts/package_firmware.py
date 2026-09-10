@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import shutil
-import zipfile
 from pathlib import Path
 
 from validate_release import ReleaseValidationError, validate_release
@@ -78,6 +77,9 @@ def package_firmware(
         {
             "name": "M5Authenticator",
             "version": version,
+            # The M5Authenticator update UI uses ESP Web Tools' low-level flash API
+            # with eraseFirst=false. Keeping the generic prompt enabled is a
+            # defense-in-depth warning if this manifest is opened elsewhere.
             "new_install_prompt_erase": True,
             "improv": False,
             "builds": [common_build],
@@ -104,38 +106,10 @@ def package_firmware(
         },
     )
 
-    m5_root = output_dir / "m5burner"
-    m5_firmware = m5_root / "firmware"
-    m5_firmware.mkdir(parents=True)
-    m5_binary = m5_firmware / "m5authenticator_0x0.bin"
-    shutil.copyfile(merged_binary, m5_binary)
-    write_json(
-        m5_root / "m5burner.json",
-        {
-            "name": "M5Authenticator",
-            "description": "Dedicated TOTP authenticator for M5StickS3",
-            "keywords": "M5StickS3,TOTP,Authenticator",
-            "author": "miso-develop",
-            "repository": "https://github.com/miso-develop/m5authenticator",
-            "firmware_category": {
-                "M5StickS3": {
-                    "path": "firmware",
-                    "device": ["M5StickS3"],
-                    "default_baud": 921600,
-                }
-            },
-            "version": version,
-            "framework": "ESP-IDF",
-        },
-    )
-
-    m5_zip = output_dir / f"m5authenticator-v{version}-m5sticks3-m5burner.zip"
-    with zipfile.ZipFile(m5_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(m5_root / "m5burner.json", "m5burner.json")
-        archive.write(m5_binary, "firmware/m5authenticator_0x0.bin")
-    shutil.rmtree(m5_root)
-
-    checksum_targets = [firmware_path, factory_manifest, update_manifest, metadata_path, m5_zip]
+    # M5Burner USER CUSTOM -> Publish accepts a firmware file directly. Use this
+    # exact merged binary rather than inventing a separate M5Burner package or
+    # exporting flash from a provisioned device.
+    checksum_targets = [firmware_path, factory_manifest, update_manifest, metadata_path]
     checksums = output_dir / "SHA256SUMS"
     checksums.write_text(
         "".join(f"{sha256(path)}  {path.name}\n" for path in checksum_targets),
