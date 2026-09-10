@@ -33,10 +33,12 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 
 ### Production eFuse lifecycle
 
+- Production security is supported only on a runtime-identified M5StickS3. After M5Unified initialization, firmware must require `M5.getBoard() == board_M5StickS3` before constructing the storage backend or entering any production-security flow.
+- Generic ESP32-S3 identity, successful flashing, a COM port, `esptool chip_id`, or redacted eFuse-state inspection is not sufficient evidence of the physical M5Stack product model. A non-M5StickS3 must fail closed before storage/eFuse initialization.
 - Normal development must not burn eFuse. The synthetic development backend exists specifically to exercise encrypted storage without irreversible device changes.
 - Normal production-backend boot is read-only with respect to eFuse. A deliberately selected, fully protected `HMAC_UP` key may be reused, but firmware must never auto-search for or silently switch to another key slot.
 - The only path allowed to create a production HMAC eFuse key is the explicit first-time Production Security Initialization flow for a selected **free** key slot when storage reports `production_init_required`.
-- Crossing that boundary requires a successful non-destructive preflight, the exact Web confirmation, and a fresh physical StickS3 long-hold confirmation. A button already held when confirmation begins is not sufficient.
+- Crossing that boundary requires runtime StickS3 identity verification, a successful non-destructive preflight, the exact Web confirmation, and a fresh physical StickS3 long-hold confirmation. A button already held when confirmation begins is not sufficient.
 - Unsupported storage schema, corrupt storage, I/O failure, incompatible/partially protected eFuse state, or an existing reusable HMAC key must never be reinterpreted as permission to erase `auth_nvs` or burn another key.
 - Any eFuse programming failure is fail-closed. Do not guess another key slot or automatically retry a burn; inspect non-secret eFuse state first.
 - Factory Reset erases user state in `auth_nvs` only and must preserve the device-specific eFuse key.
@@ -93,6 +95,8 @@ Identifiers such as issuer/account names may also be personal data. Log them onl
 ## Repository hygiene
 
 - Keep local secrets and captures in ignored local-only paths.
+- Tracked environment templates such as `.env.example` define keys only and must not contain concrete values; machine-local values belong in ignored local configuration such as `.env`.
+- Do not treat `.env` as a secure credential store merely because it is Git-ignored.
 - Review staged changes before every commit for credentials and private artifacts.
 - Do not use actual credentials to reproduce a bug in a public Issue/PR.
 - Examples must use unmistakably synthetic values.
