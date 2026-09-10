@@ -50,10 +50,7 @@ TimeService::~TimeService() {
         vTaskDelete(periodic_task_);
         periodic_task_ = nullptr;
     }
-    if (network_initialized_) {
-        disconnect_wifi();
-        (void)esp_wifi_deinit();
-    }
+    teardown_network();
 }
 
 bool TimeService::ensure_network_initialized() {
@@ -78,14 +75,22 @@ bool TimeService::ensure_network_initialized() {
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     result = esp_wifi_init(&init);
     if (result != ESP_OK) {
+        esp_netif_destroy_default_wifi(station_netif_);
+        station_netif_ = nullptr;
         return false;
     }
     result = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (result != ESP_OK) {
+        (void)esp_wifi_deinit();
+        esp_netif_destroy_default_wifi(station_netif_);
+        station_netif_ = nullptr;
         return false;
     }
     result = esp_wifi_set_mode(WIFI_MODE_STA);
     if (result != ESP_OK) {
+        (void)esp_wifi_deinit();
+        esp_netif_destroy_default_wifi(station_netif_);
+        station_netif_ = nullptr;
         return false;
     }
 
@@ -93,47 +98,51 @@ bool TimeService::ensure_network_initialized() {
     return true;
 }
 
-void TimeService::disconnect_wifi() {
-    if (!network_initialized_) {
-        return;
+void TimeService::teardown_network() {
+    if (network_initialized_) {
+        (void)esp_wifi_disconnect();
+        (void)esp_wifi_stop();
+        (void)esp_wifi_deinit();
+        network_initialized_ = false;
     }
-    (void)esp_wifi_disconnect();
-    (void)esp_wifi_stop();
+    if (station_netif_ != nullptr) {
+        esp_netif_destroy_default_wifi(station_netif_);
+        station_netif_ = nullptr;
+    }
 }
 
-bool TimeService::connect_and_sync(
+SyncResult TimeService::connect_and_sync(
     std::string_view ssid,
     std::string_view password
 ) {
-    if (!ensure_network_initialized()) {
-        return false;
-    }
-
     wifi_config_t config{};
     if (ssid.empty() || ssid.size() > sizeof(config.sta.ssid) ||
         password.empty() || password.size() > sizeof(config.sta.password)) {
-        return false;
+        return SyncResult::kSyncFailed;
     }
+    if (!ensure_network_initialized()) {
+        return SyncResult::kNetworkUnavailable;
+    }
+
     std::memcpy(config.sta.ssid, ssid.data(), ssid.size());
     std::memcpy(config.sta.password, password.data(), password.size());
 
     esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &config);
-    storage::secure_zero(config.sta.password, sizeof(config.sta.password));
+    storage::secure_zero(&config, sizeof(config));
     if (result != ESP_OK) {
-        storage::secure_zero(&config, sizeof(config));
-        return false;
+        teardown_network();
+        return SyncResult::kSyncFailed;
     }
 
     result = esp_wifi_start();
     if (result != ESP_OK) {
-        storage::secure_zero(&config, sizeof(config));
-        return false;
+        teardown_network();
+        return SyncResult::kSyncFailed;
     }
     result = esp_wifi_connect();
     if (result != ESP_OK) {
-        storage::secure_zero(&config, sizeof(config));
-        disconnect_wifi();
-        return false;
+        teardown_network();
+        return SyncResult::kSyncFailed;
     }
 
     bool got_ip = false;
@@ -150,11 +159,9 @@ bool TimeService::connect_and_sync(
         vTaskDelay(kPollInterval);
         waited += kPollInterval;
     }
-
-    storage::secure_zero(&config, sizeof(config));
     if (!got_ip) {
-        disconnect_wifi();
-        return false;
+        teardown_network();
+        return SyncResult::kSyncFailed;
     }
 
     esp_sntp_config_t sntp_config =
@@ -162,8 +169,8 @@ bool TimeService::connect_and_sync(
     sntp_config.wait_for_sync = true;
     result = esp_netif_sntp_init(&sntp_config);
     if (result != ESP_OK) {
-        disconnect_wifi();
-        return false;
+        teardown_network();
+        return SyncResult::kSyncFailed;
     }
 
     result = esp_netif_sntp_sync_wait(kSntpTimeout);
@@ -174,9 +181,9 @@ bool TimeService::connect_and_sync(
         acceptable_unix_seconds(static_cast<std::uint64_t>(now.tv_sec));
 
     esp_netif_sntp_deinit();
-    disconnect_wifi();
+    teardown_network();
     if (!synced) {
-        return false;
+        return SyncResult::kSyncFailed;
     }
 
     clock_.mark_synchronized(
@@ -184,20 +191,14 @@ bool TimeService::connect_and_sync(
         esp_timer_get_time(),
         Source::kNtp
     );
-    return true;
+    return SyncResult::kOk;
 }
 
 SyncResult TimeService::sync_ntp_once() {
     SyncResult outcome = SyncResult::kNotConfigured;
     const storage::Status status = store_.with_wifi_credentials(
         [&](std::string_view ssid, std::string_view password) {
-            if (!ensure_network_initialized()) {
-                outcome = SyncResult::kNetworkUnavailable;
-            } else {
-                outcome = connect_and_sync(ssid, password)
-                    ? SyncResult::kOk
-                    : SyncResult::kSyncFailed;
-            }
+            outcome = connect_and_sync(ssid, password);
             return storage::Status::kOk;
         }
     );

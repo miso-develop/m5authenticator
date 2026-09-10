@@ -50,8 +50,8 @@ private:
 
     SyncResult sync_ntp_once();
     bool ensure_network_initialized();
-    bool connect_and_sync(std::string_view ssid, std::string_view password);
-    void disconnect_wifi();
+    SyncResult connect_and_sync(std::string_view ssid, std::string_view password);
+    void teardown_network();
 
     storage::Store& store_;
     TrustedClock& clock_;

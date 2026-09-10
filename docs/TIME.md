@@ -14,13 +14,13 @@ The trusted anchor is runtime-only. Rebooting clears readiness. Current trusted 
 
 ## Boot synchronization
 
-When encrypted storage contains Wi-Fi credentials, firmware attempts NTP during boot at most three times, with 1-second then 3-second retry delays. Each attempt connects only for time synchronization, uses `pool.ntp.org`, and disconnects Wi-Fi afterward. If all attempts fail, the device remains `not_synced`.
+When encrypted storage contains Wi-Fi credentials, firmware attempts NTP during boot at most three times, with 1-second then 3-second retry delays. Each attempt initializes Wi-Fi only for time synchronization, uses `pool.ntp.org`, and deinitializes the Wi-Fi driver/netif afterward. If all attempts fail, the device remains `not_synced`.
 
 If Wi-Fi is not configured, firmware does not invent another network source. USB synchronization remains available after boot.
 
 ## Wi-Fi persistence boundary
 
-`auth_nvs` remains the canonical Wi-Fi credential store. Runtime Wi-Fi explicitly selects `WIFI_STORAGE_RAM`, preventing ESP-IDF's default flash-backed Wi-Fi configuration from becoming a second credential store. Wi-Fi/NTP is a time source only, not an authentication factor.
+`auth_nvs` remains the canonical Wi-Fi credential store. Runtime Wi-Fi explicitly selects `WIFI_STORAGE_RAM`, preventing ESP-IDF's default flash-backed Wi-Fi configuration from becoming a second credential store. The driver/netif is destroyed after each NTP attempt so the transient RAM configuration is not intentionally retained between sync windows. Wi-Fi/NTP is a time source only, not an authentication factor.
 
 ## USB trusted time
 
@@ -30,7 +30,7 @@ Protocol v1 adds `time.sync` with integer `unix_seconds`. Accepted timestamps ar
 
 ## Periodic resynchronization
 
-Resynchronization becomes due after approximately 6 hours. A background task keeps Wi-Fi disconnected until the deadline, then performs a short NTP attempt. Failure does not immediately revoke READY; attempts are rate-limited by the six-hour interval. After more than 24 hours without a trusted sync, state becomes `stale` and TOTP generation is blocked. A later successful USB or NTP sync establishes a new anchor.
+Resynchronization becomes due after approximately 6 hours. A background task keeps Wi-Fi deinitialized until the deadline, then performs a short NTP attempt. Failure does not immediately revoke READY; attempts are rate-limited by the six-hour interval. After more than 24 hours without a trusted sync, state becomes `stale` and TOTP generation is blocked. A later successful USB or NTP sync establishes a new anchor.
 
 ## TOTP profile
 
