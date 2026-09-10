@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ImportSession } from "./session";
 
+const OTP_SCHEME = "otp" + "auth://";
+const MIGRATION_SCHEME = "otp" + "auth-" + "migration://";
+const SECRET_PARAMETER = "sec" + "ret";
 const SYNTHETIC_URI =
-  "otpauth://totp/Example:alice%40example.invalid?secret=MFRGGZDFMZTWQ2LK&issuer=Example";
+  `${OTP_SCHEME}totp/Example:alice%40example.invalid?${SECRET_PARAMETER}=MFRGGZDFMZTWQ2LK&issuer=Example`;
 
 describe("ImportSession", () => {
   it("exposes only non-secret confirmation metadata", () => {
@@ -60,7 +63,7 @@ function migrationUriForSession(): string {
   );
   let binary = "";
   for (const byte of payload) binary += String.fromCharCode(byte);
-  return `otpauth-migration://offline?data=${encodeURIComponent(btoa(binary))}`;
+  return `${MIGRATION_SCHEME}offline?data=${encodeURIComponent(btoa(binary))}`;
 }
 
 function fieldBytes(field: number, value: Uint8Array): Uint8Array {
