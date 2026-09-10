@@ -98,3 +98,16 @@ checkpointにはsecretやcredential-bearing payloadを含めず、少なくと�
 - `code-review` のblocking findingが解消されている。
 - 既知のregressionや未解決矛盾がない。
 - PRがmergeされ、`Closes #<task-number>` により対象Issueがclosedになっている。
+
+## Parallel implementation coordination
+
+複数chat / agent session / human workerが同一repositoryを並列に変更し得るため、implementationまたはrepository current truthの変更を開始するworkerは `agent/PARALLEL-WORK.md` を必ず参照し、そのMandatory preflightとParallel eligibility gateを適用する。
+
+- chat内の会話や記憶ではなく、latest `main`、open/draft PR、non-main branch、open Task、commit、changed filesをshared coordination stateとして扱う。
+- open/draft PRとTaskへ合理的に対応付けられるnon-main branchはin-flight workであり、Taskおよびそのfile / subsystem / shared contractを予約しているものとして扱う。
+- 同一fileだけでなく、protocol、schema、public interface、runtime state machine、security boundary、build/release contract等のsemantic conflictもhard conflictとして評価する。
+- blocker Taskがgreen PRになっていても、mainへmergeされIssueがclosedになるまではblocker解消とみなさない。
+- safe parallel workは `agent/PARALLEL-WORK.md` のgateをすべて満たす場合だけ許可する。不明確な場合はfail closedで並列化しない。
+- preflightはTask選択時だけでなく、first write前、scope拡張前、push/PR作成前、merge直前にも必要な範囲で再実行する。
+- 作業中にmainが進んだ場合はfile overlapだけでなくsemantic/dependency overlapを再評価し、必要ならlatest mainへbranchを更新して再検証する。
+- process/documentation-only changeも同ruleで競合確認し、protected `main` へ直接commitしない。
