@@ -263,6 +263,12 @@ const char* status_code(Status status) {
             return "storage_io";
         case Status::kSecurityInvariant:
             return "security_invariant";
+        case Status::kProductionInitRequired:
+            return "production_init_required";
+        case Status::kEfuseStateInvalid:
+            return "efuse_state_invalid";
+        case Status::kIrreversibleOperationFailed:
+            return "irreversible_operation_failed";
     }
     return "storage_error";
 }

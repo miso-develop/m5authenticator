@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = REPO_ROOT / "firmware" / "release-profile.json"
 DEFAULT_METADATA = REPO_ROOT / "firmware" / "components" / "m5auth_core" / "include" / "m5auth" / "core" / "metadata.hpp"
 DEFAULT_PARTITIONS = REPO_ROOT / "firmware" / "partitions.csv"
+DEFAULT_SDKCONFIG = REPO_ROOT / "firmware" / "sdkconfig.defaults"
 
 REQUIRED_PARTITIONS = ("nvs", "otadata", "phy_init", "ota_0", "ota_1", "auth_nvs")
 
@@ -81,15 +82,32 @@ def parse_partitions(path: Path = DEFAULT_PARTITIONS) -> dict[str, dict[str, int
     return partitions
 
 
+def parse_sdkconfig_defaults(path: Path = DEFAULT_SDKCONFIG) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ReleaseValidationError(f"cannot read sdkconfig defaults: {exc}") from exc
+    values: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key] = value
+    return values
+
+
 def validate_release(
     profile_path: Path = DEFAULT_PROFILE,
     metadata_path: Path = DEFAULT_METADATA,
     partitions_path: Path = DEFAULT_PARTITIONS,
+    sdkconfig_path: Path = DEFAULT_SDKCONFIG,
     require_production: bool = False,
 ) -> dict[str, Any]:
     profile = load_profile(profile_path)
     metadata = parse_metadata(metadata_path)
     partitions = parse_partitions(partitions_path)
+    sdkconfig = parse_sdkconfig_defaults(sdkconfig_path)
 
     _require(profile.get("format") == 1, "unsupported release profile format")
     _require(profile.get("device") == "M5StickS3", "V1 release device must be M5StickS3")
@@ -131,18 +149,36 @@ def validate_release(
 
     security_backend = profile.get("security_backend")
     eligible = profile.get("production_release_allowed")
-    _require(isinstance(security_backend, str) and security_backend, "security_backend must be a non-empty string")
+    _require(security_backend in {"development-synthetic", "hmac-efuse"}, "unsupported security_backend")
     _require(isinstance(eligible, bool), "production_release_allowed must be boolean")
+
     if security_backend == "development-synthetic":
         _require(eligible is False, "development synthetic backend cannot be production eligible")
+        _require(sdkconfig.get("CONFIG_M5AUTH_SECURITY_BACKEND_DEV") == "y", "release profile/backend mismatch")
+    else:
+        validated = profile.get("production_security_validated")
+        key_id = profile.get("hmac_efuse_key_id")
+        _require(isinstance(validated, bool), "production_security_validated must be boolean")
+        _require(isinstance(key_id, int) and not isinstance(key_id, bool) and 0 <= key_id <= 5,
+                 "hmac_efuse_key_id must be an integer from 0 to 5")
+        _require(sdkconfig.get("CONFIG_M5AUTH_SECURITY_BACKEND_PRODUCTION") == "y",
+                 "HMAC release profile requires production backend in sdkconfig defaults")
+        _require(sdkconfig.get("CONFIG_M5AUTH_HMAC_KEY_ID") == str(key_id),
+                 "HMAC key ID does not match sdkconfig defaults")
+        if eligible:
+            _require(validated is True, "production release requires completed physical security validation")
+
     if require_production:
+        _require(security_backend == "hmac-efuse", "production release requires HMAC eFuse backend")
+        _require(profile.get("production_security_validated") is True,
+                 "production release is blocked until physical security validation completes")
         _require(eligible is True, "production release is blocked by release profile")
-        _require(security_backend != "development-synthetic", "development security backend cannot be released")
 
     return {
         "profile": profile,
         "metadata": metadata,
         "partitions": partitions,
+        "sdkconfig": sdkconfig,
     }
 
 
@@ -151,10 +187,17 @@ def main() -> int:
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--metadata", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--partitions", type=Path, default=DEFAULT_PARTITIONS)
+    parser.add_argument("--sdkconfig", type=Path, default=DEFAULT_SDKCONFIG)
     parser.add_argument("--require-production", action="store_true")
     args = parser.parse_args()
     try:
-        result = validate_release(args.profile, args.metadata, args.partitions, args.require_production)
+        result = validate_release(
+            args.profile,
+            args.metadata,
+            args.partitions,
+            args.sdkconfig,
+            args.require_production,
+        )
     except ReleaseValidationError as exc:
         print(f"release validation failed: {exc}")
         return 1
@@ -165,7 +208,7 @@ def main() -> int:
         "release validation OK: "
         f"{profile['device']} v{profile['firmware_version']} "
         f"protocol={profile['protocol_version']} storage={profile['storage_schema_version']} "
-        f"profile={state}"
+        f"security={profile['security_backend']} profile={state}"
     )
     return 0
 

@@ -32,7 +32,7 @@ Initialization behavior is fail closed:
 - an unknown schema value is not read, migrated, erased, or reset automatically
 - no older schema exists before V1 schema 1, so there is currently no legacy migration path
 
-Future known migrations must be explicit. Unknown newer schemas must remain untouched.
+Future known migrations must be explicit. Unknown newer schemas must remain untouched. Production Security Initialization does not override this rule: once a reusable production HMAC key exists, unsupported schema/corrupt/I/O states are preserved and cannot enter the destructive first-time initialization path.
 
 ## Snapshot model
 
@@ -50,21 +50,42 @@ A complete account import is staged in RAM and committed by replacing the single
 
 Metadata APIs intentionally return only id/order/issuer/account/display name. There is no generic stored-secret read/export API. Firmware consumers that need a TOTP secret or Wi-Fi password use callback-style `with_*` methods so decrypted secret material has a narrow lifetime and is wiped after the consumer returns.
 
-## Development Security Backend
+## Security backends
 
-Development builds use `DevSecurityBackend` only until Task #26 replaces it for production.
+### Development Security Backend
+
+`DevSecurityBackend` remains available for explicit development-only builds.
 
 - It does **not** read or burn eFuse.
 - Its XTS key material is deliberately public and synthetic.
 - `production_release_allowed()` is always false.
 - `hello` reports `security_profile: development` so Web/device status makes the profile explicit.
-- Production HMAC/eFuse-backed keying remains exclusively owned by Task #26.
+- Release validation rejects a development backend marked production eligible.
 
 The development backend calls `nvs_flash_secure_init_partition()` with explicit synthetic XTS configuration. It never falls back to plaintext NVS initialization.
 
+### Production HMAC eFuse Backend
+
+The canonical V1 configuration selects `HmacEfuseSecurityBackend` with a deliberately configured eFuse key slot. The firmware never searches for or silently switches to a different slot.
+
+Normal boot is read-only with respect to eFuse:
+
+- a fully protected `HMAC_UP` key in the selected slot is reused
+- HMAC-derived NVS XTS keys are generated in RAM and wiped after secure NVS initialization
+- a free selected slot returns `production_init_required` instead of automatically burning a key
+- an incompatible/partially protected slot fails closed
+
+The only eFuse-writing path is first-time Production Security Initialization. It is allowed only when the Store failed specifically with `production_init_required` and the selected slot is still free. Web preflight plus exact Web confirmation plus the physical StickS3 long-hold are required before the backend can be called.
+
+For first-time key creation the firmware temporarily enables ESP-IDF's internal SAR ADC entropy source, generates a device-specific 256-bit random key, disables the entropy source before normal Wi-Fi/ADC use, and stages the key plus `HMAC_UP` purpose and protection bits in ESP-IDF eFuse batch mode. The generated plaintext key is zeroized after the operation and never exported.
+
+A reusable HMAC key never enters the destructive initialization flow. Therefore unknown schema, corrupt storage, or another storage failure cannot be converted into an implicit `auth_nvs` erase.
+
+See `docs/PRODUCTION_SECURITY.md` for the irreversible-operation and physical validation runbook.
+
 ### Encryption self-check
 
-After a recognized schema is established, the development backend writes a public synthetic probe value through encrypted `auth_nvs`, reads the raw partition bytes, and fails with `security_invariant` if that exact probe is visible in plaintext. The probe is then erased from its namespace.
+After a recognized schema is established, each security backend writes a public synthetic probe value through encrypted `auth_nvs`, reads the raw partition bytes, and fails with `security_invariant` if that exact probe is visible in plaintext. The probe is then erased from its namespace.
 
 NVS encryption is configured for the entire `auth_nvs` partition, so this write-through/raw-read check exercises the same encryption boundary used by the snapshot containing TOTP and Wi-Fi credential data. It deliberately avoids scanning, printing, dumping, or comparing credential values themselves.
 
@@ -78,7 +99,7 @@ No serial response returns the Wi-Fi password.
 
 ## Memory and logging
 
-Credential-bearing request fields, serial input buffers, temporary encoded snapshots, imported secrets, Wi-Fi passwords, and loaded internal state are explicitly wiped when their lifetime ends. Account draft/storage secret types also wipe source or destination values around relocation/destruction so vector movement and short-string storage do not intentionally leave stale secret copies behind. Errors return only bounded status codes and never echo the source payload.
+Credential-bearing request fields, serial input buffers, temporary encoded snapshots, imported secrets, Wi-Fi passwords, generated production HMAC key material, and loaded internal state are explicitly wiped when their lifetime ends. Account draft/storage secret types also wipe source or destination values around relocation/destruction so vector movement and short-string storage do not intentionally leave stale secret copies behind. Errors return only bounded status codes and never echo the source payload.
 
 No storage path logs TOTP secrets, passwords, encryption keys, decrypted snapshots, or credential-bearing flash/NVS data.
 
@@ -86,4 +107,6 @@ No storage path logs TOTP secrets, passwords, encryption keys, decrypted snapsho
 
 `Store::factory_reset()` erases only the `auth_nvs` user-state partition and recreates schema 1 through the active security backend. It does not touch eFuse or device identity/security state.
 
-V1 exposes this only through the explicit Web/USB confirmation flow. A normal firmware update is a separate path and must not erase `auth_nvs`.
+With the production backend, Factory Reset therefore reuses the same device-specific HMAC key. It does not call Production Security Initialization and cannot burn a replacement key.
+
+V1 exposes Factory Reset only through the explicit Web/USB confirmation flow. A normal firmware update is a separate path and must not erase `auth_nvs`.

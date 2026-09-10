@@ -18,8 +18,6 @@ inline constexpr std::size_t kMaxSecretBytes = 256;
 inline constexpr std::size_t kMaxSsidBytes = 32;
 inline constexpr std::size_t kMaxWifiPasswordBytes = 64;
 
-// Storage errors intentionally carry only a failure class. Secret-bearing input is
-// never embedded in error text or serialized responses.
 enum class Status {
     kOk,
     kNotReady,
@@ -30,6 +28,9 @@ enum class Status {
     kCorrupt,
     kIo,
     kSecurityInvariant,
+    kProductionInitRequired,
+    kEfuseStateInvalid,
+    kIrreversibleOperationFailed,
 };
 
 const char* status_code(Status status);
@@ -63,6 +64,34 @@ struct WifiStatus {
     std::string ssid;
 };
 
+enum class EfuseKeyState {
+    kFree,
+    kReusable,
+    kIncompatible,
+};
+
+const char* efuse_key_state_name(EfuseKeyState state);
+
+struct ProductionSecurityStatus {
+    bool supported{false};
+    std::uint8_t hmac_key_id{0};
+    EfuseKeyState key_state{EfuseKeyState::kIncompatible};
+    bool read_protected{false};
+    bool write_protected{false};
+    bool purpose_write_protected{false};
+    unsigned unused_key_blocks{0};
+    bool burn_attempted{false};
+};
+
+// Pure policy gate for the only state that may cross the irreversible
+// production-initialization boundary. This intentionally excludes reusable keys
+// and every non-first-time storage failure.
+bool production_initialization_eligible(
+    Status initialization_status,
+    Status security_status,
+    const ProductionSecurityStatus& security
+);
+
 class SecurityBackend {
 public:
     virtual ~SecurityBackend() = default;
@@ -72,6 +101,8 @@ public:
     virtual Status erase_user_partition() = 0;
     virtual std::string_view profile() const = 0;
     virtual bool production_release_allowed() const = 0;
+    virtual Status production_security_status(ProductionSecurityStatus* status) const = 0;
+    virtual Status initialize_production_security() = 0;
 };
 
 // Development-only backend. Its keys are deliberately public and synthetic.
@@ -83,6 +114,29 @@ public:
     Status erase_user_partition() override;
     std::string_view profile() const override;
     bool production_release_allowed() const override;
+    Status production_security_status(ProductionSecurityStatus* status) const override;
+    Status initialize_production_security() override;
+};
+
+// Production backend. Normal initialization is strictly read-only with respect
+// to eFuse. The only method permitted to program eFuse is the explicitly named
+// initialize_production_security(), which must be protected by higher-level Web
+// and physical-device confirmation before it is called.
+class HmacEfuseSecurityBackend final : public SecurityBackend {
+public:
+    explicit HmacEfuseSecurityBackend(std::uint8_t hmac_key_id);
+
+    Status initialize_partition() override;
+    Status verify_encryption_active() override;
+    Status erase_user_partition() override;
+    std::string_view profile() const override;
+    bool production_release_allowed() const override;
+    Status production_security_status(ProductionSecurityStatus* status) const override;
+    Status initialize_production_security() override;
+
+private:
+    std::uint8_t hmac_key_id_;
+    bool burn_attempted_{false};
 };
 
 class Store {
@@ -94,6 +148,8 @@ public:
     Status initialization_status() const;
     std::string_view security_profile() const;
     bool production_release_allowed() const;
+    Status production_security_status(ProductionSecurityStatus* status) const;
+    Status initialize_production_security();
 
     Status list_accounts(std::vector<AccountMetadata>* accounts) const;
     Status replace_accounts(const std::vector<AccountDraft>& accounts);

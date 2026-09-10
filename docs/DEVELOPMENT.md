@@ -19,15 +19,56 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
-The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG console and the custom dual-OTA partition layout in `partitions.csv`.
+The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG console, the custom dual-OTA partition layout in `partitions.csv`, and the production HMAC/eFuse storage backend. Until Task #26 physical validation completes, `firmware/release-profile.json` deliberately keeps production distribution blocked.
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
 
-### Development storage security
+### Local environment (`.env`)
 
-Normal development uses `DevSecurityBackend`. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material and **must not burn or modify eFuse**. Its firmware reports `security_profile: development` and `production_release_allowed: false`.
+Repository-local machine settings use a root `.env` file. `.env` is ignored by Git; only the value-free `.env.example` template is versioned.
 
-Production HMAC/eFuse-backed initialization is intentionally absent until Task #26. Do not add an eFuse burn step, private key file, or shared production encryption key while working on earlier Tasks.
+On Windows `cmd.exe`:
+
+```text
+copy .env.example .env
+```
+
+Then edit `.env` locally and populate the supported keys:
+
+```text
+M5AUTH_IDF_VERSION=
+M5AUTH_CHIP=
+M5AUTH_PORT=
+```
+
+Do not put concrete machine-specific values in `.env.example` or documentation. `scripts\load-env.cmd` validates the local values against the repository's canonical toolchain/device requirements and exports them into the current `cmd.exe` session. Keep using `call` so the variables persist in that shell:
+
+```text
+call scripts\load-env.cmd
+```
+
+`.env` is for **non-secret local tooling configuration only**. Even though it is ignored by Git, never put TOTP secrets, `otpauth` payloads, Wi-Fi passwords, tokens, private keys, or other authentication material in it.
+
+With Espressif EIM installed, the local Windows build is:
+
+```text
+call scripts\load-env.cmd
+cd firmware
+eim run "idf.py set-target %M5AUTH_CHIP%" %M5AUTH_IDF_VERSION%
+eim run "idf.py build" %M5AUTH_IDF_VERSION%
+```
+
+This avoids accidentally using an older globally configured ESP-IDF environment.
+
+### Storage security profiles
+
+`DevSecurityBackend` remains available for explicit development-only builds. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material, never reads or burns eFuse, reports `security_profile: development`, and can never become a production release artifact.
+
+The canonical V1 configuration now selects `HmacEfuseSecurityBackend`. A device whose deliberately configured HMAC slot is still free enters the dedicated Production Security Setup mode and performs only non-destructive inspection/preflight until the Web confirmation and physical StickS3 confirmation are both completed. Normal boot with an existing reusable HMAC key derives NVS keys read-only and does not burn eFuse.
+
+Do not treat a storage error as permission to initialize production security. Only the explicit first-time `production_init_required` state with a selected free slot may enter the irreversible initialization path. Unknown schema, corrupt storage, incompatible eFuse state, or I/O failure remain fail-closed.
+
+The complete physical validation and irreversible-operation procedure is documented in `docs/PRODUCTION_SECURITY.md`. Do not improvise eFuse commands outside that runbook.
 
 The native state-codec check can be run from the repository root with:
 

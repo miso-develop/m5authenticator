@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "device.cpp"
         "ui_model.cpp"
+        "production_security.cpp"
     INCLUDE_DIRS "include"
     REQUIRES
         m5unified

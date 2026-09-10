@@ -1,0 +1,25 @@
+menu "M5Authenticator security"
+
+choice M5AUTH_SECURITY_BACKEND
+    prompt "Authenticator storage security backend"
+    default M5AUTH_SECURITY_BACKEND_PRODUCTION
+
+config M5AUTH_SECURITY_BACKEND_PRODUCTION
+    bool "Production HMAC eFuse-backed NVS encryption"
+
+config M5AUTH_SECURITY_BACKEND_DEV
+    bool "Development synthetic NVS encryption"
+
+endchoice
+
+config M5AUTH_HMAC_KEY_ID
+    int "HMAC eFuse key ID"
+    range 0 5
+    default 0
+    depends on M5AUTH_SECURITY_BACKEND_PRODUCTION
+    help
+        Fixed HMAC key slot used by M5Authenticator. The firmware never searches
+        for another HMAC_UP key automatically. A different slot must be selected
+        intentionally after inspecting the device eFuse summary.
+
+endmenu

@@ -15,11 +15,48 @@ import validate_release
 
 
 class ReleasePackagingTest(unittest.TestCase):
-    def test_repository_release_profile_is_valid_but_not_production(self) -> None:
+    def test_repository_release_profile_is_hmac_but_not_yet_production(self) -> None:
         result = validate_release.validate_release()
+        self.assertEqual(result["profile"]["security_backend"], "hmac-efuse")
+        self.assertFalse(result["profile"]["production_security_validated"])
         self.assertFalse(result["profile"]["production_release_allowed"])
         with self.assertRaises(validate_release.ReleaseValidationError):
             validate_release.validate_release(require_production=True)
+
+    def test_release_rejects_unvalidated_hmac_profile_even_if_allowed_flag_is_flipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = validate_release.load_profile()
+            profile["production_release_allowed"] = True
+            profile_path = root / "profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                validate_release.validate_release(profile_path=profile_path)
+
+    def test_development_backend_can_never_be_marked_production_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = validate_release.load_profile()
+            profile["security_backend"] = "development-synthetic"
+            profile["production_security_validated"] = False
+            profile["production_release_allowed"] = True
+            profile.pop("hmac_efuse_key_id", None)
+            profile_path = root / "profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+            sdkconfig = validate_release.DEFAULT_SDKCONFIG.read_text(encoding="utf-8")
+            sdkconfig = sdkconfig.replace(
+                "CONFIG_M5AUTH_SECURITY_BACKEND_PRODUCTION=y\n# CONFIG_M5AUTH_SECURITY_BACKEND_DEV is not set\nCONFIG_M5AUTH_HMAC_KEY_ID=0\n",
+                "# CONFIG_M5AUTH_SECURITY_BACKEND_PRODUCTION is not set\nCONFIG_M5AUTH_SECURITY_BACKEND_DEV=y\n",
+            )
+            sdkconfig_path = root / "sdkconfig.defaults"
+            sdkconfig_path.write_text(sdkconfig, encoding="utf-8")
+
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                validate_release.validate_release(
+                    profile_path=profile_path,
+                    sdkconfig_path=sdkconfig_path,
+                )
 
     def test_package_rejects_image_that_reaches_auth_partition(self) -> None:
         profile = validate_release.validate_release()["profile"]

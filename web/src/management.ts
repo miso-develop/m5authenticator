@@ -1,12 +1,15 @@
 import { encodeBase32Secret } from "./import/base32";
 import { ImportSession } from "./import/session";
 import {
+  PRODUCTION_SECURITY_CONFIRMATION,
   parseAccountsData,
   parseHelloData,
+  parseProductionSecurityStatus,
   parseTimeStatus,
   parseWifiStatusData,
   type AccountMetadata,
   type HelloData,
+  type ProductionSecurityStatus,
   type TimeStatus,
   type WifiStatusData,
 } from "./protocol";
@@ -16,10 +19,12 @@ export interface DeviceSnapshot {
   hello: HelloData;
   accounts: AccountMetadata[];
   wifi: WifiStatusData;
+  security: ProductionSecurityStatus | null;
 }
 
 export class DeviceManagement {
   private storageReady = false;
+  private productionSecurityPrepared = false;
 
   public constructor(private readonly transport: DeviceTransport) {}
 
@@ -27,11 +32,65 @@ export class DeviceManagement {
     const hello = parseHelloData(await this.transport.request("hello"));
     this.storageReady = hello.storage_ready;
     if (!this.storageReady) {
-      return { hello, accounts: [], wifi: { configured: false, ssid: "" } };
+      const security = hello.security_profile === "production-hmac-efuse"
+        ? parseProductionSecurityStatus(await this.transport.request("security.status"))
+        : null;
+      this.productionSecurityPrepared = security?.prepared === true && security.preflight_ok;
+      return { hello, accounts: [], wifi: { configured: false, ssid: "" }, security };
     }
+    this.productionSecurityPrepared = false;
     const accounts = parseAccountsData(await this.transport.request("accounts.list"));
     const wifi = parseWifiStatusData(await this.transport.request("wifi.status"));
-    return { hello, accounts: accounts.accounts, wifi };
+    return { hello, accounts: accounts.accounts, wifi, security: null };
+  }
+
+  public async productionSecurityStatus(): Promise<ProductionSecurityStatus> {
+    const status = parseProductionSecurityStatus(await this.transport.request("security.status"));
+    this.productionSecurityPrepared = status.prepared && status.preflight_ok;
+    return status;
+  }
+
+  public async prepareProductionSecurity(): Promise<ProductionSecurityStatus> {
+    if (this.storageReady) throw new Error("Production security is already initialized");
+    const status = parseProductionSecurityStatus(await this.transport.request("security.prepare"));
+    if (!status.prepared || !status.preflight_ok) {
+      this.productionSecurityPrepared = false;
+      throw new Error("Production security preflight did not enter the prepared state");
+    }
+    this.productionSecurityPrepared = true;
+    return status;
+  }
+
+  public async cancelProductionSecurity(): Promise<ProductionSecurityStatus> {
+    if (this.storageReady) throw new Error("Production security is already initialized");
+    const status = parseProductionSecurityStatus(await this.transport.request("security.cancel"));
+    this.productionSecurityPrepared = false;
+    return status;
+  }
+
+  public async initializeProductionSecurity(
+    confirmation: string,
+  ): Promise<ProductionSecurityStatus> {
+    if (this.storageReady) throw new Error("Production security is already initialized");
+    if (!this.productionSecurityPrepared) {
+      throw new Error("Production security preflight is not prepared");
+    }
+    if (confirmation !== PRODUCTION_SECURITY_CONFIRMATION) {
+      throw new Error("Production security confirmation text does not match");
+    }
+
+    try {
+      const status = parseProductionSecurityStatus(
+        await this.transport.request("security.commit", { confirmation }),
+      );
+      this.storageReady = status.storage_ready;
+      return status;
+    } finally {
+      // The device consumes preparation before crossing the irreversible boundary,
+      // including on physical-confirmation timeout or any eFuse error. Never allow
+      // the Web client to retry a commit without running a fresh preflight.
+      this.productionSecurityPrepared = false;
+    }
   }
 
   public async provision(importSession: ImportSession): Promise<number> {
@@ -96,12 +155,14 @@ export class DeviceManagement {
   }
 
   public async factoryReset(): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("factory.reset");
     this.storageReady = false;
   }
 
   public async close(): Promise<void> {
     this.storageReady = false;
+    this.productionSecurityPrepared = false;
     await this.transport.close();
   }
 

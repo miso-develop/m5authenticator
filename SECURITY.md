@@ -31,6 +31,20 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 - Secret-bearing buffers must not be printed or included in assertions/errors.
 - Debug builds do not get an exception to secret-redaction rules.
 
+### Production eFuse lifecycle
+
+- Normal development must not burn eFuse. The synthetic development backend exists specifically to exercise encrypted storage without irreversible device changes.
+- Normal production-backend boot is read-only with respect to eFuse. A deliberately selected, fully protected `HMAC_UP` key may be reused, but firmware must never auto-search for or silently switch to another key slot.
+- The only path allowed to create a production HMAC eFuse key is the explicit first-time Production Security Initialization flow for a selected **free** key slot when storage reports `production_init_required`.
+- Crossing that boundary requires a successful non-destructive preflight, the exact Web confirmation, and a fresh physical StickS3 long-hold confirmation. A button already held when confirmation begins is not sufficient.
+- Unsupported storage schema, corrupt storage, I/O failure, incompatible/partially protected eFuse state, or an existing reusable HMAC key must never be reinterpreted as permission to erase `auth_nvs` or burn another key.
+- Any eFuse programming failure is fail-closed. Do not guess another key slot or automatically retry a burn; inspect non-secret eFuse state first.
+- Factory Reset erases user state in `auth_nvs` only and must preserve the device-specific eFuse key.
+- Production release validation remains blocked until the documented physical validation succeeds. Development-backend firmware must never be promoted as a production release artifact.
+- Production eFuse validation uses only clearly synthetic TOTP/Wi-Fi data. Credential-bearing flash/RAM dumps remain prohibited.
+
+See `docs/PRODUCTION_SECURITY.md` for the controlled physical validation procedure.
+
 ### Web Provisioner
 
 - QR decoding and migration parsing must happen locally in the browser.

@@ -1,9 +1,11 @@
 export const PROTOCOL_VERSION = 1 as const;
 export const STORAGE_SCHEMA_VERSION = 1 as const;
 export const FIRMWARE_COMPATIBILITY = "0.1.x" as const;
+export const PRODUCTION_SECURITY_CONFIRMATION = "INITIALIZE PRODUCTION SECURITY" as const;
 
 export type TimeState = "not_synced" | "ready" | "stale";
 export type TimeSource = "none" | "ntp" | "usb";
+export type EfuseKeyState = "free" | "reusable" | "incompatible";
 
 export interface TimeStatus {
   time_state: TimeState;
@@ -23,6 +25,22 @@ export interface HelloData extends TimeStatus {
   storage_ready: boolean;
   production_release_allowed: boolean;
   storage_status?: string;
+}
+
+export interface ProductionSecurityStatus {
+  security_profile: string;
+  supported: boolean;
+  hmac_key_id: number;
+  key_state: EfuseKeyState;
+  read_protected: boolean;
+  write_protected: boolean;
+  purpose_write_protected: boolean;
+  unused_key_blocks: number;
+  burn_attempted: boolean;
+  prepared: boolean;
+  storage_ready: boolean;
+  storage_status: string;
+  preflight_ok: boolean;
 }
 
 export interface AccountMetadata {
@@ -132,6 +150,41 @@ export function parseHelloData(data: Record<string, unknown>): HelloData {
   };
 }
 
+export function parseProductionSecurityStatus(data: Record<string, unknown>): ProductionSecurityStatus {
+  if (
+    typeof data.security_profile !== "string" ||
+    typeof data.supported !== "boolean" ||
+    typeof data.hmac_key_id !== "number" || !Number.isSafeInteger(data.hmac_key_id) || data.hmac_key_id < 0 || data.hmac_key_id > 5 ||
+    !isEfuseKeyState(data.key_state) ||
+    typeof data.read_protected !== "boolean" ||
+    typeof data.write_protected !== "boolean" ||
+    typeof data.purpose_write_protected !== "boolean" ||
+    typeof data.unused_key_blocks !== "number" || !Number.isSafeInteger(data.unused_key_blocks) || data.unused_key_blocks < 0 || data.unused_key_blocks > 6 ||
+    typeof data.burn_attempted !== "boolean" ||
+    typeof data.prepared !== "boolean" ||
+    typeof data.storage_ready !== "boolean" ||
+    typeof data.storage_status !== "string" ||
+    typeof data.preflight_ok !== "boolean"
+  ) {
+    throw new Error("Device returned invalid production security status");
+  }
+  return {
+    security_profile: data.security_profile,
+    supported: data.supported,
+    hmac_key_id: data.hmac_key_id,
+    key_state: data.key_state,
+    read_protected: data.read_protected,
+    write_protected: data.write_protected,
+    purpose_write_protected: data.purpose_write_protected,
+    unused_key_blocks: data.unused_key_blocks,
+    burn_attempted: data.burn_attempted,
+    prepared: data.prepared,
+    storage_ready: data.storage_ready,
+    storage_status: data.storage_status,
+    preflight_ok: data.preflight_ok,
+  };
+}
+
 export function parseTimeStatus(data: Record<string, unknown>): TimeStatus {
   if (
     !isTimeState(data.time_state) ||
@@ -202,6 +255,10 @@ function isTimeState(value: unknown): value is TimeState {
 
 function isTimeSource(value: unknown): value is TimeSource {
   return value === "none" || value === "ntp" || value === "usb";
+}
+
+function isEfuseKeyState(value: unknown): value is EfuseKeyState {
+  return value === "free" || value === "reusable" || value === "incompatible";
 }
 
 function isNullableSafeInteger(value: unknown): value is number | null {
