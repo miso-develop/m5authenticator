@@ -30,6 +30,7 @@ See:
 
 - `docs/DEVELOPMENT.md` for pinned toolchains and reproducible build/test commands.
 - `docs/DEVICE_UI.md` for StickS3 account selection, trusted-time display, and 10-second OTP reveal behavior.
+- `docs/WEB_PROVISIONER.md` for local-only Web Serial provisioning and account/device management.
 - `docs/TIME.md` for trusted-time synchronization and TOTP readiness rules.
 - `docs/STORAGE.md` for encrypted account/Wi-Fi storage boundaries.
 - `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON provisioning protocol.

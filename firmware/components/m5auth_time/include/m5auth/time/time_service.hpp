@@ -45,6 +45,14 @@ public:
 
     bool start_periodic_resync();
 
+    // Factory Reset must not race a periodic NTP credential read. Both paths use
+    // sync_mutex_, and reset tears down transient network state before erasing auth_nvs.
+    storage::Status factory_reset_user_state() {
+        std::lock_guard<std::mutex> lock(sync_mutex_);
+        teardown_network();
+        return store_.factory_reset();
+    }
+
 private:
     static void periodic_task_entry(void* context);
 

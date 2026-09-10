@@ -57,6 +57,30 @@ export class ImportSession {
     return this.accounts.length > 0 || this.assembler.hasPending();
   }
 
+  public hasCompleteAccounts(): boolean {
+    return this.accounts.length > 0 && !this.assembler.hasPending();
+  }
+
+  public async forEachCompleteAccount(
+    consumer: (account: Readonly<ImportedTotpAccount>, index: number, total: number) => Promise<void>,
+  ): Promise<number> {
+    if (this.assembler.hasPending()) {
+      throw new ImportError("Finish the active Google Authenticator migration batch before provisioning.");
+    }
+    if (this.accounts.length === 0) {
+      throw new ImportError("No imported accounts are ready for provisioning.");
+    }
+    const total = this.accounts.length;
+    for (let index = 0; index < total; index += 1) {
+      const account = this.accounts[index];
+      if (!account) {
+        throw new ImportError("The import session is inconsistent.");
+      }
+      await consumer(account, index, total);
+    }
+    return total;
+  }
+
   public clear(): void {
     this.assembler.clear();
     clearSensitiveAccounts(this.accounts);

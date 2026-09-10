@@ -56,3 +56,26 @@ export function decodeBase32Secret(value: string): Uint8Array {
 
   return Uint8Array.from(output);
 }
+
+export function encodeBase32Secret(value: Uint8Array): string {
+  if (value.byteLength === 0) {
+    throw new ImportError("The imported TOTP secret is empty.");
+  }
+
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of value) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += BASE32_ALPHABET[(buffer >> bits) & 0x1f];
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(buffer << (5 - bits)) & 0x1f];
+  }
+  return output;
+}

@@ -377,6 +377,10 @@ std::string Session::handle_line(std::string_view line) {
     } else if (operation == "wifi.clear") {
         const storage::Status status = store_.clear_wifi();
         response = status == storage::Status::kOk ? empty_success(id) : storage_error_response(id, status);
+    } else if (operation == "factory.reset") {
+        clear_import();
+        const storage::Status status = time_service_.factory_reset_user_state();
+        response = status == storage::Status::kOk ? empty_success(id) : storage_error_response(id, status);
     } else {
         response = error_response(id, "unsupported_op");
     }
