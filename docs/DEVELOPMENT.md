@@ -8,7 +8,7 @@ Canonical stack:
 
 - ESP-IDF `v5.5.5`
 - M5Unified `0.2.21` through the ESP Component Registry
-- target: `esp32s3` / M5StickS3
+- target: `esp32s3` / M5StickS3 with 8 MiB flash
 - canonical build entrypoint: `idf.py` / CMake
 
 Install ESP-IDF `v5.5.5` using Espressif's normal installation process, activate that environment, then run:
@@ -19,9 +19,29 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
-The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG console used by the V1 Web Serial transport.
+The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG console and the custom dual-OTA partition layout in `partitions.csv`.
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
+
+### Development storage security
+
+Normal development uses `DevSecurityBackend`. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material and **must not burn or modify eFuse**. Its firmware reports `security_profile: development` and `production_release_allowed: false`.
+
+Production HMAC/eFuse-backed initialization is intentionally absent until Task #26. Do not add an eFuse burn step, private key file, or shared production encryption key while working on earlier Tasks.
+
+The native state-codec check can be run from the repository root with:
+
+```text
+g++ -std=c++20 -Wall -Wextra -Werror \
+  -Ifirmware/components/m5auth_storage/include \
+  -Ifirmware/components/m5auth_storage \
+  firmware/components/m5auth_storage/state.cpp \
+  tests/storage_state_test.cpp \
+  -o /tmp/m5auth-storage-state-test
+/tmp/m5auth-storage-state-test
+```
+
+See `docs/STORAGE.md` for the storage/security boundary.
 
 ## Web App
 
