@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "device": "M5StickS3",
+  "chip_family": "ESP32-S3",
+  "flash_size_bytes": 8388608,
+  "firmware_version": "0.1.0",
+  "protocol_version": 1,
+  "storage_schema_version": 1,
+  "security_backend": "development-synthetic",
+  "production_release_allowed": false,
+  "ota_0_offset": 196608,
+  "ota_0_size": 3997696,
+  "ota_1_offset": 4194304,
+  "ota_1_size": 3997696,
+  "auth_nvs_offset": 8192000,
+  "auth_nvs_size": 196608
+}
