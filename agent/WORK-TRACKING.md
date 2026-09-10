@@ -297,3 +297,75 @@ Securityに関するDecisionは、単なるIssue履歴で終わらせず、将�
 - firmware update secret-retention policy
 - BLE authentication model
 - release/signing model
+
+## Parallel implementation lifecycle
+
+複数workerで同一repositoryを並列実装する場合、上記Implementation lifecycleのstep 3は単なる「同じTaskのPR確認」ではなく、`agent/PARALLEL-WORK.md` のMandatory preflightを意味します。
+
+### Shared coordination state
+
+進行中作業の正本はGitHub上のobservable stateです。
+
+- latest `main` HEAD
+- open / draft Pull Requests
+- non-main branches and branch HEADs
+- open `[Task]` Issues and `Blocked by`
+- PR bodyのclosing reference
+- branch / commit naming
+- PR / branch changed files
+- recent merged commits
+
+chat/session間の会話共有は補助情報であり、parallel ownership判定の正本にはしません。
+
+### Task claim
+
+open/draft PRがTaskを `Closes #...` 等で参照している場合、そのTaskはそのPRによってclaimedです。
+
+PR未作成branchも、branch名・commit・changed filesからTaskとの対応を合理的に判定できる場合はclaimedとして扱います。同じTaskへ別branch/PRを追加しません。
+
+### Reservation and semantic conflict
+
+in-flight workのchanged filesはreservedです。加えて、Taskが変更中のsubsystemやshared contractもreservedとします。
+
+file overlapがなくても、protocol/schema/public interface/state machine/security boundary/build-release contract等が未merge変更へ依存する場合はsemantic conflictです。
+
+semantic conflictがあるTaskは、先行workがmainへmergeされるまで開始しません。
+
+### Blocker semantics
+
+`Blocked by` のIssueは、対応PRがgreenになった時点では解消しません。PRがmainへmergeされ、Issueがclosedになって初めてblocker解消です。
+
+### Re-evaluation
+
+Parallel eligibilityはbranch作成時だけで固定されません。少なくとも次で再評価します。
+
+1. first meaningful write前
+2. shared file/subsystemへscopeを広げる前
+3. push / PR作成前
+4. merge直前
+5. 作業中にmainが進んだと判明した時
+
+mainが進んだ場合はexact file conflictだけでなくdependency / semantic conflictも確認し、必要ならlatest mainへbranchを更新してrequired verificationを再実行します。
+
+### Eligibility
+
+別workerで同時実装してよいのは `agent/PARALLEL-WORK.md` のParallel eligibility gateをすべて満たすTaskだけです。
+
+判断材料が不足している、branch ownershipが不明、未merge contractへの依存が疑われる等の場合はfail closedで並列化しません。
+
+### Process-only changes
+
+`AGENTS.md` / `agent/` 等のprocess ruleだけを変更する作業もGitHub preflight対象です。ただしproduct implementation PRとfile/semantic conflictがなく、product Taskのcontractを変更しない場合はproduct dependency chainと独立して進められます。
+
+### Atomic remote Task claim
+
+新しいproduction `[Task]` を開始する場合、preflightを通過したworkerはmeaningful implementationを始める前に、observed latest `main` SHAから**remote branch `task/<issue-number>`** を作成してTask ownershipをclaimします。
+
+- 新規Task branchのcanonical nameはexact `task/<issue-number>` とし、slugを付けない。これにより同じTaskを同時にclaimしようとした2 workerのうち、後発のbranch作成をGitHub ref creationで失敗させる。
+- `task/<issue-number>` が既に存在する場合、force update、別slug branch、代替branchを作ってclaimを迂回してはいけない。既存branch / PRのownershipを確認し、継続または明示的cleanupを行う。
+- legacy branch（例: `task/<issue-number>-<slug>`, `feat/issue-<issue-number>-...`）が既にin-flightの場合も既存claimとして認識し、新canonical branchを競合して作らない。
+- branch作成成功後、first meaningful write前にlatest main / open PR / branchesを再取得する。preflightとclaimの間にmainまたはownership stateが変わっていた場合は再評価する。
+- first meaningful commitをremoteへ反映したら、可能な限り早くDraft PRを作成し、`Parent spec: #...` と `Closes #<task-number>` を明示する。長時間branch metadataだけでownershipを推測させない。
+- local-only branchでmeaningful implementationを進め、他workerから不可視のまま保持してはいけない。shared repositoryで並列作業するTask branchはremote coordination surfaceへ早期に公開する。
+
+このremote branch claimはcoordination lockであり、Task完了条件ではありません。Task completionは従来どおりPR mergeとIssue closeで確定します。
