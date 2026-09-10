@@ -61,7 +61,9 @@ The development backend calls `nvs_flash_secure_init_partition()` with explicit 
 
 After a recognized schema is established, the development backend writes a public synthetic probe value through encrypted `auth_nvs`, reads the raw partition bytes, and fails with `security_invariant` if that exact probe is visible in plaintext. The probe is then erased from its namespace.
 
-This verifies the encrypted NVS path without scanning for, printing, dumping, or comparing real credential values. The check is deliberately skipped before schema validation so unknown newer schemas are not modified.
+NVS encryption is configured for the entire `auth_nvs` partition, so this write-through/raw-read check exercises the same encryption boundary used by the snapshot containing TOTP and Wi-Fi credential data. It deliberately avoids scanning, printing, dumping, or comparing credential values themselves.
+
+This verifies the encrypted NVS path without exposing credential-bearing data. The check is deliberately skipped before schema validation so unknown newer schemas are not modified.
 
 ## Wi-Fi persistence boundary
 
@@ -71,7 +73,7 @@ No serial response returns the Wi-Fi password.
 
 ## Memory and logging
 
-Credential-bearing request fields, serial input buffers, temporary encoded snapshots, imported secrets, Wi-Fi passwords, and loaded internal state are explicitly wiped when their lifetime ends. Errors return only bounded status codes and never echo the source payload.
+Credential-bearing request fields, serial input buffers, temporary encoded snapshots, imported secrets, Wi-Fi passwords, and loaded internal state are explicitly wiped when their lifetime ends. Account draft/storage secret types also wipe source or destination values around relocation/destruction so vector movement and short-string storage do not intentionally leave stale secret copies behind. Errors return only bounded status codes and never echo the source payload.
 
 No storage path logs TOTP secrets, passwords, encryption keys, decrypted snapshots, or credential-bearing flash/NVS data.
 
