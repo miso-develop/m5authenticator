@@ -1,0 +1,109 @@
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build-pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      pages-artifact-id: ${{ steps.upload.outputs.artifact_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Validate release profile
+        id: profile
+        shell: bash
+        run: |
+          python scripts/validate_release.py
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          profile = json.loads(Path("firmware/release-profile.json").read_text(encoding="utf-8"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"production={'true' if profile['production_release_allowed'] else 'false'}\n")
+          PY
+      - name: Install exact Web dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build production firmware for Web Flasher
+        if: steps.profile.outputs.production == 'true'
+        run: |
+          python scripts/validate_release.py --require-production
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/project" \
+            -w /project/firmware \
+            espressif/idf:v5.5.5 \
+            bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o build/m5authenticator-merged.bin -f raw'
+          python scripts/package_firmware.py \
+            --merged-binary firmware/build/m5authenticator-merged.bin \
+            --output-dir /tmp/m5auth-release \
+            --build-commit "$GITHUB_SHA" \
+            --require-production
+          mkdir -p web/public/firmware
+          cp /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin web/public/firmware/
+          cp /tmp/m5auth-release/factory-manifest.json web/public/firmware/
+          cp /tmp/m5auth-release/update-manifest.json web/public/firmware/
+          cp /tmp/m5auth-release/release-metadata.json web/public/firmware/
+          cp /tmp/m5auth-release/SHA256SUMS web/public/firmware/
+      - name: Build static Web site
+        working-directory: web
+        env:
+          VITE_M5AUTH_FLASH_ENABLED: ${{ steps.profile.outputs.production }}
+        run: npm run build
+      - name: Verify Web lockfile is unchanged
+        run: git diff --exit-code -- web/package-lock.json
+      - name: Upload Pages staging artifact
+        id: upload
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: web/dist
+          retention-days: 1
+
+  deploy:
+    name: deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+      actions: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Delete consumed Pages staging artifact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_ARTIFACT_ID: ${{ needs.build.outputs.pages-artifact-id }}
+        run: |
+          if [ -n "$PAGES_ARTIFACT_ID" ]; then
+            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$PAGES_ARTIFACT_ID"
+          fi
