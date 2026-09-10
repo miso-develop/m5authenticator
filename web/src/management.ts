@@ -19,11 +19,14 @@ export interface DeviceSnapshot {
 }
 
 export class DeviceManagement {
+  private storageReady = false;
+
   public constructor(private readonly transport: DeviceTransport) {}
 
   public async refresh(): Promise<DeviceSnapshot> {
     const hello = parseHelloData(await this.transport.request("hello"));
-    if (!hello.storage_ready) {
+    this.storageReady = hello.storage_ready;
+    if (!this.storageReady) {
       return { hello, accounts: [], wifi: { configured: false, ssid: "" } };
     }
     const accounts = parseAccountsData(await this.transport.request("accounts.list"));
@@ -32,6 +35,7 @@ export class DeviceManagement {
   }
 
   public async provision(importSession: ImportSession): Promise<number> {
+    this.requireStorageReady();
     let transactionStarted = false;
     try {
       await this.transport.request("import.begin");
@@ -62,22 +66,27 @@ export class DeviceManagement {
   }
 
   public async renameAccount(id: number, displayName: string): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("account.rename", { id, display_name: displayName });
   }
 
   public async deleteAccount(id: number): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("account.delete", { id });
   }
 
   public async reorderAccounts(ids: number[]): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("accounts.reorder", { ids });
   }
 
   public async setWifi(ssid: string, password: string): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("wifi.set", { ssid, password });
   }
 
   public async clearWifi(): Promise<void> {
+    this.requireStorageReady();
     await this.transport.request("wifi.clear");
   }
 
@@ -88,9 +97,17 @@ export class DeviceManagement {
 
   public async factoryReset(): Promise<void> {
     await this.transport.request("factory.reset");
+    this.storageReady = false;
   }
 
   public async close(): Promise<void> {
+    this.storageReady = false;
     await this.transport.close();
+  }
+
+  private requireStorageReady(): void {
+    if (!this.storageReady) {
+      throw new Error("Device storage is not ready; management writes are blocked");
+    }
   }
 }
