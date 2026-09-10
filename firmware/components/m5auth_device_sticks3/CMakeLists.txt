@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "device.cpp"
+        "hardware_identity.cpp"
         "ui_model.cpp"
         "production_security.cpp"
     INCLUDE_DIRS "include"
