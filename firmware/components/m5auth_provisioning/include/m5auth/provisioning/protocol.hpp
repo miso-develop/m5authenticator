@@ -2,17 +2,34 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "m5auth/core/metadata.hpp"
+#include "m5auth/storage/storage.hpp"
 
 namespace m5auth::provisioning {
 
 inline constexpr std::size_t kMaxMessageBytes = 1024;
 
-std::string handle_line(
-    std::string_view line,
-    const core::DeviceMetadata& metadata
-);
+class Session {
+public:
+    Session(const core::DeviceMetadata& metadata, storage::Store& store);
+    ~Session();
+
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+
+    std::string handle_line(std::string_view line);
+
+private:
+    void clear_import();
+
+    const core::DeviceMetadata& metadata_;
+    storage::Store& store_;
+    bool import_active_{false};
+    bool import_validated_{false};
+    std::vector<storage::AccountDraft> import_accounts_;
+};
 
 std::string message_too_large_response();
 
