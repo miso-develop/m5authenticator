@@ -13,7 +13,8 @@ namespace m5auth::device::sticks3 {
 
 inline constexpr char kDeviceModel[] = "M5StickS3";
 
-bool initialize();
+void initialize();
+bool is_expected_hardware();
 [[noreturn]] void halt_unexpected_hardware();
 
 class UiController {
