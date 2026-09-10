@@ -9,6 +9,7 @@
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/device/sticks3/device.hpp"
 #include "m5auth/provisioning/protocol.hpp"
+#include "m5auth/storage/storage.hpp"
 
 #ifndef M5AUTH_BUILD_COMMIT
 #define M5AUTH_BUILD_COMMIT "unknown"
@@ -38,6 +39,11 @@ extern "C" void app_main(void) {
         M5AUTH_BUILD_COMMIT
     );
 
+    m5auth::storage::DevSecurityBackend security_backend;
+    m5auth::storage::Store store(security_backend);
+    store.initialize();
+
+    m5auth::provisioning::Session session(metadata, store);
     std::array<char, m5auth::provisioning::kMaxMessageBytes + 2> input{};
 
     while (true) {
@@ -51,6 +57,7 @@ extern "C" void app_main(void) {
         const bool complete_line = length > 0 && input[length - 1] == '\n';
         if (!complete_line && length == input.size() - 1) {
             discard_line_remainder();
+            m5auth::storage::secure_zero(input.data(), input.size());
             write_response(m5auth::provisioning::message_too_large_response());
             continue;
         }
@@ -60,8 +67,10 @@ extern "C" void app_main(void) {
             --length;
         }
 
-        write_response(m5auth::provisioning::handle_line(
-            std::string_view(input.data(), length), metadata
-        ));
+        std::string response = session.handle_line(
+            std::string_view(input.data(), length)
+        );
+        m5auth::storage::secure_zero(input.data(), input.size());
+        write_response(response);
     }
 }
