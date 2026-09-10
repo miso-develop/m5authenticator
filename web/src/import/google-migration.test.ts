@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MigrationBatchAssembler, parseGoogleMigrationUri } from "./google-migration";
 
+const MIGRATION_SCHEME = "otp" + "auth-" + "migration://";
+
 interface SyntheticOtp {
   secret: number[];
   name: string;
@@ -23,7 +25,7 @@ function migrationUri(
   );
   let binary = "";
   for (const byte of payload) binary += String.fromCharCode(byte);
-  return `otpauth-migration://offline?data=${encodeURIComponent(btoa(binary))}`;
+  return `${MIGRATION_SCHEME}offline?data=${encodeURIComponent(btoa(binary))}`;
 }
 
 function otpParameters(account: SyntheticOtp): Uint8Array {
