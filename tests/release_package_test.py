@@ -30,7 +30,7 @@ class ReleasePackagingTest(unittest.TestCase):
             with self.assertRaises(validate_release.ReleaseValidationError):
                 package_firmware.package_firmware(merged, root / "out", "abcdef123456")
 
-    def test_package_metadata_is_secret_free_and_same_image_drives_web_and_m5burner(self) -> None:
+    def test_package_metadata_is_secret_free_and_one_image_drives_distribution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             merged = root / "merged.bin"
@@ -40,6 +40,7 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertIn("factory-manifest.json", names)
             self.assertIn("update-manifest.json", names)
             self.assertIn("SHA256SUMS", names)
+            self.assertFalse(any(name.endswith("-m5burner.zip") for name in names))
 
             factory = json.loads((root / "out" / "factory-manifest.json").read_text())
             update = json.loads((root / "out" / "update-manifest.json").read_text())
@@ -47,6 +48,9 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertTrue(update["new_install_prompt_erase"])
             self.assertEqual(factory["builds"][0]["parts"], update["builds"][0]["parts"])
             self.assertEqual(factory["builds"][0]["parts"][0]["offset"], 0)
+
+            firmware_name = factory["builds"][0]["parts"][0]["path"]
+            self.assertTrue((root / "out" / firmware_name).is_file())
 
             metadata = json.loads((root / "out" / "release-metadata.json").read_text())
             self.assertFalse(metadata["production_release_allowed"])
