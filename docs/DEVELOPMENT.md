@@ -23,29 +23,23 @@ The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG 
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
 
+### Runtime hardware identity
+
+Production firmware is for M5StickS3 only. After `M5.begin`, firmware requires M5Unified runtime board detection to report `board_M5StickS3` before constructing the storage backend. Any other board halts fail-closed before storage/eFuse initialization. A successful ESP32-S3 flash or eFuse inspection is not sufficient proof of the M5Stack product model.
+
 ### Local environment (`.env`)
 
-Repository-local machine settings use a root `.env` file. `.env` is ignored by Git; only the value-free `.env.example` template is versioned.
+Repository-local machine settings use a root `.env` file. `.env` is ignored by Git; only `.env.example` is versioned.
 
 On Windows `cmd.exe`:
 
 ```text
 copy .env.example .env
-```
-
-Then edit `.env` locally and populate the supported keys:
-
-```text
-M5AUTH_IDF_VERSION=
-M5AUTH_CHIP=
-M5AUTH_PORT=
-```
-
-Do not put concrete machine-specific values in `.env.example` or documentation. `scripts\load-env.cmd` validates the local values against the repository's canonical toolchain/device requirements and exports them into the current `cmd.exe` session. Keep using `call` so the variables persist in that shell:
-
-```text
+notepad .env
 call scripts\load-env.cmd
 ```
+
+The tracked `.env.example` defines supported keys with empty values only. Set all concrete machine-local values in `.env`; do not use `.env.example` as a default-value store. `scripts\load-env.cmd` fails closed on unknown keys, validates the repository-required toolchain/target values, validates the Windows COM-port format, and exports the values into the current `cmd.exe` session. Keep using `call` so the variables persist in that shell.
 
 `.env` is for **non-secret local tooling configuration only**. Even though it is ignored by Git, never put TOTP secrets, `otpauth` payloads, Wi-Fi passwords, tokens, private keys, or other authentication material in it.
 
