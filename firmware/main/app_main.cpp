@@ -64,6 +64,10 @@ ReadResult read_request(
 
 extern "C" void app_main(void) {
     m5auth::device::sticks3::initialize();
+    if (!m5auth::device::sticks3::is_expected_hardware()) {
+        m5auth::device::sticks3::halt_unexpected_hardware();
+    }
+
     const auto metadata = m5auth::core::metadata_for(
         m5auth::device::sticks3::kDeviceModel,
         M5AUTH_BUILD_COMMIT
