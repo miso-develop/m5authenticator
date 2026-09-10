@@ -16,6 +16,13 @@ struct AccountRecord {
     std::string account;
     std::string display_name;
     std::string secret;
+
+    AccountRecord() = default;
+    AccountRecord(const AccountRecord&) = default;
+    AccountRecord& operator=(const AccountRecord&) = default;
+    AccountRecord(AccountRecord&& other) noexcept;
+    AccountRecord& operator=(AccountRecord&& other) noexcept;
+    ~AccountRecord();
 };
 
 struct State {
