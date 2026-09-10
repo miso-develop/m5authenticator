@@ -14,31 +14,25 @@ jobs:
     name: web
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           package-manager-cache: false
-
       - name: Install exact dependencies
         working-directory: web
         run: npm ci --ignore-scripts --no-audit --no-fund
-
       - name: Test Web App
         working-directory: web
         run: npm test
-
       - name: Build Web App
         working-directory: web
         run: npm run build
-
       - name: Verify Web lockfile is unchanged
         run: git diff --exit-code -- web/package-lock.json
 
@@ -46,13 +40,11 @@ jobs:
     name: firmware
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Test storage state codec
         run: >-
           g++ -std=c++20 -Wall -Wextra -Werror
@@ -62,7 +54,22 @@ jobs:
           tests/storage_state_test.cpp
           -o /tmp/m5auth-storage-state-test
           && /tmp/m5auth-storage-state-test
-
+      - name: Test trusted time state
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror -pthread
+          -Ifirmware/components/m5auth_time/include
+          firmware/components/m5auth_time/trusted_time.cpp
+          tests/trusted_time_test.cpp
+          -o /tmp/m5auth-trusted-time-test
+          && /tmp/m5auth-trusted-time-test
+      - name: Test TOTP core with RFC vectors
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror
+          -Ifirmware/components/m5auth_totp/include
+          firmware/components/m5auth_totp/totp_core.cpp
+          tests/totp_core_test.cpp
+          -o /tmp/m5auth-totp-core-test
+          && /tmp/m5auth-totp-core-test
       - name: Build with ESP-IDF 5.5.5
         run: >-
           docker run --rm
@@ -70,6 +77,5 @@ jobs:
           -w /project/firmware
           espressif/idf:v5.5.5
           bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build'
-
       - name: Verify ESP-IDF dependency lockfile is unchanged
         run: git diff --exit-code -- firmware/dependencies.lock

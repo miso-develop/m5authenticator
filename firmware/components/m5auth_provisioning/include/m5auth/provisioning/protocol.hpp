@@ -6,6 +6,7 @@
 
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/storage/storage.hpp"
+#include "m5auth/time/time_service.hpp"
 
 namespace m5auth::provisioning {
 
@@ -13,7 +14,7 @@ inline constexpr std::size_t kMaxMessageBytes = 1024;
 
 class Session {
 public:
-    Session(const core::DeviceMetadata& metadata, storage::Store& store);
+    Session(const core::DeviceMetadata& metadata, storage::Store& store, time::TimeService& time_service);
     ~Session();
 
     Session(const Session&) = delete;
@@ -26,6 +27,7 @@ private:
 
     const core::DeviceMetadata& metadata_;
     storage::Store& store_;
+    time::TimeService& time_service_;
     bool import_active_{false};
     bool import_validated_{false};
     std::vector<storage::AccountDraft> import_accounts_;

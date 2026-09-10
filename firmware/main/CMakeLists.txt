@@ -1,7 +1,13 @@
 idf_component_register(
     SRCS "app_main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES m5auth_core m5auth_provisioning m5auth_device_sticks3 m5auth_storage
+    REQUIRES
+        m5auth_core
+        m5auth_provisioning
+        m5auth_device_sticks3
+        m5auth_storage
+        m5auth_time
+        m5auth_totp
 )
 
 execute_process(
