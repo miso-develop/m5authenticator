@@ -252,7 +252,10 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
             wipe_state(&decoded);
             return Status::kCorrupt;
         }
-        decoded.accounts.push_back(std::move(record));
+        // Copy, then wipe the local secret-bearing record. Moving a short string
+        // can leave its SSO bytes behind in the moved-from stack object.
+        decoded.accounts.push_back(record);
+        secure_clear(&record.secret);
     }
 
     if (!reader.finished() || validate_state(decoded) != Status::kOk) {
@@ -260,8 +263,11 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
         return Status::kCorrupt;
     }
 
+    // Copy into the caller-owned state and wipe the temporary. This avoids
+    // leaving short-string Wi-Fi/account secrets in moved-from SSO buffers.
     wipe_state(output);
-    *output = std::move(decoded);
+    *output = decoded;
+    wipe_state(&decoded);
     return Status::kOk;
 }
 
