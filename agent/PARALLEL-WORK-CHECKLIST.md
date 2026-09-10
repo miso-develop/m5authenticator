@@ -1,8 +1,8 @@
 # Parallel Work Checklist
 
-実装worker向けの短縮チェックです。詳細・例外・定義は `PARALLEL-WORK.md` を正とします。
+実装worker向けの短縮チェックです。競合判定の詳細は `PARALLEL-WORK.md`、Task claim lifecycleは `WORK-TRACKING.md` を正とします。
 
-## Before branch / first write
+## Before Task claim / first write
 
 - [ ] latest `main` SHAを取得した
 - [ ] open/draft PRを全件確認した
@@ -13,6 +13,9 @@
 - [ ] protocol/schema/interface/state machine/security/build等のsemantic conflictがない
 - [ ] 未merge contractを前提にしない
 - [ ] latest mainだけからTaskを実装・検証できる
+- [ ] observed latest main SHAからremote `task/<issue-number>` branchを作成してatomic claimした
+- [ ] claim後にlatest main / open PR / branchesを再取得し、ownership stateが変わっていないことを確認した
+- [ ] first meaningful commit後はDraft PRを早期作成し、`Parent spec` と `Closes #<task-number>` を明示する
 
 ## Before scope expansion
 
