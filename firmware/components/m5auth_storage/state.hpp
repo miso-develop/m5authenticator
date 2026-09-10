@@ -32,6 +32,7 @@ Status encode_state(const State& state, std::vector<std::uint8_t>* output);
 Status decode_state(const std::uint8_t* data, std::size_t size, State* output);
 void wipe_state(State* state);
 void secure_zero(void* data, std::size_t size);
+void secure_clear(std::string* value);
 void secure_clear_bytes(std::vector<std::uint8_t>* bytes);
 
 }  // namespace m5auth::storage::internal
