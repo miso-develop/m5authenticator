@@ -111,3 +111,4 @@ checkpointにはsecretやcredential-bearing payloadを含めず、少なくと�
 - preflightはTask選択時だけでなく、first write前、scope拡張前、push/PR作成前、merge直前にも必要な範囲で再実行する。
 - 作業中にmainが進んだ場合はfile overlapだけでなくsemantic/dependency overlapを再評価し、必要ならlatest mainへbranchを更新して再検証する。
 - process/documentation-only changeも同ruleで競合確認し、protected `main` へ直接commitしない。
+- 新しいproduction Taskはpreflight通過後、meaningful implementation前にremote `task/<issue-number>` branchをobserved latest mainから作成してatomic claimする。branchが既に存在する場合は別branchで迂回せず、`agent/WORK-TRACKING.md` のownership ruleに従う。
