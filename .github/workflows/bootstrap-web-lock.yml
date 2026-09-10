@@ -1,0 +1,42 @@
+name: Bootstrap Web Lockfile
+
+on:
+  push:
+    branches:
+      - task/14-distribution
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - name: Generate exact lockfile
+        working-directory: web
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Verify package manifest was not rewritten
+        run: git diff --exit-code -- web/package.json
+      - name: Commit generated lockfile
+        shell: bash
+        run: |
+          if git diff --quiet -- web/package-lock.json; then
+            echo "package-lock.json already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/package-lock.json
+          git commit -m "chore: pin ESP Web Tools dependencies"
+          git push origin HEAD:task/14-distribution
