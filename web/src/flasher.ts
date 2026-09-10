@@ -1,5 +1,6 @@
 import "./style.css";
 import "esp-web-tools";
+import { runStatePreservingUpdate } from "./firmware-update";
 
 const app = document.querySelector<HTMLElement>("#flash-app");
 if (!app) throw new Error("Firmware flash root is missing");
@@ -30,20 +31,54 @@ if (!flashEnabled) {
   status.append(heading, explanation);
 } else {
   status.append(
-    flashChoice(
+    firstInstallChoice(
       "First install — erase device",
-      "Use for a new device or an intentional clean installation. This path erases flash user state before installing firmware.",
+      "Use only for a new device or an intentional clean installation. This path erases flash user state before installing firmware.",
       `${base}firmware/factory-manifest.json`,
     ),
-    flashChoice(
+    updateChoice(
       "Update — keep authenticator data",
-      "Use for a normal firmware update. When prompted, choose NOT to erase the device so accounts, Wi-Fi settings, and other auth_nvs state are preserved.",
+      "Normal updates never request a full-flash erase. Accounts, TOTP secrets, Wi-Fi settings, and UI settings in auth_nvs stay outside the firmware write range. Use the Provisioner Factory Reset action when you intentionally need to erase user state.",
       `${base}firmware/update-manifest.json`,
     ),
   );
 }
 
-function flashChoice(title: string, description: string, manifest: string): HTMLElement {
+function firstInstallChoice(title: string, description: string, manifest: string): HTMLElement {
+  const section = flashPanel(title, description);
+  const installButton = document.createElement("esp-web-install-button");
+  installButton.setAttribute("manifest", manifest);
+  section.append(installButton);
+  return section;
+}
+
+function updateChoice(title: string, description: string, manifest: string): HTMLElement {
+  const section = flashPanel(title, description);
+  const action = document.createElement("button");
+  action.type = "button";
+  action.textContent = "Update without erasing user data";
+  const progress = document.createElement("p");
+  progress.className = "notice";
+
+  action.addEventListener("click", async () => {
+    action.disabled = true;
+    progress.textContent = "Waiting for device selection...";
+    try {
+      await runStatePreservingUpdate(manifest, (state) => {
+        progress.textContent = state.message;
+      });
+    } catch (error) {
+      progress.textContent = error instanceof Error ? error.message : "Firmware update failed";
+    } finally {
+      action.disabled = false;
+    }
+  });
+
+  section.append(action, progress);
+  return section;
+}
+
+function flashPanel(title: string, description: string): HTMLElement {
   const section = document.createElement("section");
   section.className = "panel";
   const heading = document.createElement("h2");
@@ -51,8 +86,6 @@ function flashChoice(title: string, description: string, manifest: string): HTML
   const copy = document.createElement("p");
   copy.className = "hint";
   copy.textContent = description;
-  const installButton = document.createElement("esp-web-install-button");
-  installButton.setAttribute("manifest", manifest);
-  section.append(heading, copy, installButton);
+  section.append(heading, copy);
   return section;
 }
