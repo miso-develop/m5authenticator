@@ -29,7 +29,10 @@ The canonical firmware build is ESP-IDF / CMake for M5StickS3. The Web App is Va
 See:
 
 - `docs/DEVELOPMENT.md` for pinned toolchains and reproducible build/test commands.
-- `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON handshake foundation.
+- `docs/DEVICE_UI.md` for StickS3 account selection, trusted-time display, and 10-second OTP reveal behavior.
+- `docs/TIME.md` for trusted-time synchronization and TOTP readiness rules.
+- `docs/STORAGE.md` for encrypted account/Wi-Fi storage boundaries.
+- `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON provisioning protocol.
 - `docs/REPOSITORY_SECURITY.md` for repository-level security controls.
 
 ## Development process
@@ -38,7 +41,7 @@ This repository follows Loop Engineering using GitHub `[Map]` â†’ `[Decision]` â
 
 ## Security
 
-Security of authentication material is the highest-priority invariant of this project. Real secrets must never enter Git history, Issues, Pull Requests, CI logs, test fixtures, screenshots, artifacts, or external web requests.
+Security of authentication material is the highest-priority invariant of this project. Real secrets must never enter Git history, Issues/PRs, CI logs, test fixtures, screenshots, artifacts, or external web requests.
 
 If a real secret is exposed, treat it as compromised and rotate/revoke it at the source service. Do not rely on deleting a Git commit or comment as remediation.
 

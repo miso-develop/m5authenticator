@@ -25,17 +25,35 @@ GenerateResult Generator::generate_for_account(
     std::uint32_t* code
 ) const {
     if (account_id == 0 || code == nullptr) return GenerateResult::kAccountNotFound;
-    const time::Snapshot time_status = time_service_.status();
-    if (time_status.readiness == time::Readiness::kNotSynced) return GenerateResult::kNotSynced;
-    if (time_status.readiness == time::Readiness::kStale) return GenerateResult::kTimeStale;
 
-    std::uint64_t unix_seconds = 0;
-    if (!time_service_.current_unix_seconds(&unix_seconds)) return GenerateResult::kTimeStale;
+    const time::Snapshot before_storage = time_service_.status();
+    if (before_storage.readiness == time::Readiness::kNotSynced) {
+        return GenerateResult::kNotSynced;
+    }
+    if (before_storage.readiness == time::Readiness::kStale) {
+        return GenerateResult::kTimeStale;
+    }
 
     GenerateResult result = GenerateResult::kStorageError;
     const storage::Status storage_status = store_.with_account_secret(
         account_id,
         [&](std::string_view secret) {
+            const time::Snapshot current_status = time_service_.status();
+            if (current_status.readiness == time::Readiness::kNotSynced) {
+                result = GenerateResult::kNotSynced;
+                return storage::Status::kOk;
+            }
+            if (current_status.readiness == time::Readiness::kStale) {
+                result = GenerateResult::kTimeStale;
+                return storage::Status::kOk;
+            }
+
+            std::uint64_t unix_seconds = 0;
+            if (!time_service_.current_unix_seconds(&unix_seconds)) {
+                result = GenerateResult::kTimeStale;
+                return storage::Status::kOk;
+            }
+
             std::uint32_t generated = 0;
             const CoreResult core = generate(secret, unix_seconds, &generated);
             switch (core) {
@@ -50,6 +68,7 @@ GenerateResult Generator::generate_for_account(
                     result = GenerateResult::kCryptoError;
                     break;
             }
+            storage::secure_zero(&generated, sizeof(generated));
             return storage::Status::kOk;
         }
     );

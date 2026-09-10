@@ -70,6 +70,15 @@ jobs:
           tests/totp_core_test.cpp
           -o /tmp/m5auth-totp-core-test
           && /tmp/m5auth-totp-core-test
+      - name: Test StickS3 UI model
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror
+          -Ifirmware/components/m5auth_device_sticks3/include
+          -Ifirmware/components/m5auth_storage/include
+          firmware/components/m5auth_device_sticks3/ui_model.cpp
+          tests/device_ui_model_test.cpp
+          -o /tmp/m5auth-device-ui-model-test
+          && /tmp/m5auth-device-ui-model-test
       - name: Build with ESP-IDF 5.5.5
         run: >-
           docker run --rm
