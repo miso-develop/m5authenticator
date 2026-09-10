@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "state.hpp"
@@ -48,6 +49,25 @@ void round_trip_preserves_state() {
     m5auth::storage::internal::secure_clear_bytes(&encoded);
 }
 
+void accepts_exactly_32_accounts() {
+    State state;
+    state.next_id = 33;
+    for (std::uint16_t i = 0; i < 32; ++i) {
+        state.accounts.push_back(synthetic_record(i + 1, i));
+    }
+    assert(m5auth::storage::internal::validate_state(state) == Status::kOk);
+
+    std::vector<std::uint8_t> encoded;
+    assert(m5auth::storage::internal::encode_state(state, &encoded) == Status::kOk);
+    State decoded;
+    assert(m5auth::storage::internal::decode_state(encoded.data(), encoded.size(), &decoded) == Status::kOk);
+    assert(decoded.accounts.size() == 32);
+
+    m5auth::storage::internal::wipe_state(&state);
+    m5auth::storage::internal::wipe_state(&decoded);
+    m5auth::storage::internal::secure_clear_bytes(&encoded);
+}
+
 void rejects_more_than_32_accounts() {
     State state;
     state.next_id = 40;
@@ -81,12 +101,23 @@ void rejects_duplicate_order() {
     m5auth::storage::internal::wipe_state(&state);
 }
 
+void secure_draft_move_clears_source_value() {
+    m5auth::storage::AccountDraft source;
+    source.secret.resize(12, 's');
+    m5auth::storage::AccountDraft destination(std::move(source));
+    assert(source.secret.empty());
+    assert(destination.secret.size() == 12);
+    m5auth::storage::secure_clear(&destination.secret);
+}
+
 }  // namespace
 
 int main() {
     round_trip_preserves_state();
+    accepts_exactly_32_accounts();
     rejects_more_than_32_accounts();
     rejects_unknown_snapshot_format();
     rejects_duplicate_order();
+    secure_draft_move_clears_source_value();
     return 0;
 }
