@@ -21,8 +21,10 @@ CI builds with exact-pinned ESP-IDF 5.5.5 and runs:
 
 ```text
 idf.py build
-idf.py merge-bin -o build/m5authenticator-merged.bin -f raw
+idf.py merge-bin -o m5authenticator-merged.bin -f raw
 ```
+
+`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so the merged output is created as `firmware/build/m5authenticator-merged.bin`.
 
 The raw merged image is flashed at offset `0x0`. `scripts/package_firmware.py` rejects an empty image or one whose byte range reaches the protected `auth_nvs` partition. The script produces:
 
