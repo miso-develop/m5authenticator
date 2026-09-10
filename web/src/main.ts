@@ -1,39 +1,90 @@
 import "./style.css";
+import { decodeQrImage } from "./import/qr";
+import { ImportSession, type ImportSessionUpdate } from "./import/session";
+import { ImportError, type ImportedAccountPreview } from "./import/types";
 import { requestHello } from "./serial";
 
-const app = document.querySelector<HTMLElement>("#app");
-if (!app) {
-  throw new Error("Application root is missing");
-}
+const app = queryRequired<HTMLElement>("#app", "Application root is missing");
 
 app.innerHTML = `
   <section class="shell">
     <p class="eyebrow">M5 Authenticator</p>
-    <h1>Device foundation</h1>
+    <h1>Local provisioner</h1>
     <p class="description">
-      Connect an M5StickS3 over USB to verify the versioned local Web Serial handshake.
+      Import authenticator QR screenshots locally in this browser, review the accounts, and connect an M5StickS3 over USB.
     </p>
-    <button id="connect" type="button">Connect M5StickS3</button>
-    <dl id="status" class="status" aria-live="polite">
-      <div><dt>Status</dt><dd>Not connected</dd></div>
-    </dl>
+
+    <section class="panel" aria-labelledby="import-heading">
+      <h2 id="import-heading">Import accounts</h2>
+      <p class="hint">
+        Supports standard TOTP QR codes and Google Authenticator exports. Images and secrets are not uploaded or persisted.
+      </p>
+      <label class="file-label" for="qr-file">QR screenshot image</label>
+      <input id="qr-file" type="file" accept="image/*" />
+      <p id="import-status" class="notice" aria-live="polite">No accounts imported.</p>
+      <ol id="account-list" class="account-list"></ol>
+      <button id="clear-import" class="secondary" type="button" disabled>Clear import session</button>
+    </section>
+
+    <section class="panel" aria-labelledby="device-heading">
+      <h2 id="device-heading">Device</h2>
+      <button id="connect" type="button">Connect M5StickS3</button>
+      <dl id="status" class="status" aria-live="polite">
+        <div><dt>Status</dt><dd>Not connected</dd></div>
+      </dl>
+    </section>
   </section>
 `;
 
-const button = document.querySelector<HTMLButtonElement>("#connect");
-const status = document.querySelector<HTMLElement>("#status");
+const connectButton = queryRequired<HTMLButtonElement>("#connect", "Device connect button is missing");
+const deviceStatus = queryRequired<HTMLElement>("#status", "Device status area is missing");
+const qrFileInput = queryRequired<HTMLInputElement>("#qr-file", "QR file input is missing");
+const importStatus = queryRequired<HTMLElement>("#import-status", "Import status area is missing");
+const accountList = queryRequired<HTMLOListElement>("#account-list", "Imported account list is missing");
+const clearImportButton = queryRequired<HTMLButtonElement>("#clear-import", "Import clear button is missing");
+const importSession = new ImportSession();
 
-if (!button || !status) {
-  throw new Error("Foundation UI failed to initialize");
-}
+qrFileInput.addEventListener("change", async () => {
+  const file = qrFileInput.files?.[0];
+  if (!file) {
+    return;
+  }
 
-button.addEventListener("click", async () => {
-  button.disabled = true;
-  status.innerHTML = "<div><dt>Status</dt><dd>Connecting…</dd></div>";
+  qrFileInput.disabled = true;
+  importStatus.textContent = "Decoding QR image locally…";
+
+  try {
+    const decodedText = await decodeQrImage(file);
+    const update = importSession.importDecodedText(decodedText);
+    renderImportUpdate(update);
+  } catch (error) {
+    importStatus.textContent = error instanceof ImportError ? error.message : "QR import failed.";
+    renderAccountList(importSession.preview());
+  } finally {
+    qrFileInput.value = "";
+    qrFileInput.disabled = false;
+    clearImportButton.disabled = !importSession.hasSensitiveState();
+  }
+});
+
+clearImportButton.addEventListener("click", () => {
+  importSession.clear();
+  renderAccountList([]);
+  importStatus.textContent = "Import session cleared.";
+  clearImportButton.disabled = true;
+});
+
+window.addEventListener("pagehide", () => {
+  importSession.clear();
+});
+
+connectButton.addEventListener("click", async () => {
+  connectButton.disabled = true;
+  deviceStatus.innerHTML = "<div><dt>Status</dt><dd>Connecting…</dd></div>";
 
   try {
     const hello = await requestHello();
-    status.innerHTML = `
+    deviceStatus.innerHTML = `
       <div><dt>Status</dt><dd>Compatible device</dd></div>
       <div><dt>Device</dt><dd>${escapeText(hello.device)}</dd></div>
       <div><dt>Firmware</dt><dd>${escapeText(hello.firmware)}</dd></div>
@@ -43,11 +94,42 @@ button.addEventListener("click", async () => {
     `;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Connection failed";
-    status.innerHTML = `<div><dt>Status</dt><dd>${escapeText(message)}</dd></div>`;
+    deviceStatus.innerHTML = `<div><dt>Status</dt><dd>${escapeText(message)}</dd></div>`;
   } finally {
-    button.disabled = false;
+    connectButton.disabled = false;
   }
 });
+
+function renderImportUpdate(update: ImportSessionUpdate): void {
+  renderAccountList(update.accounts);
+  if (update.batch) {
+    importStatus.textContent = `Google Authenticator export: ${update.batch.received} of ${update.batch.total} QR codes received.`;
+    return;
+  }
+
+  importStatus.textContent = `${update.accounts.length} account${update.accounts.length === 1 ? "" : "s"} ready for review.`;
+}
+
+function renderAccountList(accounts: ImportedAccountPreview[]): void {
+  accountList.replaceChildren();
+  for (const account of accounts) {
+    const item = document.createElement("li");
+    const title = document.createElement("strong");
+    const details = document.createElement("span");
+    title.textContent = account.issuer ? `${account.issuer} — ${account.account}` : account.account;
+    details.textContent = `${account.algorithm} · ${account.digits} digits · ${account.period}s`;
+    item.append(title, details);
+    accountList.append(item);
+  }
+}
+
+function queryRequired<T extends Element>(selector: string, message: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) {
+    throw new Error(message);
+  }
+  return element;
+}
 
 function escapeText(value: string): string {
   const element = document.createElement("span");
