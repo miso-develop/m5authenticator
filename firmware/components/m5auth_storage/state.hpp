@@ -16,6 +16,9 @@ struct AccountRecord {
     std::string account;
     std::string display_name;
     std::string secret;
+
+    AccountRecord& operator=(const AccountRecord& other);
+    ~AccountRecord();
 };
 
 struct State {
