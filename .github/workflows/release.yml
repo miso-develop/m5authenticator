@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release-firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require production release profile
+        run: python scripts/validate_release.py --require-production
+      - name: Verify tag matches firmware version
+        shell: bash
+        run: |
+          EXPECTED="v$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('firmware/release-profile.json').read_text(encoding='utf-8'))['firmware_version'])
+          PY
+          )"
+          if [ "$GITHUB_REF_NAME" != "$EXPECTED" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match release profile $EXPECTED"
+            exit 1
+          fi
+      - name: Build and merge with ESP-IDF 5.5.5
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/project" \
+            -w /project/firmware \
+            espressif/idf:v5.5.5 \
+            bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
+      - name: Package the exact CI-built firmware
+        run: |
+          python scripts/package_firmware.py \
+            --merged-binary firmware/build/m5authenticator-merged.bin \
+            --output-dir /tmp/m5auth-release \
+            --build-commit "$GITHUB_SHA" \
+            --require-production
+          git diff --exit-code -- firmware/dependencies.lock
+      - name: Publish GitHub Release directly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin \
+            /tmp/m5auth-release/factory-manifest.json \
+            /tmp/m5auth-release/update-manifest.json \
+            /tmp/m5auth-release/release-metadata.json \
+            /tmp/m5auth-release/SHA256SUMS \
+            --verify-tag \
+            --title "M5Authenticator $GITHUB_REF_NAME" \
+            --generate-notes

@@ -34,6 +34,7 @@ See:
 - `docs/TIME.md` for trusted-time synchronization and TOTP readiness rules.
 - `docs/STORAGE.md` for encrypted account/Wi-Fi storage boundaries.
 - `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON provisioning protocol.
+- `docs/DISTRIBUTION.md` for the Web Flasher, GitHub Releases, M5Burner, and state-preserving update contract.
 - `docs/REPOSITORY_SECURITY.md` for repository-level security controls.
 
 ## Development process

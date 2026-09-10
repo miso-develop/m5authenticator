@@ -1,20 +1,25 @@
 # Secure Account Storage
 
-V1 keeps user/security state in the dedicated `auth_nvs` partition. This partition is separate from both OTA application slots so normal firmware updates preserve provisioned state.
+V1 keeps user/security state in the dedicated `auth_nvs` partition. This partition is separate from both OTA application slots and from the normal merged firmware write range so ordinary firmware updates preserve provisioned state.
 
 ## Partition layout
 
-The current 8 MiB M5StickS3 layout is defined by `firmware/partitions.csv`:
+The V1 8 MiB M5StickS3 release layout is defined by `firmware/partitions.csv`:
 
-| Partition | Purpose |
-| --- | --- |
-| `nvs` | ESP-IDF/system NVS boundary; not the canonical store for authenticator credentials |
-| `otadata` | dual-OTA selection metadata |
-| `phy_init` | PHY initialization data |
-| `auth_nvs` | canonical encrypted authenticator/Wi-Fi user state |
-| `ota_0` / `ota_1` | dual firmware OTA slots |
+| Partition | Offset | Size | Purpose |
+| --- | ---: | ---: | --- |
+| `nvs` | `0x9000` | `0x6000` | ESP-IDF/system NVS boundary; not the canonical store for authenticator credentials |
+| `otadata` | `0xf000` | `0x2000` | dual-OTA selection metadata |
+| `phy_init` | `0x11000` | `0x1000` | PHY initialization data |
+| `ota_0` | `0x30000` | `0x3d0000` | firmware OTA slot 0 |
+| `ota_1` | `0x400000` | `0x3d0000` | firmware OTA slot 1 |
+| `auth_nvs` | `0x7d0000` | `0x30000` | canonical encrypted authenticator/Wi-Fi user state |
 
-`auth_nvs` starts at `0x12000` and is `0x1e000` bytes. App partitions start at `0x30000`, so user state does not overlap either OTA slot.
+`auth_nvs` occupies the final 192 KiB of the 8 MiB flash and starts exactly where `ota_1` ends. The OTA offsets and 0x3d0000-byte slot sizes remain unchanged.
+
+Task #14 deliberately moved `auth_nvs` from the early development offset `0x12000` to the end of flash before a production release existed. ESP-IDF `idf.py merge-bin -f raw` produces an offset-0 merged image containing the bootloader, partition table, OTA metadata/application and required build outputs. Without `--pad-to-size`, that merged image ends within the application write range. Keeping `auth_nvs` after both OTA slots therefore prevents a normal non-erasing merged-image update from writing `0xFF` gap bytes over authenticator state.
+
+This one-time pre-release layout transition does **not** preserve development data written by firmware using the old `0x12000` layout. Development devices crossing this boundary must be treated as requiring a clean reprovision. After this V1 release layout is established, further `auth_nvs` relocation requires an explicit migration/update design and must not be done casually.
 
 ## Storage schema
 
@@ -43,17 +48,17 @@ Maximum account count is 32. Field and snapshot sizes are bounded before persist
 
 A complete account import is staged in RAM and committed by replacing the single snapshot blob only after `import.validate`. A failed validation or failed commit leaves the previously committed snapshot as the canonical state.
 
-Metadata APIs intentionally return only id/order/issuer/account/display name. There is no generic stored-secret read/export API. Firmware consumers that later need a TOTP secret or Wi-Fi password use callback-style `with_*` methods so decrypted secret material has a narrow lifetime and is wiped after the consumer returns.
+Metadata APIs intentionally return only id/order/issuer/account/display name. There is no generic stored-secret read/export API. Firmware consumers that need a TOTP secret or Wi-Fi password use callback-style `with_*` methods so decrypted secret material has a narrow lifetime and is wiped after the consumer returns.
 
 ## Development Security Backend
 
-Task #9 uses `DevSecurityBackend` only.
+Development builds use `DevSecurityBackend` only until Task #26 replaces it for production.
 
 - It does **not** read or burn eFuse.
 - Its XTS key material is deliberately public and synthetic.
 - `production_release_allowed()` is always false.
-- `hello` reports `security_profile: development` so later Web/device status can make the profile explicit.
-- Production HMAC/eFuse-backed keying is not implemented here and remains exclusively owned by Task #26.
+- `hello` reports `security_profile: development` so Web/device status makes the profile explicit.
+- Production HMAC/eFuse-backed keying remains exclusively owned by Task #26.
 
 The development backend calls `nvs_flash_secure_init_partition()` with explicit synthetic XTS configuration. It never falls back to plaintext NVS initialization.
 
@@ -81,4 +86,4 @@ No storage path logs TOTP secrets, passwords, encryption keys, decrypted snapsho
 
 `Store::factory_reset()` erases only the `auth_nvs` user-state partition and recreates schema 1 through the active security backend. It does not touch eFuse or device identity/security state.
 
-Task #9 does not expose Factory Reset as an unauthenticated/accidental device-side UI operation. The explicit destructive Web/USB confirmation flow remains owned by Task #13.
+V1 exposes this only through the explicit Web/USB confirmation flow. A normal firmware update is a separate path and must not erase `auth_nvs`.
