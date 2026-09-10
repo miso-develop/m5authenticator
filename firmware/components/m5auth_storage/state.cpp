@@ -4,6 +4,7 @@
 #include <array>
 #include <limits>
 #include <unordered_set>
+#include <utility>
 
 namespace m5auth::storage::internal {
 namespace {
@@ -119,6 +120,35 @@ void secure_clear_bytes(std::vector<std::uint8_t>* bytes) {
         secure_zero(bytes->data(), bytes->size());
     }
     bytes->clear();
+}
+
+AccountRecord::AccountRecord(AccountRecord&& other) noexcept
+    : id(other.id),
+      order(other.order),
+      issuer(std::move(other.issuer)),
+      account(std::move(other.account)),
+      display_name(std::move(other.display_name)),
+      secret(other.secret) {
+    secure_clear(&other.secret);
+}
+
+AccountRecord& AccountRecord::operator=(AccountRecord&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    secure_clear(&secret);
+    id = other.id;
+    order = other.order;
+    issuer = std::move(other.issuer);
+    account = std::move(other.account);
+    display_name = std::move(other.display_name);
+    secret = other.secret;
+    secure_clear(&other.secret);
+    return *this;
+}
+
+AccountRecord::~AccountRecord() {
+    secure_clear(&secret);
 }
 
 void wipe_state(State* state) {
@@ -252,8 +282,6 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
             wipe_state(&decoded);
             return Status::kCorrupt;
         }
-        // Copy, then wipe the local secret-bearing record. Moving a short string
-        // can leave its SSO bytes behind in the moved-from stack object.
         decoded.accounts.push_back(record);
         secure_clear(&record.secret);
     }
@@ -263,8 +291,6 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
         return Status::kCorrupt;
     }
 
-    // Copy into the caller-owned state and wipe the temporary. This avoids
-    // leaving short-string Wi-Fi/account secrets in moved-from SSO buffers.
     wipe_state(output);
     *output = decoded;
     wipe_state(&decoded);
@@ -274,6 +300,31 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
 }  // namespace m5auth::storage::internal
 
 namespace m5auth::storage {
+
+AccountDraft::AccountDraft(AccountDraft&& other) noexcept
+    : issuer(std::move(other.issuer)),
+      account(std::move(other.account)),
+      display_name(std::move(other.display_name)),
+      secret(other.secret) {
+    internal::secure_clear(&other.secret);
+}
+
+AccountDraft& AccountDraft::operator=(AccountDraft&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    internal::secure_clear(&secret);
+    issuer = std::move(other.issuer);
+    account = std::move(other.account);
+    display_name = std::move(other.display_name);
+    secret = other.secret;
+    internal::secure_clear(&other.secret);
+    return *this;
+}
+
+AccountDraft::~AccountDraft() {
+    internal::secure_clear(&secret);
+}
 
 Status validate_account_draft(const AccountDraft& draft) {
     return internal::validate_account_draft(draft);
