@@ -10,15 +10,31 @@
 namespace m5auth::device::sticks3 {
 namespace {
 
+constexpr std::uint8_t kReadableTextSize = 2;
+
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
     return microseconds <= 0 ? 0 : static_cast<std::uint64_t>(microseconds / 1'000);
 }
 
+const char* compact_storage_status(storage::Status status) {
+    switch (status) {
+        case storage::Status::kOk:
+            return "READY";
+        case storage::Status::kProductionInitRequired:
+            return "INIT REQUIRED";
+        case storage::Status::kNotReady:
+            return "NOT READY";
+        default:
+            return "ERROR";
+    }
+}
+
 void heading(const char* line2) {
     M5.Display.clear();
     M5.Display.setTextColor(0xffff, 0x0000);
-    M5.Display.setTextSize(1);
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
     M5.Display.println("M5 Authenticator");
     M5.Display.println(line2);
@@ -26,10 +42,10 @@ void heading(const char* line2) {
 
 void show_hold_prompt() {
     heading("IRREVERSIBLE EFUSE");
-    M5.Display.println("Production security init");
-    M5.Display.println("erases DEV auth data.");
-    M5.Display.println("HOLD button to confirm");
-    M5.Display.println("or wait to cancel.");
+    M5.Display.println("Security init");
+    M5.Display.println("Erases DEV data");
+    M5.Display.println("HOLD to confirm");
+    M5.Display.println("Wait = cancel");
 }
 
 }  // namespace
@@ -39,11 +55,11 @@ void show_production_security_setup(
     storage::Status storage_status
 ) {
     heading("PRODUCTION SETUP");
-    M5.Display.printf("HMAC key: %u\n", static_cast<unsigned>(security.hmac_key_id));
+    M5.Display.printf("HMAC: KEY%u\n", static_cast<unsigned>(security.hmac_key_id));
     M5.Display.printf("Key: %s\n", storage::efuse_key_state_name(security.key_state));
-    M5.Display.printf("Storage: %s\n", storage::status_code(storage_status));
-    M5.Display.println("Connect Web Provisioner");
-    M5.Display.println("eFuse is NOT changed yet");
+    M5.Display.printf("Store: %s\n", compact_storage_status(storage_status));
+    M5.Display.println("Open Web setup");
+    M5.Display.println("eFuse unchanged");
 }
 
 bool confirm_production_security(std::uint32_t timeout_ms) {
@@ -52,10 +68,9 @@ bool confirm_production_security(std::uint32_t timeout_ms) {
     if (released_since_entry) {
         show_hold_prompt();
     } else {
-        heading("RELEASE BUTTON FIRST");
-        M5.Display.println("A fresh long-hold is");
-        M5.Display.println("required to confirm.");
-        M5.Display.println("Release, then hold.");
+        heading("RELEASE BUTTON");
+        M5.Display.println("Fresh hold needed");
+        M5.Display.println("Release, then hold");
     }
 
     const std::uint64_t started = monotonic_ms();
@@ -71,15 +86,15 @@ bool confirm_production_security(std::uint32_t timeout_ms) {
             }
         } else if (M5.BtnA.wasHold()) {
             heading("DEVICE CONFIRMED");
-            M5.Display.println("Initializing security...");
+            M5.Display.println("Initializing...");
             return true;
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
-    heading("CONFIRMATION EXPIRED");
-    M5.Display.println("No eFuse change made.");
-    M5.Display.println("Return to Web Provisioner.");
+    heading("CONFIRM EXPIRED");
+    M5.Display.println("No eFuse change");
+    M5.Display.println("Return to Web setup");
     return false;
 }
 
