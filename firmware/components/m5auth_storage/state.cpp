@@ -122,35 +122,6 @@ void secure_clear_bytes(std::vector<std::uint8_t>* bytes) {
     bytes->clear();
 }
 
-AccountRecord::AccountRecord(AccountRecord&& other) noexcept
-    : id(other.id),
-      order(other.order),
-      issuer(std::move(other.issuer)),
-      account(std::move(other.account)),
-      display_name(std::move(other.display_name)),
-      secret(other.secret) {
-    secure_clear(&other.secret);
-}
-
-AccountRecord& AccountRecord::operator=(AccountRecord&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
-    secure_clear(&secret);
-    id = other.id;
-    order = other.order;
-    issuer = std::move(other.issuer);
-    account = std::move(other.account);
-    display_name = std::move(other.display_name);
-    secret = other.secret;
-    secure_clear(&other.secret);
-    return *this;
-}
-
-AccountRecord::~AccountRecord() {
-    secure_clear(&secret);
-}
-
 void wipe_state(State* state) {
     if (state == nullptr) {
         return;
@@ -291,6 +262,8 @@ Status decode_state(const std::uint8_t* data, std::size_t size, State* output) {
         return Status::kCorrupt;
     }
 
+    // Copy into the caller-owned state and wipe the temporary. This avoids
+    // leaving short-string Wi-Fi/account secrets in moved-from SSO buffers.
     wipe_state(output);
     *output = decoded;
     wipe_state(&decoded);
