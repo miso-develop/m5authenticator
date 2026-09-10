@@ -23,6 +23,10 @@ class DeviceIdentityGuardTest(unittest.TestCase):
         self.assertLess(guard, store)
         self.assertLess(halt, store)
 
+    def test_main_task_stack_has_m5unified_initialization_headroom(self) -> None:
+        defaults = (ROOT / "firmware" / "sdkconfig.defaults").read_text(encoding="utf-8")
+        self.assertIn("CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192", defaults)
+
 
 if __name__ == "__main__":
     unittest.main()
