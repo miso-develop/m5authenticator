@@ -25,11 +25,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
-          cache: ""
-
-      - name: Generate lockfile for foundation bootstrap
-        working-directory: web
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          package-manager-cache: false
 
       - name: Install exact dependencies
         working-directory: web
@@ -43,13 +39,8 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - name: Upload generated Web lockfile
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: web-lockfile
-          path: web/package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+      - name: Verify Web lockfile is unchanged
+        run: git diff --exit-code -- web/package-lock.json
 
   firmware:
     name: firmware
@@ -70,10 +61,5 @@ jobs:
           espressif/idf:v5.5.5
           bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build'
 
-      - name: Upload generated ESP-IDF dependency lockfile
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: firmware-lockfile
-          path: firmware/dependencies.lock
-          if-no-files-found: error
-          retention-days: 1
+      - name: Verify ESP-IDF dependency lockfile is unchanged
+        run: git diff --exit-code -- firmware/dependencies.lock

@@ -1,6 +1,7 @@
 import { buildHelloRequest, parseHelloResponse, type HelloData } from "./protocol";
 
 const MAX_RESPONSE_BYTES = 4096;
+const HELLO_TIMEOUT_MS = 5000;
 
 interface SerialPortOptions {
   baudRate: number;
@@ -19,6 +20,51 @@ interface SerialLike {
 
 function browserSerial(): SerialLike | undefined {
   return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
+}
+
+async function readHelloLine(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  let receivedBytes = 0;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error("Device hello response timed out"));
+    }, HELLO_TIMEOUT_MS);
+  });
+
+  try {
+    while (receivedBytes <= MAX_RESPONSE_BYTES) {
+      const { value, done } = await Promise.race([reader.read(), timeout]);
+      if (done) {
+        break;
+      }
+      if (value) {
+        receivedBytes += value.byteLength;
+        if (receivedBytes > MAX_RESPONSE_BYTES) {
+          throw new Error("Device hello response was too large");
+        }
+        pending += decoder.decode(value, { stream: true });
+      }
+
+      const newline = pending.indexOf("\n");
+      if (newline >= 0) {
+        return pending.slice(0, newline).replace(/\r$/, "");
+      }
+    }
+
+    throw new Error("Device hello response was missing");
+  } finally {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cancellation so the serial port can close cleanly.
+    }
+  }
 }
 
 export async function requestHello(): Promise<HelloData> {
@@ -44,30 +90,12 @@ export async function requestHello(): Promise<HelloData> {
     }
 
     const reader = port.readable.getReader();
-    const decoder = new TextDecoder();
-    let pending = "";
-
     try {
-      while (pending.length <= MAX_RESPONSE_BYTES) {
-        const { value, done } = await reader.read();
-        if (done) {
-          break;
-        }
-        if (value) {
-          pending += decoder.decode(value, { stream: true });
-        }
-
-        const newline = pending.indexOf("\n");
-        if (newline >= 0) {
-          const line = pending.slice(0, newline).replace(/\r$/, "");
-          return parseHelloResponse(line, requestId);
-        }
-      }
+      const line = await readHelloLine(reader);
+      return parseHelloResponse(line, requestId);
     } finally {
       reader.releaseLock();
     }
-
-    throw new Error("Device hello response was missing or too large");
   } finally {
     await port.close();
   }

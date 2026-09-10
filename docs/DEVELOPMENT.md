@@ -45,6 +45,19 @@ npm run dev
 
 The Web App is Vanilla TypeScript. Runtime CDN, remote JavaScript/CSS/fonts, analytics, remote error reporting, and dynamic remote module loading are not permitted.
 
+## CI storage policy
+
+GitHub Actions artifacts are not a default persistence mechanism for this repository. CI should build and verify without uploading an artifact unless a downstream workflow or explicit human validation requires that exact CI-produced output.
+
+When an Actions artifact is unavoidable:
+
+- use the minimum practical retention period; default to `retention-days: 1` unless a documented reason requires longer
+- delete the artifact as soon as it has been consumed when the workflow/tooling supports immediate deletion
+- do not retain duplicate or intermediate build outputs
+- never upload credential-bearing data, secret material, decrypted stores, logs, dumps, or other prohibited security material
+
+Long-lived release binaries belong in GitHub Release assets rather than Actions artifact storage. A separate storage decision must be made before introducing transient external CI build storage.
+
 ## Security checks
 
 From the repository root:
