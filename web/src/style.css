@@ -4,29 +4,19 @@
   background: #f5f5f5;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-}
-
-button,
-input {
-  font: inherit;
-}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+button, input { font: inherit; }
 
 #app {
   min-height: 100vh;
   display: grid;
-  place-items: center;
+  place-items: start center;
   padding: 24px;
 }
 
 .shell {
-  width: min(100%, 680px);
+  width: min(100%, 760px);
   padding: 32px;
   border: 1px solid #d4d4d4;
   border-radius: 20px;
@@ -41,25 +31,28 @@ input {
   text-transform: uppercase;
 }
 
-h1 {
-  margin: 0;
-  font-size: 2rem;
-}
-
-h2 {
-  margin: 0;
-  font-size: 1.2rem;
-}
-
-.description,
-.hint {
-  line-height: 1.6;
-}
+h1 { margin: 0; font-size: 2rem; }
+h2 { margin: 0; font-size: 1.2rem; }
+.description, .hint { line-height: 1.6; }
 
 .panel {
   margin-top: 28px;
   padding-top: 24px;
   border-top: 1px solid #e5e5e5;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.badge {
+  padding: 4px 9px;
+  border: 1px solid #d4d4d4;
+  border-radius: 999px;
+  font-size: 0.8rem;
 }
 
 .hint {
@@ -68,20 +61,35 @@ h2 {
   font-size: 0.95rem;
 }
 
-.file-label {
+label, .file-label {
   display: block;
-  margin-bottom: 8px;
+  margin: 12px 0 6px;
   font-weight: 600;
 }
 
-input[type="file"] {
+input[type="file"], input[type="text"], input[type="password"] {
   width: 100%;
 }
 
-button {
-  width: 100%;
+input[type="text"], input[type="password"] {
+  padding: 9px 10px;
+  border: 1px solid #a3a3a3;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 12px;
-  padding: 12px 16px;
+}
+
+.actions.compact { margin-top: 8px; }
+
+button {
+  min-height: 42px;
+  padding: 10px 14px;
   border: 1px solid #171717;
   border-radius: 10px;
   background: #171717;
@@ -89,21 +97,21 @@ button {
   cursor: pointer;
 }
 
-button.secondary {
-  background: #ffffff;
-  color: #171717;
-}
+.actions button { flex: 1 1 150px; }
+button.secondary { background: #ffffff; color: #171717; }
+button.small { min-height: 34px; padding: 6px 10px; }
+button.danger-button { background: #7f1d1d; border-color: #7f1d1d; }
 
-button:disabled,
-input:disabled {
-  cursor: wait;
-  opacity: 0.6;
+button:disabled, input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .notice {
   min-height: 1.5em;
   margin: 16px 0 0;
   color: #404040;
+  overflow-wrap: anywhere;
 }
 
 .account-list {
@@ -111,58 +119,28 @@ input:disabled {
   padding-left: 24px;
 }
 
-.account-list:empty {
-  display: none;
-}
+.account-list:empty { display: none; }
+.account-list li { padding: 10px 0; }
+.account-list strong, .account-list span { display: block; overflow-wrap: anywhere; }
+.account-list span { margin-top: 3px; color: #525252; font-size: 0.9rem; }
+.managed-account input { margin-top: 8px; }
 
-.account-list li {
-  padding: 8px 0;
-}
-
-.account-list strong,
-.account-list span {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.account-list span {
-  margin-top: 3px;
-  color: #525252;
-  font-size: 0.9rem;
-}
-
-.status {
-  margin: 24px 0 0;
-}
-
+.status { margin: 20px 0 0; }
 .status div {
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 160px 1fr;
   gap: 12px;
   padding: 8px 0;
   border-top: 1px solid #e5e5e5;
 }
+.status dt { font-weight: 600; }
+.status dd { margin: 0; overflow-wrap: anywhere; }
 
-.status dt {
-  font-weight: 600;
-}
-
-.status dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
+.danger { border-top-color: #fecaca; }
 
 @media (max-width: 560px) {
-  #app {
-    padding: 12px;
-  }
-
-  .shell {
-    padding: 24px;
-  }
-
-  .status div {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
+  #app { padding: 12px; }
+  .shell { padding: 24px; }
+  .status div { grid-template-columns: 1fr; gap: 4px; }
+  .panel-heading { align-items: flex-start; flex-direction: column; }
 }

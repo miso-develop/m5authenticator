@@ -9,6 +9,8 @@ Requests use `{"v":1,"id":42,"op":"hello","params":{}}`; responses use the same 
 ### `hello`
 Returns device/firmware/protocol/storage/build metadata, security profile/storage readiness/production eligibility, and trusted-time state/source/age/resync metadata. All are non-secret.
 
+The Web Provisioner validates the response envelope and protocol version before enabling management actions. Unsupported protocol versions fail closed.
+
 ## Trusted time
 
 ### `time.status`
@@ -25,12 +27,24 @@ Accepts exact integer `unix_seconds` from the local Web Provisioner, bounded to 
 
 Secret-bearing import is write-directional only: `import.begin -> import.item * N -> import.validate -> import.commit`. At most 32 items are accepted. `import.cancel` wipes the in-memory transaction. A validation/commit failure does not intentionally modify the previously committed snapshot. Import secrets never appear in responses or logs.
 
+The Web Provisioner keeps QR-decoded secret bytes inside its ephemeral import session, converts each secret to Base32 only for the corresponding `import.item` request, and clears the import session after a successful commit.
+
 ## Wi-Fi
 
 `wifi.set` stores SSID/password in encrypted `auth_nvs`; password is write-only. `wifi.status` returns only configured state and SSID. `wifi.clear` removes the stored credentials. Runtime NTP explicitly uses ESP-IDF `WIFI_STORAGE_RAM`, so default flash-backed Wi-Fi persistence is not canonical.
+
+## Factory Reset
+
+### `factory.reset`
+
+Erases and reinitializes the `auth_nvs` user partition through the active Security Backend. It clears any in-memory import transaction first. The reset is serialized against NTP synchronization so a periodic Wi-Fi credential read cannot race the partition erase.
+
+Factory Reset removes accounts, stored TOTP secrets, Wi-Fi credentials, selection/settings stored in the user partition, and returns the device to an unprovisioned-equivalent user state. It does **not** read, burn, rotate, or erase eFuse security material.
+
+The Web UI exposes this operation only after an explicit destructive confirmation (`RESET` plus a browser confirmation dialog).
 
 ## Fail-closed limits
 
 Maximum request line is 1024 bytes. Malformed JSON, invalid id, unsupported protocol/version/op, oversized requests, and invalid USB timestamps are rejected. Storage schema/security failures block storage operations. Current-boot time starts unsynchronized; TOTP generation remains blocked until NTP or USB succeeds, and becomes blocked again after more than 24 hours without trusted synchronization.
 
-Factory Reset remains owned by Task #13. The protocol vocabulary intentionally contains no operation that reads or exports stored TOTP secrets.
+The protocol vocabulary intentionally contains no operation that reads or exports stored TOTP secrets.
