@@ -12,6 +12,7 @@ build/
 .pio/
 
 # ESP-IDF / local build state
+firmware/sdkconfig
 sdkconfig.old
 managed_components/
 
