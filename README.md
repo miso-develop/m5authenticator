@@ -1,5 +1,7 @@
 # M5 Authenticator
 
+**English** | [日本語](README.ja.md)
+
 A compact TOTP authenticator project for M5Stack devices, starting with **M5StickS3**.
 
 > [!IMPORTANT]
