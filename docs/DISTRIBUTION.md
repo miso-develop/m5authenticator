@@ -14,7 +14,15 @@ The current main profile is intentionally development-only with `production_rele
 - a public/synthetic development storage key must never be accepted as production credential protection;
 - M5Authenticator-specific eFuse programming is not a release prerequisite or supported V1 security path.
 
-The target implementation chain is #51-#55, followed by release-contract Task #56 and final security closeout Task #15. Only the closeout may enable production release eligibility after the exact implementation is validated. Changing only a tag does not bypass the gate.
+The current prerequisite chain is:
+
+```text
+#58 -> #51 -> +-> #52 -+
+              +-> #53 -+-> #54 -> #55 -> #56 -> #15
+#44 (code merged; physical re-test pending) -----> #56
+```
+
+#58 is repository-scanner hardening required before #51 introduces structured cryptographic fixtures. #44's code is already in main, but its remaining non-destructive StickS3 physical validation is an independent release-contract blocker. Task #56 may begin only after both #44 and #55 are complete. Task #15 performs the final security closeout and is the only stage that may enable production release eligibility after the exact implementation is validated. Changing only a tag does not bypass the gate.
 
 ## Canonical firmware package
 
@@ -79,7 +87,7 @@ Target V1 production metadata is:
 - `VAULT_FORMAT_VERSION = 1`
 - security profile representing application-level Encrypted Vault + Device RAM-only VMK
 
-Task #55 activates the target runtime tuple only when complete end-to-end semantics are implemented. Task #56 replaces development release-profile assumptions. Task #15 performs final security verification and is the gate for enabling production eligibility.
+Task #55 activates the target runtime tuple only when complete end-to-end semantics are implemented. Task #56 replaces development release-profile assumptions after #44/#55 are complete. Task #15 performs final security verification and is the gate for enabling production eligibility.
 
 No release validation path depends on HMAC eFuse initialization.
 
