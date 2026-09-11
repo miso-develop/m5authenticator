@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "m5auth/storage/storage.hpp"
 #include "m5auth/time/trusted_time.hpp"
+#include "m5auth/vault_runtime/runtime.hpp"
 
 struct esp_netif_obj;
 
@@ -19,6 +20,7 @@ inline constexpr std::uint64_t kMaxAcceptedUnixSeconds = 4'102'444'800ULL;
 enum class SyncResult {
     kOk,
     kNotConfigured,
+    kLocked,
     kNotDue,
     kInvalidTime,
     kNetworkUnavailable,
@@ -30,7 +32,13 @@ const char* sync_result_code(SyncResult result);
 
 class TimeService {
 public:
+    // Legacy development path retained only for non-canonical tests until #56
+    // removes/reclassifies the historical Protocol 1 implementation.
     TimeService(storage::Store& store, TrustedClock& clock);
+
+    // Canonical Protocol v2 path. Wi-Fi credentials are opened transiently from
+    // the application-level Vault and are therefore inaccessible while LOCKED.
+    TimeService(vault_runtime::Runtime& runtime, TrustedClock& clock);
     ~TimeService();
 
     TimeService(const TimeService&) = delete;
@@ -45,13 +53,13 @@ public:
 
     bool start_periodic_resync();
 
-    // Factory Reset must not race a periodic NTP credential read. Both paths use
-    // sync_mutex_, and reset tears down transient network state before erasing auth_nvs.
-    storage::Status factory_reset_user_state() {
-        std::lock_guard<std::mutex> lock(sync_mutex_);
-        teardown_network();
-        return store_.factory_reset();
-    }
+    // Stop/deinitialize any credential-bearing transient network state before a
+    // Vault/registration Factory Reset. The caller owns persistent-state erase.
+    void prepare_factory_reset();
+
+    // Legacy Protocol 1 helper. Canonical v2 uses prepare_factory_reset() plus
+    // vault_runtime::Runtime::factory_reset().
+    storage::Status factory_reset_user_state();
 
 private:
     static void periodic_task_entry(void* context);
@@ -61,7 +69,8 @@ private:
     SyncResult connect_and_sync(std::string_view ssid, std::string_view password);
     void teardown_network();
 
-    storage::Store& store_;
+    storage::Store* legacy_store_{nullptr};
+    vault_runtime::Runtime* vault_runtime_{nullptr};
     TrustedClock& clock_;
     mutable std::mutex sync_mutex_;
     bool network_initialized_{false};
