@@ -14,6 +14,63 @@ constexpr char kPlaintextMagic[] = "M5AUTH-VLT-PT1";
 constexpr char kVaultAadMagic[] = "M5AUTH-VLT-AAD1";
 constexpr char kVmkWrapAadMagic[] = "M5AUTH-VMK-WRAP1";
 
+void secure_zero_memory(void* data, std::size_t size) {
+    volatile auto* cursor = static_cast<volatile std::uint8_t*>(data);
+    while (size-- > 0) {
+        *cursor++ = 0;
+    }
+}
+
+void wipe_bytes(std::vector<std::uint8_t>* value) {
+    if (value == nullptr) return;
+    if (!value->empty()) secure_zero_memory(value->data(), value->size());
+    value->clear();
+}
+
+void wipe_string(std::string* value) {
+    if (value == nullptr) return;
+    if (!value->empty()) secure_zero_memory(value->data(), value->size());
+    value->clear();
+}
+
+void wipe_plaintext_candidate(VaultPlaintext* value) {
+    if (value == nullptr) return;
+    for (auto& credential : value->credentials) {
+        credential.credential_id.fill(0);
+        wipe_bytes(&credential.secret);
+        wipe_string(&credential.issuer);
+        wipe_string(&credential.account);
+        wipe_string(&credential.display_name);
+        credential.digits = 0;
+        credential.period_seconds = 0;
+        credential.manual_order = 0;
+    }
+    value->credentials.clear();
+    if (value->wifi.has_value()) {
+        wipe_string(&value->wifi->ssid);
+        wipe_string(&value->wifi->password);
+        value->wifi.reset();
+    }
+}
+
+class ByteVectorWipeGuard final {
+public:
+    explicit ByteVectorWipeGuard(std::vector<std::uint8_t>& value) : value_(value) {}
+    ~ByteVectorWipeGuard() { wipe_bytes(&value_); }
+
+private:
+    std::vector<std::uint8_t>& value_;
+};
+
+class PlaintextWipeGuard final {
+public:
+    explicit PlaintextWipeGuard(VaultPlaintext& value) : value_(value) {}
+    ~PlaintextWipeGuard() { wipe_plaintext_candidate(&value_); }
+
+private:
+    VaultPlaintext& value_;
+};
+
 void append_u16(std::vector<std::uint8_t>& output, std::uint16_t value) {
     output.push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
     output.push_back(static_cast<std::uint8_t>(value & 0xff));
@@ -143,14 +200,25 @@ public:
     }
 
     bool read_sized_text(std::string& value) {
-        std::vector<std::uint8_t> bytes;
-        if (!read_sized_bytes(bytes, kMaxFieldBytes)) return false;
-        if (bytes.empty()) {
-            value.clear();
+        std::uint16_t length = 0;
+        if (!read_u16(length) || length > kMaxFieldBytes ||
+            length > input_.size() - offset_) {
+            return false;
+        }
+        if (length == 0) {
+            wipe_string(&value);
             return true;
         }
-        value.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-        return is_valid_utf8(value);
+        value.assign(
+            reinterpret_cast<const char*>(input_.data() + offset_),
+            static_cast<std::size_t>(length)
+        );
+        offset_ += length;
+        if (!is_valid_utf8(value)) {
+            wipe_string(&value);
+            return false;
+        }
+        return true;
     }
 
     bool at_end() const {
@@ -177,6 +245,7 @@ bool encode_plaintext(const VaultPlaintext& value, std::vector<std::uint8_t>& en
     if (value.credentials.size() > kMaxCredentials) return false;
 
     std::vector<std::uint8_t> candidate;
+    ByteVectorWipeGuard candidate_wipe(candidate);
     candidate.insert(
         candidate.end(),
         reinterpret_cast<const std::uint8_t*>(kPlaintextMagic),
@@ -239,9 +308,12 @@ bool decode_plaintext(const std::vector<std::uint8_t>& encoded, VaultPlaintext& 
     }
 
     VaultPlaintext candidate;
+    PlaintextWipeGuard candidate_wipe(candidate);
+    candidate.credentials.reserve(count);
     std::set<std::array<std::uint8_t, kCredentialIdBytes>> ids;
     for (std::uint16_t index = 0; index < count; ++index) {
-        CredentialRecord record;
+        candidate.credentials.emplace_back();
+        auto& record = candidate.credentials.back();
         if (!reader.read_bytes(record.credential_id.size(), record.credential_id.data()) ||
             !ids.insert(record.credential_id).second ||
             !reader.read_sized_bytes(record.secret, kMaxSecretBytes) ||
@@ -262,20 +334,20 @@ bool decode_plaintext(const std::vector<std::uint8_t>& encoded, VaultPlaintext& 
         }
         record.algorithm = TotpAlgorithm::kSha1;
         if (!valid_credential(record)) return false;
-        candidate.credentials.push_back(std::move(record));
     }
 
     std::uint8_t wifi_present = 0;
     if (!reader.read_u8(wifi_present) || wifi_present > 1) return false;
     if (wifi_present == 1) {
-        WifiRecord wifi;
-        if (!reader.read_sized_text(wifi.ssid) || !reader.read_sized_text(wifi.password)) {
+        candidate.wifi.emplace();
+        if (!reader.read_sized_text(candidate.wifi->ssid) ||
+            !reader.read_sized_text(candidate.wifi->password)) {
             return false;
         }
-        candidate.wifi = std::move(wifi);
     }
 
     if (!reader.at_end()) return false;
+    wipe_plaintext_candidate(&value);
     value = std::move(candidate);
     return true;
 }

@@ -14,8 +14,17 @@
 namespace m5auth::vault {
 namespace {
 
+void secure_zero_memory(void* data, std::size_t size) {
+    volatile auto* cursor = static_cast<volatile std::uint8_t*>(data);
+    while (size-- > 0) {
+        *cursor++ = 0;
+    }
+}
+
 void clear_bytes(std::vector<std::uint8_t>& value) {
-    std::fill(value.begin(), value.end(), 0);
+    if (!value.empty()) {
+        secure_zero_memory(value.data(), value.size());
+    }
 }
 
 bool fill_random_nonce(std::array<std::uint8_t, kVaultNonceBytes>& nonce) {
@@ -312,10 +321,16 @@ bool decrypt_vault(
             envelope.tag,
             candidate
         )) {
+        clear_bytes(candidate);
+        candidate.clear();
         return false;
     }
 
     plaintext.swap(candidate);
+    // After swap candidate owns the caller's previous output. Wipe that retired
+    // buffer without changing the successful plaintext result.
+    clear_bytes(candidate);
+    candidate.clear();
     return true;
 }
 
@@ -341,8 +356,10 @@ bool wrap_vmk_with_key_and_nonce(
         tag
     );
     clear_bytes(plaintext);
+    plaintext.clear();
     if (!ok || ciphertext.size() != kVmkBytes) {
         clear_bytes(ciphertext);
+        ciphertext.clear();
         return false;
     }
 
@@ -352,6 +369,7 @@ bool wrap_vmk_with_key_and_nonce(
     std::copy(ciphertext.begin(), ciphertext.end(), candidate.ciphertext.begin());
     candidate.tag = tag;
     clear_bytes(ciphertext);
+    ciphertext.clear();
 
     envelope = candidate;
     return true;
@@ -391,14 +409,20 @@ bool unwrap_vmk_with_key(
             plaintext
         ) || plaintext.size() != kVmkBytes) {
         clear_bytes(plaintext);
+        plaintext.clear();
+        clear_bytes(ciphertext);
+        ciphertext.clear();
         return false;
     }
 
     std::array<std::uint8_t, kVmkBytes> candidate{};
     std::copy(plaintext.begin(), plaintext.end(), candidate.begin());
     clear_bytes(plaintext);
+    plaintext.clear();
+    clear_bytes(ciphertext);
+    ciphertext.clear();
     vmk = candidate;
-    candidate.fill(0);
+    secure_zero_memory(candidate.data(), candidate.size());
     return true;
 }
 
