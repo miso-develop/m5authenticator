@@ -1,6 +1,8 @@
 # Secure Account Storage
 
-V1 keeps user/security state in the dedicated `auth_nvs` partition. This partition is separate from both OTA application slots and from the normal merged firmware write range so ordinary firmware updates preserve provisioned state.
+V1 uses an application-level authenticated Encrypted Vault as the canonical Device credential boundary. The Vault is stored in the dedicated `auth_nvs` partition, while the Vault Master Key (VMK) is never persisted on the Device and exists only in RAM during an `UNLOCKED` session.
+
+Decision #40 and `docs/SECRET_VAULT.md` define the canonical security architecture. Task #41 tracks implementation of this architecture. Until #41 is merged and release validation is updated, the existing development storage backend must not be treated as production-ready security.
 
 ## Partition layout
 
@@ -13,77 +15,115 @@ The V1 8 MiB M5StickS3 release layout is defined by `firmware/partitions.csv`:
 | `phy_init` | `0x11000` | `0x1000` | PHY initialization data |
 | `ota_0` | `0x30000` | `0x3d0000` | firmware OTA slot 0 |
 | `ota_1` | `0x400000` | `0x3d0000` | firmware OTA slot 1 |
-| `auth_nvs` | `0x7d0000` | `0x30000` | canonical encrypted authenticator/Wi-Fi user state |
+| `auth_nvs` | `0x7d0000` | `0x30000` | Encrypted Vault and non-secret Vault metadata |
 
-`auth_nvs` occupies the final 192 KiB of the 8 MiB flash and starts exactly where `ota_1` ends. The OTA offsets and 0x3d0000-byte slot sizes remain unchanged.
+`auth_nvs` occupies the final 192 KiB of the 8 MiB flash and starts exactly where `ota_1` ends. Ordinary non-erasing firmware updates must not overwrite it.
 
-Task #14 deliberately moved `auth_nvs` from the early development offset `0x12000` to the end of flash before a production release existed. ESP-IDF `idf.py merge-bin -f raw` produces an offset-0 merged image containing the bootloader, partition table, OTA metadata/application and required build outputs. Without `--pad-to-size`, that merged image ends within the application write range. Keeping `auth_nvs` after both OTA slots therefore prevents a normal non-erasing merged-image update from writing `0xFF` gap bytes over authenticator state.
+The existing pre-release move from `0x12000` to `0x7d0000` remains a one-time development layout transition. Development devices that crossed that boundary may require clean reprovisioning. Future relocation requires explicit migration design.
 
-This one-time pre-release layout transition does **not** preserve development data written by firmware using the old `0x12000` layout. Development devices crossing this boundary must be treated as requiring a clean reprovision. After this V1 release layout is established, further `auth_nvs` relocation requires an explicit migration/update design and must not be done casually.
+## Persistent data boundary
 
-## Storage schema
+The Device may persist:
 
-`STORAGE_SCHEMA_VERSION` is independent from firmware SemVer and protocol version. V1 uses schema `1`.
+- authenticated Encrypted Vault ciphertext
+- Vault format/schema version
+- AEAD nonce/authentication metadata
+- generation/version metadata
+- non-secret Device/registration metadata
+- non-secret UI/settings metadata where appropriate
 
-Initialization behavior is fail closed:
+The Device must not persist:
 
-- missing schema on an erased/new partition initializes schema 1 and an empty state
-- schema 1 is validated before normal read/write use
-- an unknown schema value is not read, migrated, erased, or reset automatically
-- no older schema exists before V1 schema 1, so there is currently no legacy migration path
+- VMK
+- user Passphrase
+- Passphrase-derived KEK
+- Browser Unlock Key (BUK)
+- plaintext TOTP secrets
+- plaintext Wi-Fi passwords
+- decrypted credential snapshots
+- reusable unlock-session secrets
 
-Future known migrations must be explicit. Unknown newer schemas must remain untouched.
+TOTP credential data and Wi-Fi credentials are both inside the encrypted credential boundary.
 
-## Snapshot model
+## Vault schema and generation
 
-The storage component persists one bounded binary `snapshot` blob inside the encrypted NVS namespace. It contains:
+Vault format/schema versioning is independent from firmware SemVer and provisioning protocol version. The implementation must fail closed on an unknown newer Vault/schema version and must not automatically Factory Reset or reinterpret it.
 
-- account ids and manual order
-- issuer/account/display-name metadata
-- TOTP secret material
-- last-used account id
-- Wi-Fi SSID/password
+The Vault also carries a `generation` value coordinated with the Web canonical copy. Generation is used to detect stale or mismatched Device/Web copies and interrupted updates.
 
-Maximum account count is 32. Field and snapshot sizes are bounded before persistence.
+Generation is not a hardware-backed monotonic counter. Because V1 intentionally does not use an eFuse/secure-counter root, restoring an old complete Flash image may also restore old generation metadata. Device-only cryptographic rollback resistance is therefore not claimed.
 
-A complete account import is staged in RAM and committed by replacing the single snapshot blob only after `import.validate`. A failed validation or failed commit leaves the previously committed snapshot as the canonical state.
+## Canonical state model
 
-Metadata APIs intentionally return only id/order/issuer/account/display name. There is no generic stored-secret read/export API. Firmware consumers that need a TOTP secret or Wi-Fi password use callback-style `with_*` methods so decrypted secret material has a narrow lifetime and is wiped after the consumer returns.
+For V1:
 
-## Development Security Backend
+```text
+Web Encrypted Vault = canonical copy
+Device Encrypted Vault = runtime/offline-use copy
+```
 
-Development builds use `DevSecurityBackend` only until Task #26 replaces it for production.
+Credential mutation is coordinated from the Web Provisioner. Device-side account editing is not a canonical write path.
 
-- It does **not** read or burn eFuse.
-- Its XTS key material is deliberately public and synthetic.
-- `production_release_allowed()` is always false.
-- `hello` reports `security_profile: development` so Web/device status makes the profile explicit.
-- Production HMAC/eFuse-backed keying remains exclusively owned by Task #26.
+A Vault update must be transactional/atomic from the externally observable perspective:
 
-The development backend calls `nvs_flash_secure_init_partition()` with explicit synthetic XTS configuration. It never falls back to plaintext NVS initialization.
+1. build/validate the new logical state in transient memory
+2. encrypt it under the active VMK using the versioned AEAD format
+3. stage the new ciphertext/metadata/generation
+4. commit atomically or retain the previous valid generation
+5. wipe plaintext/transient crypto buffers
 
-### Encryption self-check
+Power loss or USB failure must not leave a partially accepted generation as the canonical state.
 
-After a recognized schema is established, the development backend writes a public synthetic probe value through encrypted `auth_nvs`, reads the raw partition bytes, and fails with `security_invariant` if that exact probe is visible in plaintext. The probe is then erased from its namespace.
+## Runtime access
 
-NVS encryption is configured for the entire `auth_nvs` partition, so this write-through/raw-read check exercises the same encryption boundary used by the snapshot containing TOTP and Wi-Fi credential data. It deliberately avoids scanning, printing, dumping, or comparing credential values themselves.
+The VMK exists only while the Device is `UNLOCKED`.
 
-This verifies the encrypted NVS path without exposing credential-bearing data. The check is deliberately skipped before schema validation so unknown newer schemas are not modified.
+TOTP access should narrow plaintext lifetime:
 
-## Wi-Fi persistence boundary
+```text
+selected credential request
+  -> decrypt/open only required credential material
+  -> calculate TOTP
+  -> wipe plaintext TOTP secret
+```
 
-The canonical Wi-Fi credential copy is stored only in `auth_nvs`. Runtime time synchronization explicitly configures ESP-IDF with `WIFI_STORAGE_RAM` before applying the transient station configuration, so ESP-IDF's default flash-backed Wi-Fi persistence does not become a second authoritative credential store.
+Wi-Fi credential access is also permitted only while unlocked. Runtime Wi-Fi configuration remains RAM-only at the ESP-IDF driver layer so ESP-IDF's default flash-backed Wi-Fi persistence does not become a second credential store.
 
-No serial response returns the Wi-Fi password.
+## Lock and cryptographic erase
 
-## Memory and logging
+Locking does not require repeatedly erasing the Vault ciphertext. Instead the Device destroys the VMK and other transient secret material:
 
-Credential-bearing request fields, serial input buffers, temporary encoded snapshots, imported secrets, Wi-Fi passwords, and loaded internal state are explicitly wiped when their lifetime ends. Account draft/storage secret types also wipe source or destination values around relocation/destruction so vector movement and short-string storage do not intentionally leave stale secret copies behind. Errors return only bounded status codes and never echo the source payload.
+```text
+Encrypted Vault remains in Flash
+VMK is zeroized from RAM
+=> credential plaintext becomes unavailable to normal Device code
+```
 
-No storage path logs TOTP secrets, passwords, encryption keys, decrypted snapshots, or credential-bearing flash/NVS data.
+Mandatory VMK-destruction events are:
+
+- reboot
+- power loss/shutdown
+- explicit Lock
+- fatal security error
+- Factory Reset
+- entry into Vault replacement, recovery provisioning, or re-key
+
+USB power, USB enumeration, and ordinary Web Serial connection do not themselves lock an existing unlocked session.
 
 ## Factory Reset boundary
 
-`Store::factory_reset()` erases only the `auth_nvs` user-state partition and recreates schema 1 through the active security backend. It does not touch eFuse or device identity/security state.
+Factory Reset removes the M5Authenticator user/security state from `auth_nvs`, including the Encrypted Vault and registration metadata, and wipes all secret-bearing RAM state before returning to `UNPROVISIONED`.
 
-V1 exposes this only through the explicit Web/USB confirmation flow. A normal firmware update is a separate path and must not erase `auth_nvs`.
+Factory Reset performs no project-specific eFuse read/burn/rotation and leaves no irreversible M5Authenticator security state behind.
+
+## Development-to-V1 transition
+
+The earlier `DevSecurityBackend`/planned `HmacEfuseSecurityBackend` architecture is superseded by Decision #40. A public synthetic development XTS/NVS key may still exist in pre-#41 code for development verification, but it is not an acceptable V1 release protection boundary because a Flash dump would be decryptable using public material.
+
+Release validation must remain fail closed until Task #41 replaces that path with the application-level Encrypted Vault + RAM-only VMK design.
+
+## Memory, logging, and crash handling
+
+VMK, KEK, BUK-derived working material, session keys, TOTP secrets, Wi-Fi passwords, decrypted Vault data, encoded plaintext snapshots, and credential-bearing protocol buffers must never be logged.
+
+Secret-bearing memory must be wiped using a zeroization method that is not optimized away. Production crash/core-dump settings must not persist credential-bearing RAM in a form that defeats the RAM-only VMK design.
