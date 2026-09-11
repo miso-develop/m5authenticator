@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 
 #include "m5auth/provisioning/session_protocol_v2.hpp"
 #include "m5auth/registration/registration.hpp"
@@ -14,14 +15,18 @@ class CanonicalBindingSource final : public SessionV2BindingSource {
 public:
     CanonicalBindingSource(
         const vault_runtime::Runtime& runtime,
-        const registration::Store& registration
-    ) : runtime_(runtime), registration_(registration) {}
+        const registration::Store& registration,
+        std::recursive_mutex& runtime_access_mutex
+    ) : runtime_(runtime),
+        registration_(registration),
+        runtime_access_mutex_(runtime_access_mutex) {}
 
     bool snapshot(SessionV2DeviceSnapshot* output) const override;
 
 private:
     const vault_runtime::Runtime& runtime_;
     const registration::Store& registration_;
+    std::recursive_mutex& runtime_access_mutex_;
 };
 
 // Owns the production transition from authenticated Protocol v2 VMK delivery to
@@ -33,7 +38,8 @@ class CanonicalVmkSink final : public SessionV2VmkSink {
 public:
     CanonicalVmkSink(
         vault_runtime::Runtime& runtime,
-        registration::Store& registration
+        registration::Store& registration,
+        std::recursive_mutex& runtime_access_mutex
     );
     ~CanonicalVmkSink() override;
 
@@ -64,10 +70,8 @@ public:
         std::uint64_t now_ms
     );
 
-    bool has_pending_vmk() const { return pending_; }
-    session::protocol_v2::Operation pending_operation() const {
-        return pending_context_.operation;
-    }
+    bool has_pending_vmk() const;
+    session::protocol_v2::Operation pending_operation() const;
 
 private:
     bool pending_valid(
@@ -77,6 +81,7 @@ private:
 
     vault_runtime::Runtime& runtime_;
     registration::Store& registration_;
+    std::recursive_mutex& runtime_access_mutex_;
     session::Vmk pending_vmk_{};
     session::protocol_v2::BeginContext pending_context_{};
     bool pending_{false};
