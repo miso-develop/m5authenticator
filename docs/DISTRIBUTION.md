@@ -1,20 +1,20 @@
 # V1 Distribution and Update Paths
 
-M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, TOTP secrets, Wi-Fi credentials, VMK/KEK/BUK/session keys, device dumps, or a universal production encryption key.
+M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, credential identity metadata, TOTP/Wi-Fi secrets, VMK/KEK/BUK/BRK/session keys, user Recovery Packages, device dumps, or a universal production encryption key.
 
 ## Release gate
 
 `firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage constants and `firmware/partitions.csv`.
 
-The current profile is intentionally development-only with `production_release_allowed: false`. Decision #40 superseded the planned Production HMAC/eFuse security backend. This means:
+The current main profile is intentionally development-only with `production_release_allowed: false`. Decision #40 superseded the former Production HMAC/eFuse backend. Until the replacement V1 Vault implementation and security closeout complete:
 
-- ordinary CI may build and validate a non-published development package;
-- GitHub Pages shows the Firmware Flash surface but does not expose a production flash manifest/binary;
-- a `v*.*.*` Release workflow fails closed before publishing anything;
-- Task #41 must implement and validate the application-level Encrypted Vault + RAM-only VMK + Trusted Browser quick-unlock architecture before public firmware distribution is enabled;
-- a public/synthetic development storage key must never be accepted as a production release protection boundary.
+- ordinary CI may build/validate a non-published development package;
+- GitHub Pages may show the Firmware Flash surface but must not expose a production firmware manifest/binary;
+- a `v*.*.*` Release workflow fails closed before publication;
+- a public/synthetic development storage key must never be accepted as production credential protection;
+- M5Authenticator-specific eFuse programming is not a release prerequisite or supported V1 security path.
 
-Changing only a tag does not bypass this gate.
+The target implementation chain is #51-#55, followed by release-contract Task #56 and final security closeout Task #15. Only the closeout may enable production release eligibility after the exact implementation is validated. Changing only a tag does not bypass the gate.
 
 ## Canonical firmware package
 
@@ -25,9 +25,11 @@ idf.py build
 idf.py merge-bin -o m5authenticator-merged.bin -f raw
 ```
 
-`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so the merged output is created as `firmware/build/m5authenticator-merged.bin`.
+`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so output is `firmware/build/m5authenticator-merged.bin`.
 
-The raw merged image is flashed at offset `0x0`. `scripts/package_firmware.py` rejects an empty image or one whose byte range reaches the protected `auth_nvs` partition. The script produces:
+The raw merged image is flashed at offset `0x0`. `scripts/package_firmware.py` rejects an empty image or one whose byte range reaches protected `auth_nvs`.
+
+The package contains:
 
 ```text
 m5authenticator-v<version>-m5sticks3.bin
@@ -37,13 +39,13 @@ release-metadata.json
 SHA256SUMS
 ```
 
-`release-metadata.json` contains only non-secret build/device/version/security-profile metadata. `SHA256SUMS` covers the downloadable package files.
+`release-metadata.json` contains only non-secret build/device/version/security-profile metadata. Target V1 metadata includes independent Firmware / Protocol / Storage Schema / Vault Format versions. `SHA256SUMS` covers downloadable package files.
 
-There is no separately rebuilt or invented M5Burner firmware package. M5Burner `USER CUSTOM` publication uses the same merged `.bin` that GitHub Releases and the Web Flasher use.
+There is no separately rebuilt M5Burner package. M5Burner `USER CUSTOM` publication uses the same merged `.bin` used by GitHub Releases and Web Flasher.
 
 ## State-preserving flash layout
 
-The V1 8 MiB release layout places both 0x3d0000-byte OTA application slots before `auth_nvs`, and reserves the final 0x30000 bytes for `auth_nvs`:
+V1 8 MiB layout:
 
 ```text
 0x000000  bootloader / partition table / system data
@@ -53,87 +55,108 @@ The V1 8 MiB release layout places both 0x3d0000-byte OTA application slots befo
 0x800000  end of flash
 ```
 
-The merged image is generated without `--pad-to-size`, so its normal write range ends before `auth_nvs`. This allows the **same CI-built binary** to serve both installation modes:
+Both 0x3d0000-byte OTA application slots end before the final 0x30000-byte `auth_nvs` partition.
 
-- **First install:** erase flash, then flash the merged image at `0x0`.
-- **Normal update:** do not erase flash; flash the same merged image at `0x0`. `auth_nvs` remains outside the write range and therefore preserves the Encrypted Vault and non-secret user/registration metadata.
+The merged image is generated without `--pad-to-size`, so its normal write range ends before `auth_nvs`. The same CI-built binary therefore supports:
 
-Preserving `auth_nvs` does not persist the VMK: VMK remains RAM-only and is lost on reboot/power loss as required by Decision #40. After an update/reboot the Device returns to `LOCKED` and must be unlocked again before TOTP use.
+- **First install:** erase Flash, then flash merged image at `0x0`.
+- **Normal update:** do not erase Flash; flash the same merged image at `0x0`, preserving `auth_nvs`.
 
-Factory Reset is not an update mechanism. Factory Reset explicitly erases M5Authenticator user/Vault state; a normal update must not expose or invoke a full-flash erase operation.
+Preserving `auth_nvs` preserves only the authenticated Encrypted Vault and approved non-secret state. VMK remains RAM-only and is lost on update/reboot, so a provisioned Device returns `LOCKED` after update.
 
-Task #14 moved `auth_nvs` from its early development position to the V1 release position before any production release. Existing development data from the old layout is not migration-compatible and must be reprovisioned once after this transition.
+Factory Reset is not an update mechanism. It explicitly erases M5Authenticator Vault/user/registration state; normal update must not expose or invoke a full-Flash erase path.
+
+The pre-release move of `auth_nvs` from `0x12000` to `0x7d0000` is a development-only one-time transition. Existing development data from the old layout may require reprovisioning.
+
+## Security profile transition
+
+Current development builds may still use Protocol 1 / Storage Schema 1 with deliberately public synthetic encrypted-NVS material. They are release-ineligible.
+
+Target V1 production metadata is:
+
+- `PROTOCOL_VERSION = 2`
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
+- security profile representing application-level Encrypted Vault + Device RAM-only VMK
+
+Task #55 activates the target runtime tuple only when complete end-to-end semantics are implemented. Task #56 replaces development release-profile assumptions. Task #15 performs final security verification and is the gate for enabling production eligibility.
+
+No release validation path depends on HMAC eFuse initialization.
 
 ## GitHub Pages Web Flasher
 
-The Pages site contains two entries:
+The Pages site contains:
 
-- Provisioner: account/device management over local Web Serial
-- Firmware Flash: ESP Web Tools 10.4.0 bundled from the exact-pinned NPM dependency
+- Provisioner: browser-local credential/device management over Web Serial
+- Firmware Flash: ESP Web Tools 10.4.0 bundled from the exact-pinned dependency
 
-No runtime CDN is used. The Provisioner keeps `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so firmware manifests and binaries can be fetched from the same Pages site.
+No runtime CDN is used. The Provisioner retains `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so same-origin firmware assets can be fetched.
 
-When production release eligibility is enabled, CI places the package binary and manifests under the site's `/firmware/` path. Two clearly separated operations are shown:
+When production eligibility is enabled, CI places package binary/manifests under `/firmware/`.
 
 ### First install — destructive
 
-Uses the standard ESP Web Tools install button with `factory-manifest.json`. This operation is explicitly for a new device or an intentional clean installation and performs a full-flash erase before installation.
+Uses standard ESP Web Tools install with `factory-manifest.json`. This is explicitly for a new Device or intentional clean installation and performs full-Flash erase before installation.
 
-### Update — preserve authenticator data
+### Update — preserve authenticator state
 
-The normal update button does **not** use ESP Web Tools' generic install dialog because the generic no-Improv new-install path can offer or perform a full-flash erase. Instead, M5Authenticator calls ESP Web Tools 10.4.0's low-level flash API with `eraseFirst=false` unconditionally.
+Normal Update does not use the generic erase-capable install dialog. M5Authenticator invokes ESP Web Tools 10.4.0 low-level flash API with `eraseFirst=false` unconditionally.
 
-The update implementation also requires:
+The update path requires:
 
-- a same-origin `update-manifest.json`;
-- exactly one ESP32-S3 firmware part;
-- that part at offset `0x0`;
-- the same merged firmware image used by the other distribution paths.
+- same-origin `update-manifest.json`
+- exactly one ESP32-S3 firmware part
+- offset `0x0`
+- the same merged firmware image as other distribution paths
 
-`web/src/firmware-update.test.ts` pins the critical invariant that the update wrapper always calls the low-level flasher with `eraseFirst=false`. There is no erase choice in the normal Update UI. Intentional user-state deletion remains the explicit Factory Reset operation in the Provisioner.
+`web/src/firmware-update.test.ts` pins the invariant that Update always calls the flasher with `eraseFirst=false`. There is no erase choice in normal Update UI.
 
-`update-manifest.json` keeps the generic ESP Web Tools erase prompt enabled only as a defense-in-depth warning if someone opens that manifest outside the M5Authenticator Update UI. It is not the normal update execution path.
+`update-manifest.json` may retain the generic erase prompt as defense-in-depth if opened outside the M5Authenticator UI; it is not the normal execution path.
 
-Until Task #41 enables production release eligibility after the new Vault architecture is implemented and validated, the Flasher page remains visible but fail-closed: no production firmware manifest is offered.
+Until Task #15 enables production eligibility, the Flasher remains fail closed with no production manifest offered.
 
 ## GitHub Releases
 
-`.github/workflows/release.yml` runs only for SemVer-like `v*.*.*` tags. It:
+`.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags. It:
 
 1. requires a production-eligible release profile;
-2. verifies the tag equals `v<firmware_version>`;
-3. builds and merges firmware in the pinned ESP-IDF 5.5.5 container;
+2. verifies tag equals `v<firmware_version>`;
+3. builds/merges firmware in pinned ESP-IDF 5.5.5;
 4. packages that exact CI-built image;
-5. uploads package files directly to the GitHub Release using the repository token.
+5. uploads package files directly to the GitHub Release.
 
 GitHub Actions Artifact is not used as an intermediate or long-term firmware store.
 
 ## GitHub Pages staging artifact policy
 
-GitHub Pages deployment requires a Pages staging artifact. It is the only intentional Actions Artifact in the distribution path.
+Pages deployment requires one staging artifact. It is the only intentional Actions Artifact in the current distribution path.
 
-- `retention-days: 1` is explicit;
-- deployment consumes the artifact;
-- the deploy job then deletes that exact artifact ID immediately using the repository-scoped GitHub token;
-- ordinary Security/Foundation/Release jobs do not upload Actions Artifacts.
+- `retention-days: 1`
+- deployment consumes it
+- deploy job then deletes that exact artifact ID using repository-scoped token
+- ordinary Security/Foundation/Release jobs do not upload Actions Artifacts
+
+No credential-bearing data or user Recovery Package may enter an Actions Artifact.
 
 ## M5Burner
 
-M5Stack's current M5Burner workflow uses `USER CUSTOM` -> `Publish` and asks for Name, Version, Description, Device Type, GitHub link, Firmware, and Cover metadata. The GitHub Release provides the exact `.bin`, version metadata, and checksum needed for that manual publication step.
+M5Burner `USER CUSTOM` publication uses the exact `.bin` from a production GitHub Release.
 
-For M5Authenticator, **do not use M5Burner's Firmware Export function on a provisioned device**. A full-device export can capture the Encrypted Vault and other user state; even though the Vault is encrypted, credential-bearing device dumps are prohibited by `SECURITY.md` and must not become public artifacts.
+Do **not** use M5Burner Firmware Export on a provisioned Device. A full-device export can capture the Encrypted Vault and user state; even ciphertext-only credential backups/dumps are prohibited public artifacts under `SECURITY.md`.
 
-Instead:
+Publication procedure:
 
 1. use only `m5authenticator-v<version>-m5sticks3.bin` from the production GitHub Release;
-2. choose M5StickS3 as the device type;
-3. use the project GitHub repository as the source link;
-4. select that CI-built `.bin` as the M5Burner `FirmWare` upload;
-5. verify version/checksum against `release-metadata.json` and `SHA256SUMS`;
-6. never source a public M5Burner upload from a user/provisioned device dump.
+2. choose M5StickS3 device type;
+3. use the project repository as source link;
+4. upload that CI-built `.bin`;
+5. verify version/checksum against `release-metadata.json` / `SHA256SUMS`;
+6. never source public firmware from a provisioned Device dump.
 
-M5Burner community publication remains a deliberate manual operation after Task #41 makes the build production eligible. M5Burner is a distribution/install surface, not the designated state-preserving normal-update path; normal updates use the Web Flasher Update operation described above. The repository does not store M5Stack account credentials in GitHub Actions.
+M5Burner remains a deliberate manual distribution surface, not the designated state-preserving normal-update path. Repository Actions contain no M5Stack account credentials.
 
 ## Build-output retention
 
-Normal pull-request CI builds firmware only for verification and then discards it. It does not upload Actions Artifacts. If later physical testing needs an exact non-Release CI binary, the separate temporary-build storage plan (for example Cloudflare R2 with short lifecycle) is introduced at that point rather than turning normal CI artifacts into long-term storage.
+Normal PR CI builds firmware for verification and discards it. It does not upload Actions Artifacts.
+
+If physical testing later requires exact non-Release CI binaries, a separate temporary-build storage decision may be introduced. Such storage must remain secret-free and must not become a path for user Vault/Recovery/dump retention.
