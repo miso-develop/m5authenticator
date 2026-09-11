@@ -91,6 +91,7 @@ private:
     std::vector<CredentialView> credentials_;
     std::size_t selected_index_{0};
     std::uint64_t visible_generation_{0};
+    vault_runtime::State runtime_state_{vault_runtime::State::kUnprovisioned};
     bool vault_visible_{false};
     bool storage_error_{false};
     bool reveal_active_{false};
