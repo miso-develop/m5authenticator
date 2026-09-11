@@ -17,6 +17,7 @@
     "@zxing/browser": "0.2.1",
     "@zxing/library": "0.23.0",
     "esp-web-tools": "10.4.0",
+    "hash-wasm": "4.12.0",
     "protobufjs": "7.6.6"
   },
   "devDependencies": {
