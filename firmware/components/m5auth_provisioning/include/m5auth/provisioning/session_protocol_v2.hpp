@@ -22,6 +22,11 @@ struct SessionV2DeviceSnapshot {
     session::protocol_v2::BrkPublicKey brk_public_key{};
 };
 
+bool session_v2_begin_matches_snapshot(
+    const session::protocol_v2::BeginContext& context,
+    const SessionV2DeviceSnapshot& snapshot
+);
+
 // Device-owned source of non-secret state used to authenticate what the Web
 // claims in session.begin. The handler must never use a Web-supplied current
 // BRK as the verification root without matching it to this snapshot first.
@@ -62,6 +67,8 @@ public:
     void disconnect();
 
 private:
+    bool current_binding_matches() const;
+    std::string fail_closed(int id, const char* code);
     void clear_context();
 
     session::protocol_v2::AttemptCoordinator& coordinator_;
