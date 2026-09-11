@@ -12,6 +12,7 @@ V1 prioritizes the following properties:
 - recoverable Factory Reset / erase / re-provision behavior
 - practical cold-boot recovery without requiring the user passphrase on every normal unlock
 - no stored-secret export operation from release firmware
+- portable recovery of the Web canonical encrypted state without exporting plaintext credentials
 
 This is not a hardware root-of-trust design. It does not claim strong resistance to compromised endpoint OS/browser code, malicious browser extensions/XSS, RAM probing while unlocked, sophisticated physical extraction, or Evil-Maid firmware replacement.
 
@@ -45,7 +46,7 @@ The passphrase protects the VMK, not the whole Vault directly. Changing the pass
 
 A low-entropy PIN must not be used as an offline-decryptable VMK/Vault protection secret.
 
-The exact KDF, AEAD, nonce, AAD, wrapped-key format, and rotation parameters are versioned implementation details owned by the implementation Task. They must be interoperable between the Web Provisioner and ESP-IDF firmware and must not rely on a project-specific eFuse secret.
+The exact password KDF, Vault AEAD, nonce/AAD layout, VMK wrapping algorithm, rotation behavior, and whether the logical Vault uses one authenticated ciphertext or independently authenticated credential records are implementation-design items owned by Task #41. They must be explicitly versioned and interoperable between the Web Provisioner and ESP-IDF firmware, and must not rely on a project-specific eFuse secret.
 
 ## Device persistence boundary
 
@@ -136,19 +137,22 @@ Power on
 
 The Device cannot autonomously decrypt the Vault from Flash.
 
-### New/untrusted Browser or recovery
+### First registration / untrusted Browser / recovery
+
+The Passphrase path requires access to the Web canonical encrypted state, including the Passphrase-wrapped VMK. On first registration that state is created locally. On another Browser it is obtained through the encrypted Recovery Package described below.
 
 ```text
-LOCKED Device
-  -> Web Provisioner connection
+Web canonical encrypted state available
   -> user enters Passphrase
   -> KDF derives Passphrase KEK
   -> Web unwraps VMK
-  -> protected fresh unlock session
+  -> protected fresh unlock/provisioning session
   -> Device user-presence confirmation
   -> VMK accepted into Device RAM
   -> UNLOCKED
 ```
+
+A Passphrase alone cannot reconstruct a lost random VMK. If both browser state and its encrypted Recovery Package are lost, the existing Device Vault cannot be recovered after the VMK has left RAM; the user must re-provision from the authoritative authenticator/source credentials.
 
 ### Trusted Browser quick unlock
 
@@ -166,13 +170,37 @@ LOCKED Device
 
 Trusted Browser quick unlock must not become an unattended automatic unlock. The Device must require explicit physical user presence before accepting the VMK.
 
-The BUK must not be included in backup/export data. Moving to a different Browser therefore requires Passphrase recovery and creation of a new Browser-local BUK.
-
 `extractable=false` is defense in depth only. It does not make the Browser a hardware root of trust and does not protect against arbitrary code executing in the trusted browser context.
+
+## Encrypted Recovery Package
+
+V1 permits export/import of the **Web canonical encrypted state** so a user can recover on another Browser without exporting plaintext TOTP credentials.
+
+The Recovery Package may contain:
+
+- Encrypted Vault
+- Passphrase-wrapped VMK
+- KDF / AEAD / Vault-format metadata
+- generation/version metadata
+- non-secret registration metadata required for recovery
+
+It must not contain:
+
+- plaintext TOTP secrets or Wi-Fi passwords
+- plaintext VMK
+- user Passphrase or Passphrase-derived KEK
+- Browser Unlock Key (BUK)
+- browser-specific material that bypasses the Passphrase recovery step
+
+A new Browser imports the encrypted package, requires the Passphrase to unwrap the VMK, then generates its own new browser-local BUK and corresponding Trusted-Browser-wrapped VMK.
+
+The Recovery Package creates an offline Passphrase-guessing target. Therefore the Passphrase and password KDF are part of the security boundary for backup theft. A six-digit PIN or similarly low-entropy secret is not acceptable.
+
+This is distinct from Device secret export. Release firmware still provides no operation that reads or exports stored plaintext TOTP secrets, Wi-Fi passwords, or VMK. The package originates from the Web canonical encrypted state.
 
 ## Unlock transport
 
-VMK transfer must use a fresh session mechanism rather than a reusable plaintext protocol operation. The concrete mechanism belongs to the implementation Task, but the following properties are mandatory:
+VMK transfer must use a fresh session mechanism rather than a reusable plaintext protocol operation. The concrete mechanism belongs to Task #41, but the following properties are mandatory:
 
 - fresh per-session key establishment or equivalent freshness
 - integrity/authentication of transferred unlock material
@@ -204,19 +232,16 @@ Web and Device track a Vault `generation` so stale or mismatched copies can be d
 
 Because V1 intentionally uses no secure monotonic counter/eFuse root, generation is **not** a hardware-backed rollback guarantee. An attacker able to restore the entire Device Flash image may also restore its generation metadata. Documentation and UI must not claim stronger rollback protection than this design provides.
 
-## TOTP use
+## TOTP use and plaintext lifetime
 
-While `UNLOCKED`, the implementation should minimize plaintext lifetime:
+While `UNLOCKED`, plaintext credential lifetime must be minimized. The exact behavior depends on the Vault format selected by Task #41:
 
-```text
-reveal request
-  -> open only the selected encrypted credential
-  -> calculate TOTP
-  -> zeroize plaintext TOTP secret buffer
-  -> display OTP for the existing UI timeout
-```
+- if credentials are independently authenticated/encrypted, only the selected credential should be decrypted for TOTP generation;
+- if the Vault is a single authenticated ciphertext, the plaintext logical Vault may be opened only in a bounded transient operation and must be wiped immediately after extracting/using the required credential; it must not remain resident for the full unlocked session.
 
-The VMK remains in RAM only for the unlocked session. Plaintext per-account secret material should not remain resident for the full session when avoidable.
+In either representation, the TOTP secret used for calculation must be wiped as soon as practical after the OTP is derived.
+
+The VMK remains in RAM only for the unlocked session.
 
 ## Trusted time interaction
 
@@ -243,6 +268,8 @@ Factory Reset must:
 - return the Device to `UNPROVISIONED`
 
 Factory Reset must not read, burn, rotate, or depend on project-specific eFuse security material.
+
+An exported encrypted Recovery Package is intentionally external to Device Factory Reset. If the user wants old credentials to become unrecoverable, any separately saved Recovery Package must also be deleted; Factory Reset cannot erase copies outside the Device/browser it controls.
 
 ## Security limitations
 
