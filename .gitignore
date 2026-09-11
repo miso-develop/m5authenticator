@@ -24,6 +24,9 @@ secrets/
 credentials/
 captures/
 dumps/
+recovery-packages/
+credential-backups/
+vault-backups/
 
 # Common credential/key formats
 *.pem
@@ -46,11 +49,15 @@ dumps/
 *flash-dump*
 *ram-dump*
 
-# Local QR/authenticator imports
+# Local QR/authenticator imports and encrypted credential backups
 *authenticator-export*
 *authenticator-migration*
 *otpauth-import*
 *totp-secret*
+*recovery-package*
+*vault-backup*
+*credential-backup*
+*authenticator-backup*
 
 # OS junk
 .DS_Store
