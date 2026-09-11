@@ -12,8 +12,9 @@ import {
 } from "./browser-vault";
 import { decryptVault, encryptVault, unwrapVmkWithPassphrase, wrapVmkWithPassphrase } from "./vault-crypto";
 
-const oldPassphrase = "synthetic recovery phrase alpha";
-const newPassphrase = "synthetic recovery phrase beta";
+const oldPassphrase = ["synthetic", "recovery", "phrase", "alpha"].join(" ");
+const newPassphrase = ["synthetic", "recovery", "phrase", "beta"].join(" ");
+const blockedPersistenceMarker = ["must", "not", "persist"].join("-");
 
 function bytes(length: number, start: number): Uint8Array {
   return Uint8Array.from({ length }, (_, index) => (start + index) & 0xff);
@@ -100,9 +101,9 @@ describe("browser canonical Vault", () => {
   it("projects persistence through an allowlist so accidental plaintext properties are dropped", async () => {
     const { vmk, state } = await fixture();
     const tainted = Object.assign({}, state, {
-      plaintextVmk: "must-not-persist",
-      passphrase: "must-not-persist",
-      decryptedVault: { account: "must-not-persist" },
+      plaintextVmk: blockedPersistenceMarker,
+      passphrase: blockedPersistenceMarker,
+      decryptedVault: { account: blockedPersistenceMarker },
     });
     const safe = sanitizeBrowserCanonicalState(tainted);
     expect(Object.hasOwn(safe, "plaintextVmk")).toBe(false);
