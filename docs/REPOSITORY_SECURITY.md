@@ -28,13 +28,32 @@ The scanner enumerates Git-tracked files and fails closed if Git file
 enumeration cannot be performed. It checks for project-specific leakage
 patterns including secret-bearing TOTP URIs, Google Authenticator migration
 payloads, private-key material, credential-like literal assignments,
-VMK/KEK/BUK/unlock-session key-like literal assignments, credential/dump-like
+VMK/KEK/BUK/BRK/unlock-session key-like literal assignments, credential/dump-like
 tracked paths, Recovery-Package/Vault-backup-like tracked paths, oversized
 files that would otherwise be left unscanned, and logging calls that appear to
 contain credential-bearing data.
 
 The scanner reports the rule, path, and line number. It does not print the
 matched credential-bearing value.
+
+### Current quoted-property coverage gap
+
+The current scanner's credential-literal rule recognizes the supported
+sensitive names when they appear directly before an assignment separator, but
+it does **not yet reliably cover quoted sensitive property names in structured
+JSON/JSONC-style assignments**. Task #58 owns that hardening and is an explicit
+prerequisite for Task #51, which will introduce structured synthetic
+cryptographic/interoperability fixtures.
+
+Until #58 is implemented and merged:
+
+- do not treat a green repository scan as proof that quoted JSON/JSONC key names were checked;
+- manually review structured fixtures/configuration for sensitive-looking property/value assignments;
+- do not start #51;
+- continue treating any real credential/key material as prohibited regardless of scanner coverage.
+
+This is a documented defense-in-depth gap, not a relaxation of `SECURITY.md`.
+GitHub Secret Protection/push protection remains the independent first layer.
 
 Repository-owned scanning is heuristic defense in depth. It cannot prove that
 an arbitrary ciphertext or generically named binary is safe. User-generated
