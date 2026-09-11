@@ -11,8 +11,9 @@ namespace m5auth::vault_runtime {
 namespace {
 
 constexpr char kPartitionLabel[] = "auth_nvs";
+constexpr char kVaultNamespace[] = "vault2";
 constexpr char kLegacyNamespace[] = "state";
-constexpr char kLegacySchemaKey[] = "schema";
+constexpr char kSchemaKey[] = "schema";
 
 // PUBLIC SYNTHETIC DEVELOPMENT-ONLY keys copied from the superseded Schema 1
 // backend. They are not a V1 protection boundary. They are retained here only
@@ -30,6 +31,18 @@ constexpr std::array<std::uint8_t, NVS_KEY_SIZE> kLegacyDevTweakKey{
     0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
     0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
 };
+
+Status map_error(esp_err_t error) {
+    switch (error) {
+        case ESP_OK: return Status::kOk;
+        case ESP_ERR_NVS_NOT_FOUND:
+        case ESP_ERR_NOT_FOUND: return Status::kNotFound;
+        case ESP_ERR_INVALID_ARG: return Status::kInvalidArgument;
+        case ESP_ERR_NVS_NO_FREE_PAGES: return Status::kCorrupt;
+        case ESP_ERR_NVS_NEW_VERSION_FOUND: return Status::kUnsupportedSchema;
+        default: return Status::kIo;
+    }
+}
 
 void wipe_config(nvs_sec_cfg_t* config) {
     if (config == nullptr) return;
@@ -78,10 +91,79 @@ bool legacy_schema1_present() {
     }
 
     std::uint32_t schema = 0;
-    const esp_err_t schema_result = nvs_get_u32(handle, kLegacySchemaKey, &schema);
+    const esp_err_t schema_result = nvs_get_u32(handle, kSchemaKey, &schema);
     nvs_close(handle);
     (void)nvs_flash_deinit_partition(kPartitionLabel);
     return schema_result == ESP_OK && schema == 1;
+}
+
+Status initialize_plain_partition() {
+    (void)nvs_flash_deinit_partition(kPartitionLabel);
+    return map_error(nvs_flash_init_partition(kPartitionLabel));
+}
+
+Status erase_namespace(const char* name) {
+    nvs_handle_t handle = 0;
+    const esp_err_t open_result = nvs_open_from_partition(
+        kPartitionLabel,
+        name,
+        NVS_READWRITE,
+        &handle
+    );
+    if (open_result != ESP_OK) return map_error(open_result);
+    esp_err_t result = nvs_erase_all(handle);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    return map_error(result);
+}
+
+Status write_empty_schema2_namespace() {
+    nvs_handle_t handle = 0;
+    const esp_err_t open_result = nvs_open_from_partition(
+        kPartitionLabel,
+        kVaultNamespace,
+        NVS_READWRITE,
+        &handle
+    );
+    if (open_result != ESP_OK) return map_error(open_result);
+
+    esp_err_t result = nvs_erase_all(handle);
+    if (result == ESP_OK) {
+        result = nvs_set_u32(handle, kSchemaKey, kStorageSchemaVersion);
+    }
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    return map_error(result);
+}
+
+Status full_erase_and_initialize_schema2() {
+    (void)nvs_flash_deinit_partition(kPartitionLabel);
+    esp_err_t result = nvs_flash_erase_partition(kPartitionLabel);
+    if (result != ESP_OK) return map_error(result);
+    result = nvs_flash_init_partition(kPartitionLabel);
+    if (result != ESP_OK) return map_error(result);
+    return write_empty_schema2_namespace();
+}
+
+Status clear_vault_namespaces_preserving_registration(bool create_schema) {
+    // A legacy Schema 1 partition used NVS encryption with public development
+    // keys. It cannot safely coexist with the canonical plaintext-NVS framing;
+    // explicit reprovision therefore performs the historical full partition
+    // erase. No canonical reg2 identity can predate that migration boundary.
+    if (legacy_schema1_present()) {
+        return create_schema
+            ? full_erase_and_initialize_schema2()
+            : full_erase_and_initialize_schema2();
+    }
+
+    Status status = initialize_plain_partition();
+    if (status != Status::kOk) return status;
+
+    status = erase_namespace(kLegacyNamespace);
+    if (status != Status::kOk) return status;
+
+    if (create_schema) return write_empty_schema2_namespace();
+    return erase_namespace(kVaultNamespace);
 }
 
 }  // namespace
@@ -105,7 +187,11 @@ Status CompatibleNvsPersistence::load(PersistedSnapshot* snapshot) {
 }
 
 Status CompatibleNvsPersistence::format_schema2() {
-    return schema2_.format_schema2();
+    // Canonical registration/device identity now lives in a separate `reg2`
+    // namespace on the same auth_nvs partition. Normal first provisioning and
+    // reprovisioning of an already canonical Device must therefore clear only
+    // Vault/legacy user-state namespaces, not the whole partition.
+    return clear_vault_namespaces_preserving_registration(true);
 }
 
 Status CompatibleNvsPersistence::replace_envelope(
@@ -122,7 +208,11 @@ Status CompatibleNvsPersistence::set_last_used(
 }
 
 Status CompatibleNvsPersistence::erase_all() {
-    return schema2_.erase_all();
+    // Factory Reset clears Vault/user data while the registration component
+    // separately removes the active BRK registration. Device ID remains stable
+    // across reset so a USB-visible identity cannot change as a side effect of
+    // deleting user credentials.
+    return clear_vault_namespaces_preserving_registration(false);
 }
 
 }  // namespace m5auth::vault_runtime
