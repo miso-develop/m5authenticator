@@ -2,7 +2,7 @@
 name: code-review
 description: Review a branch, PR, commit range, or work-in-progress change against requested behavior, repository constraints, and security policy.
 metadata:
-  version: "1.0"
+  version: "1.1"
   source: "adapted from mattpocock/skills"
   license: "MIT"
 ---
@@ -29,11 +29,14 @@ Look for missing/partial Acceptance Criteria, incorrect behavior, unrequested sc
 For security-sensitive changes inspect specifically:
 
 - whether real/sensitive data could enter Git, logs, errors, telemetry, artifacts, fixtures, screenshots, URLs, or external requests
-- whether secret-bearing buffers/data are persisted longer or more broadly than necessary
-- whether a new export/readback path bypasses the no-secret-export invariant
+- whether TOTP/Wi-Fi plaintext, VMK, Passphrase-derived KEK, BUK, unlock/session key material, decrypted Vault data, or credential-bearing protocol buffers are persisted or retained longer/broader than required
+- whether encrypted Recovery Packages or browser-persistence exports can enter repository content, CI artifacts, diagnostics, or automatic upload paths even though they are ciphertext-only
+- whether crash/core/RAM/NVS/Flash dumps can capture VMK, session material, plaintext credentials, or decrypted Vault state
+- whether a new export/readback path bypasses the no-stored-secret-export invariant
 - whether Web Provisioner data leaves the browser-local trust boundary
-- whether USB/serial responses echo secret material
-- whether update/reset/storage changes can expose or accidentally retain credentials
+- whether browser persistence contains plaintext credentials, Passphrase-derived KEK, decrypted records, or exportable quick-unlock material contrary to `docs/SECRET_VAULT.md`
+- whether USB/serial responses echo secret material or turn VMK delivery into a reusable plaintext operation
+- whether lock/unlock/re-key/recovery/update/reset/storage changes violate the RAM-only VMK or fail-closed state boundary
 - whether examples/tests remain fully synthetic or published public vectors
 - whether third-party/network dependencies expand the trust boundary
 
