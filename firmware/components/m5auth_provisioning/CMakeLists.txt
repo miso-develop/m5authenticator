@@ -4,6 +4,7 @@ idf_component_register(
         "session_binding_v2.cpp"
         "session_protocol_v2.cpp"
         "canonical_v2_state.cpp"
+        "canonical_protocol_v2.cpp"
     INCLUDE_DIRS "include"
     REQUIRES
         m5auth_core
