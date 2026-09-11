@@ -45,9 +45,18 @@ The Device must not persist:
 
 TOTP credential data and Wi-Fi credentials are both inside the encrypted credential boundary.
 
-## Vault schema and generation
+## Storage/Vault versioning
 
-Vault format/schema versioning is independent from firmware SemVer and provisioning protocol version. The implementation must fail closed on an unknown newer Vault/schema version and must not automatically Factory Reset or reinterpret it.
+The pre-Decision-#40 development implementation uses `STORAGE_SCHEMA_VERSION = 1` for a logical snapshot protected by the development encrypted-NVS backend. The new Encrypted Vault representation changes the persisted security meaning and must not silently reuse that schema.
+
+Task #41 must therefore introduce the V1 target as:
+
+- **`STORAGE_SCHEMA_VERSION = 2`** for the Device persistence layout/metadata semantics
+- **`VAULT_FORMAT_VERSION = 1`** for the first application-level Encrypted Vault ciphertext format
+
+Both remain independent from firmware SemVer and provisioning protocol version.
+
+Known development schema 1 may be explicitly rejected/reprovisioned because no production release was created with it. Unknown newer schema/Vault versions must fail closed and must not trigger automatic Factory Reset or speculative migration.
 
 The Vault also carries a `generation` value coordinated with the Web canonical copy. Generation is used to detect stale or mismatched Device/Web copies and interrupted updates.
 
