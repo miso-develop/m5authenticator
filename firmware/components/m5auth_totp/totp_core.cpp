@@ -57,20 +57,15 @@ void clear_bytes(std::vector<std::uint8_t>* bytes) {
     }
 }
 
-}  // namespace
-
-CoreResult generate_with_provider(
-    std::string_view base32_secret,
+CoreResult generate_key_with_provider(
+    std::span<const std::uint8_t> key,
     std::uint64_t unix_seconds,
     HmacSha1Provider provider,
     std::uint32_t* code
 ) {
+    if (key.empty()) return CoreResult::kInvalidSecret;
     if (provider == nullptr || code == nullptr) return CoreResult::kCryptoError;
-    std::vector<std::uint8_t> key;
-    if (!decode_base32(base32_secret, &key)) {
-        clear_bytes(&key);
-        return CoreResult::kInvalidSecret;
-    }
+
     const std::uint64_t counter = unix_seconds / kPeriodSeconds;
     std::array<std::uint8_t, 8> message{};
     for (std::size_t index = 0; index < message.size(); ++index) {
@@ -78,8 +73,9 @@ CoreResult generate_with_provider(
         message[index] = static_cast<std::uint8_t>((counter >> shift) & 0xffU);
     }
     std::array<std::uint8_t, 20> digest{};
-    const bool hmac_ok = provider(key.data(), key.size(), message.data(), message.size(), digest.data());
-    clear_bytes(&key);
+    const bool hmac_ok = provider(
+        key.data(), key.size(), message.data(), message.size(), digest.data()
+    );
     secure_zero(message.data(), message.size());
     if (!hmac_ok) {
         secure_zero(digest.data(), digest.size());
@@ -98,6 +94,34 @@ CoreResult generate_with_provider(
     *code = binary % kModulo;
     secure_zero(digest.data(), digest.size());
     return CoreResult::kOk;
+}
+
+}  // namespace
+
+CoreResult generate_raw_with_provider(
+    std::span<const std::uint8_t> secret,
+    std::uint64_t unix_seconds,
+    HmacSha1Provider provider,
+    std::uint32_t* code
+) {
+    return generate_key_with_provider(secret, unix_seconds, provider, code);
+}
+
+CoreResult generate_with_provider(
+    std::string_view base32_secret,
+    std::uint64_t unix_seconds,
+    HmacSha1Provider provider,
+    std::uint32_t* code
+) {
+    if (provider == nullptr || code == nullptr) return CoreResult::kCryptoError;
+    std::vector<std::uint8_t> key;
+    if (!decode_base32(base32_secret, &key)) {
+        clear_bytes(&key);
+        return CoreResult::kInvalidSecret;
+    }
+    const CoreResult result = generate_key_with_provider(key, unix_seconds, provider, code);
+    clear_bytes(&key);
+    return result;
 }
 
 }  // namespace m5auth::totp
