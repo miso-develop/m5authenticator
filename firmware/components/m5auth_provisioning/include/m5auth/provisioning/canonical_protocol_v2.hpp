@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -26,7 +27,8 @@ public:
         registration::Store& registration,
         time::TimeService& time_service,
         StagedSessionV2Handler& session_handler,
-        CanonicalVmkSink& vmk_sink
+        CanonicalVmkSink& vmk_sink,
+        std::recursive_mutex& runtime_access_mutex
     );
     ~CanonicalProtocolV2Handler();
 
@@ -43,6 +45,7 @@ private:
     time::TimeService& time_service_;
     StagedSessionV2Handler& session_handler_;
     CanonicalVmkSink& vmk_sink_;
+    std::recursive_mutex& runtime_access_mutex_;
 };
 
 std::string canonical_v2_message_too_large_response();
