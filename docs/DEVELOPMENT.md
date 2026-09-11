@@ -23,11 +23,41 @@ The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG 
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
 
-### Development storage security
+### Current development security state
 
-Normal development uses `DevSecurityBackend`. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material and **must not burn or modify eFuse**. Its firmware reports `security_profile: development` and `production_release_allowed: false`.
+The current pre-V1 implementation still uses the development-era `DevSecurityBackend`, `PROTOCOL_VERSION = 1`, and `STORAGE_SCHEMA_VERSION = 1`. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material and **must not burn, read for provisioning, or modify project-specific eFuse security state**. Its firmware reports `security_profile: development` and `production_release_allowed: false`.
 
-Production HMAC/eFuse-backed initialization is intentionally absent until Task #26. Do not add an eFuse burn step, private key file, or shared production encryption key while working on earlier Tasks.
+This development backend is intentionally not a production credential-protection boundary: a public/synthetic storage key cannot protect a captured Flash image from an attacker who has the same public source material.
+
+Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26 and PR #39 are historical/superseded and must not be revived as the V1 production path.
+
+### Target V1 security transition
+
+The target V1 architecture is defined by `docs/SECRET_VAULT.md`:
+
+- application-level authenticated Encrypted Vault in `auth_nvs`
+- random 256-bit Vault Master Key (VMK)
+- VMK persisted nowhere on the Device and held only in RAM while `UNLOCKED`
+- Passphrase-derived KEK for recovery wrapping
+- browser-local Browser Unlock Key (BUK) for Trusted Browser quick unlock
+- fresh protected Web-to-Device unlock session with Device user presence
+- no M5Authenticator-specific eFuse burn
+
+The transition is intentionally breaking and must not silently reinterpret development protocol/storage v1. The target boundaries are:
+
+- `PROTOCOL_VERSION = 2`
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
+
+The former catch-all Task #41 was closed as not planned because it mixed unresolved security decisions with an oversized implementation surface. Map #17 now owns Decisions #45-#49. After those decisions are settled, Spec #7 must be updated and the security implementation decomposed into narrow Tasks before production code changes begin.
+
+Until that replacement implementation is complete and release validation explicitly permits production distribution, do not:
+
+- enable `production_release_allowed`
+- treat the synthetic development storage key as production protection
+- add an eFuse burn/provisioning path
+- invent KDF/AEAD/session parameters inside an implementation Task
+- advertise protocol/storage/Vault versions that are not actually implemented
 
 The native state-codec check can be run from the repository root with:
 
@@ -41,7 +71,7 @@ g++ -std=c++20 -Wall -Wextra -Werror \
 /tmp/m5auth-storage-state-test
 ```
 
-See `docs/STORAGE.md` for the storage/security boundary.
+See `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, and `docs/PROVISIONING_PROTOCOL.md` for the persistence, key, and protocol boundaries.
 
 ## Web App
 
@@ -74,7 +104,7 @@ When an Actions artifact is unavoidable:
 - use the minimum practical retention period; default to `retention-days: 1` unless a documented reason requires longer
 - delete the artifact as soon as it has been consumed when the workflow/tooling supports immediate deletion
 - do not retain duplicate or intermediate build outputs
-- never upload credential-bearing data, secret material, decrypted stores, logs, dumps, or other prohibited security material
+- never upload credential-bearing data, secret material, encrypted Recovery Packages, decrypted stores, logs, dumps, or other prohibited security material
 
 Long-lived release binaries belong in GitHub Release assets rather than Actions artifact storage. A separate storage decision must be made before introducing transient external CI build storage.
 
@@ -87,4 +117,4 @@ python3 -m unittest discover -s tests -p "test_security_scan.py"
 python3 scripts/security_scan.py
 ```
 
-Use only public test vectors or explicitly synthetic credentials in tests. Never use personal authenticator exports, real QR images, passwords, or credential-bearing dumps.
+Use only public test vectors or explicitly synthetic credentials in tests. Never use personal authenticator exports, real QR images, passwords, user-generated Recovery Packages, Vault/session keys, or credential-bearing dumps.
