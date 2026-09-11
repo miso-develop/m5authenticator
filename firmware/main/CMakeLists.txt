@@ -8,6 +8,7 @@ idf_component_register(
         m5auth_storage
         m5auth_time
         m5auth_totp
+        m5auth_vault
 )
 
 execute_process(
