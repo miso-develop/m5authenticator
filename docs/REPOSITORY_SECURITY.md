@@ -28,12 +28,19 @@ The scanner enumerates Git-tracked files and fails closed if Git file
 enumeration cannot be performed. It checks for project-specific leakage
 patterns including secret-bearing TOTP URIs, Google Authenticator migration
 payloads, private-key material, credential-like literal assignments,
-credential/dump-like tracked paths, oversized files that would otherwise be
-left unscanned, and logging calls that appear to contain credential-bearing
-data.
+VMK/KEK/BUK/unlock-session key-like literal assignments, credential/dump-like
+tracked paths, Recovery-Package/Vault-backup-like tracked paths, oversized
+files that would otherwise be left unscanned, and logging calls that appear to
+contain credential-bearing data.
 
 The scanner reports the rule, path, and line number. It does not print the
 matched credential-bearing value.
+
+Repository-owned scanning is heuristic defense in depth. It cannot prove that
+an arbitrary ciphertext or generically named binary is safe. User-generated
+encrypted Recovery Packages remain prohibited repository material even when a
+particular file name/content does not match a scanner rule. Keep such files in
+ignored local-only locations and review staged changes before push.
 
 ## Allowlist policy
 
@@ -48,13 +55,14 @@ Allowlisting is intentionally narrow:
 - `public-test-vector` entries must live under `tests/fixtures/public/`;
 - `synthetic-fixture` entries must live under `tests/fixtures/synthetic/`;
 - each entry requires a reviewable reason;
-- forbidden credential/dump/key paths and files too large to scan cannot be
-  allowlisted;
+- forbidden credential/dump/key/backup paths and files too large to scan cannot
+  be allowlisted;
 - stale allowlist entries fail the scan.
 
 Do not add an entry for a real credential, personal authenticator export,
-production dump, or other user authentication material. If a fixture is not
-obviously public or synthetic, it is not eligible for allowlisting.
+user Recovery Package, production dump, or other user authentication material.
+If a fixture is not obviously public or synthetic, it is not eligible for
+allowlisting.
 
 ## GitHub Actions baseline
 
@@ -116,5 +124,5 @@ Repository merge policy:
 
 Repository automation is defense in depth. A green scan does not authorize
 real authentication material in source, issues, pull requests, logs,
-screenshots, fixtures, artifacts, serial output, browser output, or release
-files. `SECURITY.md` remains authoritative.
+screenshots, fixtures, artifacts, serial output, browser output, Recovery
+Packages, or release files. `SECURITY.md` remains authoritative.

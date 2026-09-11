@@ -1,14 +1,14 @@
 # Provisioning Protocol
 
-Decision #40 changes the V1 security boundary from development encrypted-NVS / planned eFuse keying to an application-level Encrypted Vault with a RAM-only Vault Master Key (VMK) and Trusted Browser quick unlock.
+M5Authenticator V1 uses USB Serial / Web Serial with newline-delimited JSON (NDJSON). Decision #40 establishes the RAM-only VMK security model; Decisions #47-#49 settle Trusted Browser ownership, fresh-session cryptography, user presence, and trusted-time mutation semantics.
 
-This is a wire/state-machine breaking change. Task #41 must therefore advance the protocol from the existing development `PROTOCOL_VERSION = 1` to **`PROTOCOL_VERSION = 2`** rather than silently changing v1 semantics.
+The current development implementation may still advertise `PROTOCOL_VERSION = 1`. The complete V1 security transition activates **`PROTOCOL_VERSION = 2`** only in Task #55 after the underlying Vault/Web/Device/session components are present. Protocol v1 semantics must never be silently reinterpreted as v2.
 
-Transport remains USB Serial / Web Serial using newline-delimited JSON (NDJSON). Requests and responses remain versioned and request-id correlated. Credential-bearing values must never be echoed in errors or logs.
+Requests and responses are versioned, bounded, and request-id correlated. Binary cryptographic fields are encoded in canonical base64url form. Credential/key material is never echoed in errors or logs.
 
 ## Protocol v2 security states
 
-The protocol exposes only bounded non-secret state such as:
+The protocol exposes only bounded state such as:
 
 - `unprovisioned`
 - `locked`
@@ -17,118 +17,167 @@ The protocol exposes only bounded non-secret state such as:
 - `unlocked`
 - `error`
 
-The protocol must not claim that Device ID or registration metadata is hardware-backed authentication.
+Device ID and registration metadata are not described as hardware-backed Device authentication.
 
-## Device/status
+## `hello`
 
-### `hello`
-
-Returns non-secret metadata including:
+Returns only non-secret compatibility/status metadata, including:
 
 - firmware/build version
 - protocol version
-- storage/Vault format version
+- storage schema / Vault format version
 - security profile (`ram_only_vault` or equivalent)
-- lock state
-- provisioned/registration state
+- lock/provisioned state
+- logical `vault_id`
 - Device Vault generation
+- active registration id/epoch and BRK public-key identity/fingerprint where required
 - trusted-time state/source/age/resync metadata
 
-Unsupported protocol versions fail closed for security-sensitive operations.
+Unsupported versions fail closed for security-sensitive operations.
 
-### `vault.status`
+## `vault.status`
 
-Returns only non-secret Vault presence/version/generation/compatibility state. It never returns ciphertext through a generic diagnostic export path and never returns VMK or plaintext records.
+Returns only non-secret Vault presence/version/`vault_id`/generation/compatibility state. It never returns ciphertext through a generic diagnostic export path and never returns VMK or plaintext records.
 
-## Unlock session
+Account identity metadata such as issuer/account/display name and Wi-Fi SSID is encrypted Vault content and is not listed while locked.
 
-Protocol v2 must provide a **fresh-session** unlock flow. Exact message names/cryptographic fields may be finalized by Task #41, but the externally observable contract is:
+## Fresh unlock/registration session
+
+Protocol v2 VMK delivery uses a fresh attempt:
 
 ```text
-unlock.begin
-  -> fresh Device session/challenge material + attempt id
-  -> Device displays an unlock request
-  -> explicit physical user-presence confirmation
-  -> Web and Device establish/bind fresh session protection
-  -> Web sends VMK protected for this attempt only
-  -> Device validates current Vault/generation/session
+unlock.begin / registration.begin / recovery.begin
+  -> Device fresh attempt_id + challenge + ephemeral P-256 ECDH public key
+  -> Web fresh P-256 ECDH public key
+  -> versioned fixed-order transcript is constructed
+  -> Trusted Browser path signs transcript with active BRK
+  -> Device verifies request and shows UNLOCK REQUEST
+  -> fresh physical user-presence confirmation
+  -> ECDH -> HKDF-SHA-256 -> 256-bit session key
+  -> Web sends AES-256-GCM protected VMK for this attempt only
+  -> Device validates Vault/generation/session
   -> VMK enters Device RAM
-  -> unlocked
+  -> UNLOCKED
 ```
 
-Mandatory properties:
+### Cryptographic contract
 
-- VMK is never a reusable plaintext protocol value.
-- A new unlock attempt uses fresh session material.
-- Pending unlock state has a bounded timeout.
-- cancel, timeout, malformed messages, user-presence rejection, disconnect, or cryptographic failure wipe pending secret/session material.
-- Device user presence is bound to the current attempt; confirmation from an earlier attempt cannot authorize a later attempt.
-- Trusted Browser vs Passphrase recovery is a Web-side VMK recovery distinction. The Device accepts only the protected fresh-session unlock material after user presence.
+Each attempt uses:
 
-An explicit `lock` operation is allowed and must wipe Device VMK/session secret material immediately.
+- random 128-bit `attempt_id`
+- random 256-bit Device challenge
+- fresh Device and Web P-256 ECDH keypairs
+- HKDF-SHA-256 with explicit M5Authenticator/domain separation and fresh attempt material
+- 32-byte derived session key
+- AES-256-GCM for VMK delivery
+- fresh random 96-bit AES-GCM nonce and 128-bit tag
+- ECDSA P-256/SHA-256 BRK signature for normal Trusted Browser requests
 
-## Trusted Browser and Passphrase recovery
+The cryptographic transcript is a versioned **fixed-order encoding** independent of raw JSON property ordering. It binds at least:
 
-The serial protocol does not receive the user Passphrase or Browser Unlock Key (BUK).
+- protocol/domain label and operation
+- Device ID
+- logical `vault_id`
+- expected generation
+- registration id/epoch where applicable
+- attempt id / challenge
+- both ephemeral ECDH public keys
+- current or proposed BRK identity where applicable
 
-Web-side flow:
+Exact field limits/encoding bytes must be fixed by Task #54 and covered by Web/native interoperability vectors; implementations must not sign incidental serializer output.
+
+### Attempt lifecycle
+
+Pending attempts expire after **30 seconds**.
+
+The following fail closed and wipe pending ECDH/session/VMK material:
+
+- invalid or stale registration epoch
+- invalid BRK signature
+- invalid ECDH public key
+- replayed/old attempt id or challenge
+- Vault id / generation mismatch
+- AEAD authentication failure
+- user rejection
+- timeout
+- cancel
+- superseding attempt
+- disconnect
+- malformed/oversized messages
+
+A button state/action from before the dedicated unlock request cannot authorize the current attempt.
+
+## Trusted Browser registration
+
+V1 permits exactly **one active Trusted Browser per logical Vault/Device**.
+
+The Browser owns:
+
+- non-extractable AES-256-GCM BUK for local VMK wrapping
+- non-extractable ECDSA P-256 BRK private key for request authentication
+
+The Device persists only the BRK public key and non-secret registration id/epoch.
+
+Normal Trusted Browser quick unlock requires a valid BRK signature plus fresh Device user presence before VMK acceptance.
+
+### Replacement/recovery
+
+A new Browser that imports a Recovery Package does not become a silent second writer. It must complete an explicit recovery/Trusted Browser replacement flow with Passphrase recovery and Device user presence. Successful replacement installs the new BRK public key and increments the registration epoch; the old BRK can no longer authorize future quick unlocks.
+
+## User-presence scope
+
+Fresh Device physical confirmation is mandatory for:
+
+- normal quick unlock of a `LOCKED` Device
+- initial provisioning / first registration
+- untrusted/new-Browser recovery of an existing Device
+- Trusted Browser replacement
+- VMK rotation/re-key
+
+Ordinary same-VMK Vault generation update while already `UNLOCKED` does not require a new physical confirmation for every mutation.
+
+## Canonical Vault mutation
+
+The active Trusted Browser is the normal M5Authenticator canonical writer. Account/Wi-Fi changes are applied to transient browser plaintext, encrypted into a new authenticated Vault generation, persisted transactionally on Web, then synchronized to Device as encrypted ciphertext.
+
+For an ordinary same-VMK update on an already unlocked Device:
 
 ```text
-new/untrusted Browser:
-Passphrase -> KDF -> KEK -> unwrap VMK
-
-Trusted Browser:
-BUK -> unwrap VMK
-```
-
-Both paths converge on the same fresh Device unlock session. BUK and Passphrase-derived KEK remain browser-local and are never provisioned to Device Flash.
-
-## Encrypted Vault update
-
-Web is the canonical V1 Vault state. Account/Wi-Fi mutations should be sent to the Device as a versioned authenticated **encrypted Vault replacement/update**, not as a release-mode stored-secret read/export flow.
-
-A security-sensitive replacement follows an atomic state transition:
-
-```text
-unlocked/locked
-  -> begin replacement
-  -> Device wipes current VMK as required by Decision #40
-  -> provisioning
-  -> receive versioned encrypted Vault + non-secret metadata/generation
-  -> validate bounded structure
-  -> fresh unlock/session key delivery as required
-  -> authenticate/decrypt validation
+expected vault_id/generation
+  -> receive bounded encrypted new generation
+  -> validate framing/version/current state
+  -> authenticate/decrypt transiently under active VMK as required
   -> atomic commit
-  -> unlocked or locked according to completed flow
+  -> retain UNLOCKED VMK session
 ```
 
-Failure or disconnect must retain the previous valid committed generation or leave the Device safely non-decrypting. It must not create a partially accepted canonical generation.
+This path does not destroy the VMK merely because the single Vault ciphertext changes.
 
-The exact ciphertext chunking/size framing belongs to Task #41. Maximum message/request sizes must remain bounded and testable.
+Unexpected generation divergence never uses last-writer-wins and is not automatically merged. Failure/interruption retains the prior valid generation or leaves the Device safely non-decrypting; it never accepts a partial generation.
 
-## Account management
+Release protocol vocabulary contains no operation to read/export stored TOTP secrets, Wi-Fi passwords, VMK, Passphrase material, BUK, or BRK private key.
 
-V1 account mutation is Web-canonical. QR decoding, migration parsing, rename, reorder, delete, and Wi-Fi edits modify the logical Vault in browser transient memory, produce a new encrypted canonical generation, and synchronize that encrypted generation to Device.
+## Lock
 
-Release protocol vocabulary must contain no operation that reads or exports stored TOTP secrets, Wi-Fi passwords, VMK, Passphrase material, or BUK.
+An explicit `lock` operation wipes VMK and pending session material immediately and clears visible OTP/account metadata caches as required.
 
-Device account metadata may be exposed only while the Device is in a state where the required Vault data can be safely opened, and responses must remain limited to non-secret display metadata.
+USB power, USB enumeration, or opening an ordinary Web Serial connection do not themselves lock an existing unlocked session.
 
-## Wi-Fi
-
-Wi-Fi credentials are part of the approved encrypted credential Vault. The protocol must not return the Wi-Fi password.
-
-Because Device cannot decrypt Wi-Fi credentials while `LOCKED`, NTP boot synchronization is deferred until after successful unlock. USB `time.sync` may remain available independently because it carries no stored credential material.
+Recovery provisioning, Trusted Browser replacement, VMK re-key, Factory Reset, reboot/power loss, and fatal security error are VMK-destruction boundaries.
 
 ## Trusted time
 
 ### `time.status`
 
-Returns non-secret trusted-time state such as `not_synced`, `ready`, `stale`, source, last-sync metadata, age, and resync-due state.
+Available while locked because it returns only non-secret state such as `not_synced`, `ready`, `stale`, source, last-sync metadata, age, and resync-due state.
 
 ### `time.sync`
 
-Accepts a bounded host Unix timestamp and establishes USB trusted time for the current boot. It accepts or returns no Vault/VMK/TOTP material and may be used while locked; OTP reveal still requires both `UNLOCKED` and trusted-time `READY`.
+Accepts a bounded host Unix timestamp **only while Device state is `UNLOCKED`**. In `locked`, `unprovisioned`, `unlock_pending`, or `provisioning`, it returns a bounded non-secret `invalid_state` error and does not change the trusted-time anchor.
+
+A successful sync updates the current boot's trusted monotonic anchor. OTP reveal still requires both `UNLOCKED` and trusted-time `READY`.
+
+An already-established current-boot trusted anchor may survive explicit Lock; reboot/power loss clears it.
 
 ## Factory Reset
 
@@ -136,21 +185,37 @@ Accepts a bounded host Unix timestamp and establishes USB trusted time for the c
 
 It must:
 
-- wipe current VMK and pending session keys
-- erase the Device Encrypted Vault and M5Authenticator user/registration state
+- wipe VMK and pending session keys
+- erase Device Encrypted Vault and registration/user state
 - return Device to `UNPROVISIONED`
-- perform no project-specific eFuse read/burn/rotation
+- perform no M5Authenticator-specific eFuse operation
 
-The Web paired-reset flow must also remove the matching canonical encrypted state / Trusted Browser registration as defined by the product UX, without exporting plaintext secrets.
+The paired Web reset flow removes matching browser canonical/Trusted-Browser state under the finalized UX. External Recovery Packages are outside this erase boundary and cannot be remotely deleted.
+
+## Passphrase and Recovery Package boundary
+
+The serial protocol never receives the user Passphrase, Passphrase-derived KEK, or BUK/BRK private key.
+
+New/untrusted Browser recovery happens locally:
+
+```text
+Recovery Package + Passphrase
+  -> Argon2id-derived KEK
+  -> unwrap VMK locally
+  -> create new BUK/BRK locally
+  -> explicit Device recovery/registration replacement session
+```
+
+Possession of the encrypted package enables offline Passphrase guessing; it remains security-sensitive even though ciphertext-only.
 
 ## Fail-closed behavior
 
-The protocol rejects malformed/oversized messages, unsupported versions/operations, invalid state transitions, stale or mismatched generations, invalid unlock attempts, failed user presence, and authentication/integrity failures.
+Protocol v2 rejects malformed/oversized messages, unsupported versions/operations, invalid state transitions, stale registration epochs, stale/mismatched generations, invalid unlock attempts, failed user presence, and cryptographic authentication failures.
 
-Unknown newer Vault/storage formats must not be automatically erased or interpreted.
+Unknown newer Vault/storage/protocol formats are not automatically erased or guessed.
 
-The protocol must never fall back to the legacy development synthetic-key storage path in a production/release profile.
+The production path never falls back to the legacy synthetic-key development storage backend.
 
-## Migration from development protocol v1
+## Version migration
 
-Protocol v1 remains historical development behavior. Task #41 owns the explicit transition to v2. Web and firmware must not advertise v2 until the new lock/unlock/Vault semantics are actually implemented and validated.
+Protocol v1 remains historical development behavior. Tasks #51-#54 may stage target components without changing the canonical advertised protocol. Task #55 activates v2 only when end-to-end Vault/session/management semantics are complete. Task #56 then updates the release contract, followed by security closeout Task #15.

@@ -1,8 +1,8 @@
 # Secure Account Storage
 
-V1 uses an application-level authenticated Encrypted Vault as the canonical Device credential boundary. The Vault is stored in the dedicated `auth_nvs` partition, while the Vault Master Key (VMK) is never persisted on the Device and exists only in RAM during an `UNLOCKED` session.
+V1 uses an application-level authenticated Encrypted Vault as the canonical Device credential boundary. Decision #40 and Decisions #45-#49 define the security architecture; `docs/SECRET_VAULT.md` is the durable consolidated reference.
 
-Decision #40 and `docs/SECRET_VAULT.md` define the canonical security architecture. Task #41 tracks implementation of this architecture. Until #41 is merged and release validation is updated, the existing development storage backend must not be treated as production-ready security.
+The current development implementation may still use development Protocol 1 / Storage Schema 1 and a deliberately public synthetic encrypted-NVS key. That path is **not** production-ready. The V1 target is implemented through Tasks #51-#56 and validated by Task #15.
 
 ## Partition layout
 
@@ -10,129 +10,181 @@ The V1 8 MiB M5StickS3 release layout is defined by `firmware/partitions.csv`:
 
 | Partition | Offset | Size | Purpose |
 | --- | ---: | ---: | --- |
-| `nvs` | `0x9000` | `0x6000` | ESP-IDF/system NVS boundary; not the canonical store for authenticator credentials |
+| `nvs` | `0x9000` | `0x6000` | ESP-IDF/system NVS boundary; not the canonical authenticator credential store |
 | `otadata` | `0xf000` | `0x2000` | dual-OTA selection metadata |
 | `phy_init` | `0x11000` | `0x1000` | PHY initialization data |
 | `ota_0` | `0x30000` | `0x3d0000` | firmware OTA slot 0 |
 | `ota_1` | `0x400000` | `0x3d0000` | firmware OTA slot 1 |
-| `auth_nvs` | `0x7d0000` | `0x30000` | Encrypted Vault and non-secret Vault metadata |
+| `auth_nvs` | `0x7d0000` | `0x30000` | Encrypted Vault and bounded non-secret Vault/registration metadata |
 
-`auth_nvs` occupies the final 192 KiB of the 8 MiB flash and starts exactly where `ota_1` ends. Ordinary non-erasing firmware updates must not overwrite it.
+`auth_nvs` occupies the final 192 KiB of the 8 MiB flash and begins exactly where `ota_1` ends. Ordinary non-erasing firmware updates must not overwrite it.
 
-The existing pre-release move from `0x12000` to `0x7d0000` remains a one-time development layout transition. Development devices that crossed that boundary may require clean reprovisioning. Future relocation requires explicit migration design.
+The earlier development move from `0x12000` to `0x7d0000` remains a one-time pre-release layout transition. Development devices that crossed that boundary may require clean reprovisioning. Future relocation requires explicit migration design.
 
-## Persistent data boundary
+## Target persistence versions
 
-The Device may persist:
+The development implementation uses `STORAGE_SCHEMA_VERSION = 1` for a logical snapshot protected by development encrypted-NVS semantics.
 
-- authenticated Encrypted Vault ciphertext
-- Vault format/schema version
-- AEAD nonce/authentication metadata
-- generation/version metadata
-- non-secret Device/registration metadata
-- non-secret UI/settings metadata where appropriate
+V1 changes the security meaning and therefore uses independent version boundaries:
+
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
+- Protocol version is independent and becomes 2 only when the complete v2 runtime is activated
+- firmware SemVer remains independent from all of the above
+
+Known development schema 1 may be explicitly rejected/reprovisioned because no production release was created with it. Unknown newer storage/Vault versions must fail closed and must not trigger automatic Factory Reset or speculative migration.
+
+Firmware/Web must not advertise the target versions before their semantics are actually active.
+
+## V1 Vault representation
+
+Decision #45 selects **one authenticated ciphertext per Vault generation**.
+
+The Vault uses:
+
+- AES-256-GCM
+- random 256-bit VMK
+- fresh random 96-bit nonce for every Vault encryption
+- 128-bit authentication tag
+- versioned AAD including the Vault format/domain, logical random `vault_id`, storage schema, and generation
+
+The nonce is never derived solely from `generation`. Because V1 has no hardware-backed monotonic counter, restoring an old complete state must not create deterministic nonce reuse under the same VMK.
+
+Device ID is not part of the Vault cryptographic binding because an encrypted Recovery Package must be explicitly portable to a replacement Device.
+
+## Encrypted credential/privacy boundary
+
+The Vault plaintext includes:
+
+- TOTP secret
+- opaque credential id
+- issuer
+- account label
+- user-defined display name
+- algorithm/digits/period and other credential profile fields
+- manual order
+- Wi-Fi SSID
+- Wi-Fi password
+
+These account/Wi-Fi identity fields are intentionally not persisted in plaintext merely because they are not decryption keys. A locked Device must not expose account labels, issuer names, or SSIDs from Flash.
+
+The Device may persist outside the Vault only bounded non-secret state such as:
+
+- storage/Vault format versions
+- generation
+- random logical `vault_id`
+- ciphertext nonce/tag/length/framing metadata
+- Device/registration public metadata
+- active BRK public key plus registration id/epoch
+- non-credential UI settings such as brightness
+- `last_used` only as an opaque random credential id; its mapping to account identity remains encrypted
 
 The Device must not persist:
 
 - VMK
 - user Passphrase
 - Passphrase-derived KEK
-- Browser Unlock Key (BUK)
-- plaintext TOTP secrets
-- plaintext Wi-Fi passwords
-- decrypted credential snapshots
-- reusable unlock-session secrets
+- BUK
+- BRK private key
+- unlock/session keys
+- plaintext TOTP/Wi-Fi credential material
+- decrypted Vault snapshots
 
-TOTP credential data and Wi-Fi credentials are both inside the encrypted credential boundary.
+## Canonical replica model
 
-## Storage/Vault versioning
-
-The pre-Decision-#40 development implementation uses `STORAGE_SCHEMA_VERSION = 1` for a logical snapshot protected by the development encrypted-NVS backend. The new Encrypted Vault representation changes the persisted security meaning and must not silently reuse that schema.
-
-Task #41 must therefore introduce the V1 target as:
-
-- **`STORAGE_SCHEMA_VERSION = 2`** for the Device persistence layout/metadata semantics
-- **`VAULT_FORMAT_VERSION = 1`** for the first application-level Encrypted Vault ciphertext format
-
-Both remain independent from firmware SemVer and provisioning protocol version.
-
-Known development schema 1 may be explicitly rejected/reprovisioned because no production release was created with it. Unknown newer schema/Vault versions must fail closed and must not trigger automatic Factory Reset or speculative migration.
-
-The Vault also carries a `generation` value coordinated with the Web canonical copy. Generation is used to detect stale or mismatched Device/Web copies and interrupted updates.
-
-Generation is not a hardware-backed monotonic counter. Because V1 intentionally does not use an eFuse/secure-counter root, restoring an old complete Flash image may also restore old generation metadata. Device-only cryptographic rollback resistance is therefore not claimed.
-
-## Canonical state model
-
-For V1:
+Within M5Authenticator:
 
 ```text
-Web Encrypted Vault = canonical copy
-Device Encrypted Vault = runtime/offline-use copy
+Web Encrypted Vault = canonical encrypted replica
+Device Encrypted Vault = runtime/offline-use replica
 ```
 
-Credential mutation is coordinated from the Web Provisioner. Device-side account editing is not a canonical write path.
+This does **not** make Web/M5Authenticator the authoritative service-enrollment source. The original service enrollment and the user's source Authenticator credentials remain the authoritative recovery source for rotating/re-enrolling a compromised TOTP credential.
 
-A Vault update must be transactional/atomic from the externally observable perspective:
+Credential mutation is coordinated from the single active Trusted Browser. Device-side account editing is not a canonical write path.
 
-1. build/validate the new logical state in transient memory
-2. encrypt it under the active VMK using the versioned AEAD format
-3. stage the new ciphertext/metadata/generation
-4. commit atomically or retain the previous valid generation
-5. wipe plaintext/transient crypto buffers
+## Generation and update semantics
 
-Power loss or USB failure must not leave a partially accepted generation as the canonical state.
+The Vault carries `vault_id` and `generation` to detect stale/mismatched Web/Device replicas and interrupted updates.
 
-## Runtime access
+Generation is not hardware-backed anti-rollback. Restoring an old complete Flash image may restore old generation metadata as well.
 
-The VMK exists only while the Device is `UNLOCKED`.
+Unexpected divergence never uses last-writer-wins and is not auto-merged. It enters an explicit recovery/reconciliation path.
 
-TOTP access should narrow plaintext lifetime:
+A same-VMK update from the currently active canonical Browser while the Device is `UNLOCKED` is transactional:
+
+1. open the bounded logical Web Vault transiently
+2. apply the mutation
+3. encrypt a new generation under the current VMK with a fresh random nonce
+4. persist the Web canonical encrypted generation transactionally
+5. stage the new encrypted generation on Device
+6. verify expected `vault_id` / generation and authenticated structure
+7. commit atomically or retain the previous valid generation
+8. wipe plaintext/transient crypto buffers
+
+This ordinary generation update does **not** destroy the active VMK or require a new physical confirmation merely because the single ciphertext is replaced.
+
+Recovery provisioning, Trusted Browser replacement, VMK rotation/re-key, Factory Reset, explicit Lock, reboot/power loss, and fatal security error remain VMK-destruction boundaries.
+
+## Runtime access and plaintext lifetime
+
+The VMK exists only while Device state is `UNLOCKED`.
+
+Because V1 uses one ciphertext per generation, firmware may transiently decrypt the bounded Vault for an operation, but it must not keep the decrypted Vault resident for the unlocked session.
+
+TOTP access follows:
 
 ```text
-selected credential request
-  -> decrypt/open only required credential material
-  -> calculate TOTP
-  -> wipe plaintext TOTP secret
+verify UNLOCKED + trusted time READY
+  -> decrypt bounded Vault to mutable transient memory
+  -> locate selected credential by opaque id
+  -> use secret for TOTP
+  -> wipe credential working buffers
+  -> wipe decrypted Vault buffer
 ```
 
-Wi-Fi credential access is also permitted only while unlocked. Runtime Wi-Fi configuration remains RAM-only at the ESP-IDF driver layer so ESP-IDF's default flash-backed Wi-Fi persistence does not become a second credential store.
+Wi-Fi credential access is permitted only while unlocked and follows the same transient Vault-open boundary. Runtime Wi-Fi configuration remains RAM-only at the ESP-IDF driver layer so default flash-backed Wi-Fi persistence does not become a second credential store.
+
+Account display metadata may be cached only in unlocked-session RAM and is wiped on Lock.
 
 ## Lock and cryptographic erase
 
-Locking does not require repeatedly erasing the Vault ciphertext. Instead the Device destroys the VMK and other transient secret material:
+Locking normally leaves encrypted ciphertext intact and destroys the VMK/session material instead:
 
 ```text
 Encrypted Vault remains in Flash
 VMK is zeroized from RAM
-=> credential plaintext becomes unavailable to normal Device code
+=> credential plaintext and account identity metadata are unavailable to normal Device code
 ```
 
-Mandatory VMK-destruction events are:
+Mandatory VMK-destruction events:
 
-- reboot
-- power loss/shutdown
+- reboot / power loss / shutdown
 - explicit Lock
 - fatal security error
 - Factory Reset
-- entry into Vault replacement, recovery provisioning, or re-key
+- recovery provisioning
+- Trusted Browser replacement
+- VMK rotation/re-key
 
 USB power, USB enumeration, and ordinary Web Serial connection do not themselves lock an existing unlocked session.
 
 ## Factory Reset boundary
 
-Factory Reset removes the M5Authenticator user/security state from `auth_nvs`, including the Encrypted Vault and registration metadata, and wipes all secret-bearing RAM state before returning to `UNPROVISIONED`.
+Factory Reset removes M5Authenticator user/security state from `auth_nvs`, including the Encrypted Vault and registration metadata, wipes secret-bearing RAM state, and returns to `UNPROVISIONED`.
 
-Factory Reset performs no project-specific eFuse read/burn/rotation and leaves no irreversible M5Authenticator security state behind.
+Factory Reset performs no M5Authenticator-specific eFuse operation.
+
+An encrypted Recovery Package exported elsewhere is outside the Device erase boundary.
 
 ## Development-to-V1 transition
 
-The earlier `DevSecurityBackend`/planned `HmacEfuseSecurityBackend` architecture is superseded by Decision #40. A public synthetic development XTS/NVS key may still exist in pre-#41 code for development verification, but it is not an acceptable V1 release protection boundary because a Flash dump would be decryptable using public material.
+The earlier `DevSecurityBackend`/planned `HmacEfuseSecurityBackend` architecture is superseded by Decision #40. A public synthetic development XTS/NVS key may still exist in development code for verification, but it is never an acceptable V1 release protection boundary because a Flash dump could be decrypted using public material.
 
-Release validation must remain fail closed until Task #41 replaces that path with the application-level Encrypted Vault + RAM-only VMK design.
+Tasks #51-#55 introduce and activate the V1 Vault/runtime/protocol semantics. Task #56 replaces the development release contract, and Task #15 performs final security closeout before production eligibility is enabled.
 
 ## Memory, logging, and crash handling
 
-VMK, KEK, BUK-derived working material, session keys, TOTP secrets, Wi-Fi passwords, decrypted Vault data, encoded plaintext snapshots, and credential-bearing protocol buffers must never be logged.
+VMK, KEK, BUK, BRK private key, session keys, TOTP secrets, Wi-Fi passwords, decrypted Vault data, plaintext account identity metadata, encoded plaintext snapshots, and credential-bearing protocol buffers must never be logged.
 
 Secret-bearing memory must be wiped using a zeroization method that is not optimized away. Production crash/core-dump settings must not persist credential-bearing RAM in a form that defeats the RAM-only VMK design.

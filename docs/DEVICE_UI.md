@@ -1,101 +1,125 @@
 # StickS3 Device UI
 
-M5Authenticator V1 uses the M5StickS3 primary `BtnA` for local account selection, OTP reveal, and the explicit user-presence confirmation required by Trusted Browser quick unlock. Account management, secret import, deletion, reorder, Wi-Fi settings, recovery, and reset remain Web/USB operations.
+M5Authenticator V1 uses the M5StickS3 primary `BtnA` for local account selection, OTP reveal, and explicit user-presence confirmation during security-sensitive unlock/registration attempts. Account management, secret import, deletion, reorder, Wi-Fi settings, recovery, and reset remain Web/USB operations.
 
-Decision #40 and `docs/SECRET_VAULT.md` define the security state model.
+`docs/SECRET_VAULT.md` is the canonical V1 security-state reference. Decisions #45/#47/#48 define the encrypted metadata boundary, single Trusted Browser model, and user-presence scope.
 
 ## Security states shown to the user
 
-The Device UI must clearly distinguish at least:
+The Device UI clearly distinguishes at least:
 
 - `UNPROVISIONED`: no usable encrypted Vault is registered
-- `LOCKED`: encrypted Vault may exist, but VMK is absent from RAM and OTP reveal is unavailable
-- `UNLOCK REQUEST`: a fresh Browser unlock attempt is waiting for physical confirmation
-- `PROVISIONING`: credential state is being initialized/replaced/recovered/re-keyed
+- `LOCKED`: encrypted Vault may exist, but VMK is absent and account identity/OTP reveal are unavailable
+- `UNLOCK REQUEST`: one fresh Browser unlock/registration/recovery attempt is awaiting physical confirmation
+- `PROVISIONING`: initial/recovery/re-key/registration replacement is in progress
 - `UNLOCKED`: VMK is present in RAM; TOTP use still depends on trusted-time readiness
 - `VAULT ERROR`: security/Vault state is invalid and credential access remains blocked
 
-A cold boot or reboot starts `LOCKED` when a Vault exists. The UI must not imply that simply having encrypted data in Flash means the Device is ready to reveal OTPs.
+A cold boot or reboot starts `LOCKED` when a Vault exists. Merely having ciphertext in Flash never means the Device is ready to show accounts or OTPs.
 
-## Trusted Browser user presence
+## Locked metadata privacy
 
-Trusted Browser quick unlock does not require Passphrase re-entry, but it must not unlock unattended.
+Issuer, account label, user-defined display name, TOTP profile metadata, Wi-Fi SSID/password, and account ordering are inside the encrypted Vault.
 
-When a fresh unlock attempt arrives:
+While `LOCKED`, the Device must not display or enumerate those plaintext fields from Flash. Status screens may show only approved non-secret fields such as firmware/protocol/storage/Vault versions, generation, registration status, and trusted-time status.
 
-1. Device enters an explicit `UNLOCK REQUEST` state.
-2. The display makes clear that a connected Browser is requesting unlock.
-3. A fresh physical button action is required for that specific attempt.
-4. Rejection, timeout, transport failure, or a superseded attempt returns safely to `LOCKED` and wipes pending session material.
-5. A button action from a previous attempt must not authorize a later one.
+## User-presence request
 
-The exact press/hold duration may be finalized by Task #41, but it must not collide ambiguously with normal account-selection/reveal behavior. Unlock confirmation is available only while the dedicated unlock-request screen/state is active.
+Fresh physical confirmation is required for:
+
+- Trusted Browser quick unlock from `LOCKED`
+- initial provisioning / first registration
+- recovery from a new/untrusted Browser to an existing Device
+- Trusted Browser replacement
+- VMK rotation/re-key
+
+When such an attempt arrives:
+
+1. Device verifies the bounded protocol/session request far enough to reject stale/invalid attempts before asking the user.
+2. Device enters a dedicated `UNLOCK REQUEST` screen.
+3. The display identifies the operation category without exposing credential/key material.
+4. The user must perform a fresh button action for this specific attempt.
+5. Confirmation expires after 30 seconds.
+6. A button state/action from before the request cannot authorize it.
+7. rejection, timeout, cancellation, superseding attempt, transport failure, or cryptographic failure returns safely to the prior non-decrypting state and wipes pending session material.
+
+Normal account-selection/reveal gestures are disabled while `UNLOCK REQUEST` is active, so confirmation cannot collide with those actions.
+
+Ordinary same-VMK account/Wi-Fi generation updates from the active canonical Browser while already `UNLOCKED` do not create repeated physical-confirmation prompts.
 
 ## Normal button behavior while unlocked
 
-Outside the dedicated unlock-request state:
+Outside `UNLOCK REQUEST`:
 
-- single click: select the next account in stored manual order
-- double click: select the previous account
-- hold: reveal the selected account's six-digit TOTP
+- single click: select next account in manual order
+- double click: select previous account
+- hold: reveal selected account's six-digit TOTP
 
-Selection wraps at both ends and supports the V1 maximum of 32 accounts. The selected account id may be persisted as non-secret `last_used` metadata; on unlock/boot recovery it is restored when the account still exists.
+Selection wraps at both ends and supports the V1 maximum of 32 accounts.
+
+The persistent `last_used` value outside the Vault is only an opaque random credential id. Its mapping to account identity is inside the encrypted Vault. Account display metadata may be cached in RAM only while unlocked and is cleared on Lock.
 
 ## Account label
 
-The device displays the first non-empty value in this order:
+When unlocked, display uses the first non-empty value in this order:
 
 1. user-defined display name
 2. issuer
 3. account label
 
-Only non-secret account metadata should be retained in the UI model outside the minimum Vault access needed to refresh the view.
+Those values originate from decrypted Vault state and must not be retained in persistent plaintext UI state.
 
 ## OTP reveal boundary
 
-OTP reveal requires **both**:
+OTP reveal requires both:
 
 - Device security state = `UNLOCKED`
 - trusted-time state = `READY`
 
-A reveal request opens only the selected credential for the minimum practical lifetime, calculates TOTP, wipes plaintext secret buffers, and displays the numeric OTP for at most 10 seconds.
+A reveal request transiently opens the bounded single-ciphertext Vault, locates the selected credential by opaque id, calculates TOTP, and wipes decrypted Vault/secret working buffers as soon as practical.
 
-The UI clears its OTP copy when the deadline expires, when time leaves READY, when the Device locks, when selection changes, or when the account metadata generation changes. Temporary formatted display buffers are cleared after drawing.
+The numeric OTP is displayed for at most 10 seconds. It is cleared when the deadline expires, time leaves READY, Device locks, selection changes, or the account generation changes. Temporary formatted display buffers are cleared after drawing.
 
 ## Lock behavior
 
-The following security events immediately invalidate OTP reveal and clear any visible OTP:
+The following immediately invalidate OTP reveal and clear account/OTP RAM caches:
 
 - explicit Lock
 - reboot/power loss
 - fatal security error
 - Factory Reset
-- transition into recovery/re-key/credential-state replacement provisioning
+- recovery provisioning
+- Trusted Browser replacement
+- VMK rotation/re-key
 
-USB power detection, USB enumeration, or opening an ordinary Web Serial connection do not by themselves lock an already-unlocked Device or clear a valid unlocked session.
+USB power detection, USB enumeration, and ordinary Web Serial connection do not themselves Lock.
 
-## Time and empty states
+A same-VMK canonical Vault generation update while already unlocked does not force a Lock merely because the encrypted single-Vault ciphertext changes; selection/display state must still refresh against the newly committed generation.
 
-Within `UNLOCKED`, the UI exposes trusted-time readiness:
+## Trusted time states
 
-- `NOT SYNCED`: current boot has not established trusted NTP/USB time; reveal is blocked
-- `READY`: reveal is permitted
-- `TIME STALE`: more than the allowed trusted-sync age has elapsed; reveal is blocked
+Within `UNLOCKED`, UI exposes:
 
-Because Wi-Fi credentials are inside the encrypted Vault, a fresh boot normally follows:
+- `NOT SYNCED`: no trusted NTP/USB sync established for current boot; reveal blocked
+- `READY`: reveal permitted
+- `TIME STALE`: last trusted sync older than 24 hours or monotonic integrity failed; reveal blocked
+
+Fresh boot normally follows:
 
 ```text
-LOCKED
+LOCKED / NOT SYNCED
   -> Browser unlock + Device confirmation
   -> UNLOCKED / NOT SYNCED
-  -> NTP or USB time sync
+  -> NTP or USB time.sync
   -> UNLOCKED / READY
 ```
 
-With zero accounts after provisioning, the Device displays an explicit empty state directing the user to the Web Provisioner.
+`time.sync` mutates the trusted anchor only while `UNLOCKED`. If the Device is explicitly locked after READY, the current-boot trusted anchor may remain internally valid but OTP remains blocked by the Lock gate. Re-unlock during the same boot may reuse that anchor if it has not become stale. Reboot/power loss clears it.
+
+With zero accounts after provisioning, the unlocked Device displays an explicit empty state directing the user to the Web Provisioner.
 
 ## Concurrency
 
-UI, Web Serial, lock/unlock handling, Vault replacement, and trusted-time work must serialize security-sensitive state transitions so a management operation cannot race OTP reveal or leave a stale VMK/session active.
+UI, Web Serial, lock/unlock, Vault generation commit, recovery/re-key, and trusted-time work serialize security-sensitive transitions so an operation cannot race OTP reveal or leave stale VMK/session/account metadata active.
 
-No UI path exports stored secrets or logs OTP/secret/key material.
+No UI path exports stored secrets or logs OTP/credential/key material.

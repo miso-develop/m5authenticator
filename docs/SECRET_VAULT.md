@@ -1,288 +1,332 @@
 # Secret Vault Architecture
 
-This document is the durable V1 security architecture for protecting TOTP secrets and other credential-bearing device state. Decision #40 is the design history; this document is the current repository truth.
+This document is the durable V1 security architecture for protecting TOTP secrets and other credential-bearing M5Authenticator state. Decision #40 defines the security root; Decisions #45-#49 refine the Vault format, Passphrase recovery, Trusted Browser ownership, unlock transport, and trusted-time mutation boundaries.
 
 ## Goals and non-goals
 
-V1 prioritizes the following properties:
+V1 requires:
 
 - no M5Authenticator-specific eFuse burn or irreversible project-specific security provisioning
-- no plaintext TOTP secret or Wi-Fi password persisted in Device Flash
-- no Vault decryption key persisted in Device Flash
+- no plaintext TOTP secret, account identity metadata, Wi-Fi SSID/password, or Vault decryption key persisted in Device Flash
+- a random Vault Master Key (VMK) held on Device only in RAM while `UNLOCKED`
 - recoverable Factory Reset / erase / re-provision behavior
-- practical cold-boot recovery without requiring the user passphrase on every normal unlock
+- practical cold-boot quick unlock without requiring Passphrase entry on every normal boot
 - no stored-secret export operation from release firmware
-- portable recovery of the Web canonical encrypted state without exporting plaintext credentials
+- portable encrypted recovery of the Web canonical M5Authenticator state
 
-This is not a hardware root-of-trust design. It does not claim strong resistance to compromised endpoint OS/browser code, malicious browser extensions/XSS, RAM probing while unlocked, sophisticated physical extraction, or Evil-Maid firmware replacement.
+This is not a hardware root-of-trust design. It does not claim strong resistance to a compromised endpoint OS/browser, malicious browser extensions/XSS, RAM probing while unlocked, sophisticated physical extraction, active fake-device/Evil-Maid attacks, or hardware-backed rollback attacks.
 
-## Key hierarchy
+## Source terminology
 
-V1 uses envelope encryption.
+Two different authorities exist and must not be conflated:
+
+- **Authoritative enrollment/recovery source:** the original service enrollment plus the user's smartphone Authenticator/source credentials. This is the ultimate source used to replace/re-enroll TOTP credentials.
+- **M5Authenticator canonical encrypted replica:** the Web Provisioner's encrypted Vault state. This is canonical only for synchronizing M5Authenticator browser/device replicas.
+
+The Device Vault is a runtime/offline-use replica of the M5Authenticator canonical encrypted state. M5Authenticator does not become the authoritative enrollment source for the external service.
+
+## V1 key hierarchy
 
 ```text
 User Passphrase
     |
     v
-Password KDF
+Argon2id v19
+m=32768 KiB, t=3, p=1
+32-byte random salt
     |
     v
-Passphrase KEK
+Passphrase KEK (256-bit)
     |
-    +---- unwrap/wrap ----> Vault Master Key (VMK, random 256-bit)
+    +-- AES-256-GCM wrap --> VMK (random 256-bit)
                                |
-                               v
-                           AEAD Vault
+                               +-- AES-256-GCM --> Encrypted Vault
 
-Trusted Browser
+Active Trusted Browser
     |
-    v
-Browser Unlock Key (BUK, non-extractable browser-local key)
+    +-- BUK (non-extractable AES-256-GCM key)
+    |      +-- wraps same VMK for quick unlock
     |
-    +---- unwrap/wrap ----> same VMK
+    +-- BRK (non-extractable ECDSA P-256 private key)
+           +-- signs fresh unlock/registration transcripts
 ```
 
-The passphrase protects the VMK, not the whole Vault directly. Changing the passphrase therefore normally re-wraps the VMK without requiring the encrypted Vault payload itself to be re-encrypted.
+The Passphrase protects the VMK, not the whole Vault directly. Normal Passphrase change re-wraps the current VMK and does not require Vault re-encryption.
 
-A low-entropy PIN must not be used as an offline-decryptable VMK/Vault protection secret.
+BUK and the Browser Registration Key (BRK) have separate roles. BUK protects the browser-local quick-unlock copy of the VMK. BRK proves possession of the currently registered Browser profile to the Device. The Device persists only the BRK public key and registration metadata.
 
-The exact password KDF, Vault AEAD, nonce/AAD layout, VMK wrapping algorithm, rotation behavior, and whether the logical Vault uses one authenticated ciphertext or independently authenticated credential records are implementation-design items owned by Task #41. They must be explicitly versioned and interoperable between the Web Provisioner and ESP-IDF firmware, and must not rely on a project-specific eFuse secret.
+## Passphrase contract
+
+Before KDF processing, the Passphrase is Unicode NFC-normalized and encoded as UTF-8.
+
+V1 accepts:
+
+- minimum 15 Unicode code points
+- maximum 128 Unicode code points
+- maximum 512 UTF-8 bytes after normalization
+- arbitrary characters without character-class composition requirements
+- paste and password-manager input
+
+A six-digit PIN or similarly low-entropy value is not an acceptable offline Recovery-Package protection secret.
+
+The Argon2id algorithm/version, memory/time/parallelism parameters, salt, wrapping algorithm, nonce, and package format are encoded explicitly. Unknown or unsupported parameters fail closed and are not silently reinterpreted.
+
+## Vault ciphertext format
+
+V1 uses **one authenticated ciphertext per Vault generation**.
+
+- cipher: AES-256-GCM
+- VMK: random 256-bit
+- nonce: fresh random 96-bit value for every Vault encryption
+- authentication tag: 128-bit
+- target: `VAULT_FORMAT_VERSION = 1`
+- target persistence semantics: `STORAGE_SCHEMA_VERSION = 2`
+
+The Vault nonce is never derived solely from `generation`. V1 has no hardware-backed monotonic counter, so a restored old state must not cause deterministic nonce reuse under the same VMK.
+
+Vault AAD binds at least:
+
+- protocol/domain magic and Vault format version
+- logical random `vault_id`
+- storage schema version
+- generation
+
+Device ID is not part of the Vault cryptographic binding because the encrypted canonical state must remain portable to an explicit replacement Device/recovery flow.
+
+## Encrypted metadata boundary
+
+The Vault plaintext includes:
+
+- TOTP secret
+- opaque credential id
+- issuer
+- account label
+- user display name
+- algorithm / digits / period and other credential profile fields
+- manual account order
+- Wi-Fi SSID
+- Wi-Fi password
+
+The following may persist outside the Vault because they are required for framing/compatibility and do not disclose the credential identity:
+
+- Vault/storage format versions
+- generation
+- random logical `vault_id`
+- ciphertext nonce/tag/length/framing metadata
+- non-secret Device/registration public metadata
+- BRK public key and registration id/epoch
+- UI settings unrelated to credential identity, such as brightness
+- `last_used` only as an opaque random credential id; the id-to-account mapping remains inside the Vault
+
+While `LOCKED`, firmware must not expose issuer/account/display-name/SSID plaintext from Flash.
 
 ## Device persistence boundary
-
-Device Flash may persist only:
-
-- encrypted credential Vault
-- Vault format/version metadata
-- nonce/authentication data required by the chosen AEAD format
-- generation/version metadata
-- Device ID / registration metadata that is non-secret
-- non-secret settings/metadata that do not allow Vault decryption
 
 Device Flash must not persist:
 
 - VMK
-- user passphrase
-- passphrase-derived KEK
-- Browser Unlock Key
-- plaintext TOTP secret
-- plaintext Wi-Fi password
-- decrypted credential snapshot
-- reusable session key capable of recovering the VMK
+- user Passphrase
+- Passphrase-derived KEK
+- BUK
+- BRK private key
+- unlock/session key material
+- plaintext TOTP or Wi-Fi credentials
+- decrypted Vault snapshots
 
-TOTP and Wi-Fi credential payloads are both inside the approved encrypted credential boundary. This means Wi-Fi credentials are not available until the Device is unlocked.
+The approved Device credential persistence is the authenticated Encrypted Vault plus the bounded non-secret framing/registration state above.
 
-## Device runtime states
+## Device security states
 
 The minimum security states are:
 
 ```text
 UNPROVISIONED
 LOCKED
+UNLOCK_REQUEST
 PROVISIONING
 UNLOCKED
 ERROR
 ```
 
-### UNPROVISIONED
+`UNLOCK_REQUEST` is a dedicated user-presence state for one fresh attempt. It cannot reuse a button action that occurred before that attempt.
 
-No usable encrypted Vault is registered. VMK is absent.
+A cold boot with an existing Vault starts `LOCKED`. VMK is absent, account identity metadata is unavailable, and TOTP/Wi-Fi credential access is blocked.
 
-### LOCKED
+## VMK destruction boundary
 
-Encrypted Vault may exist in Flash, but VMK is absent from Device RAM. TOTP and encrypted Wi-Fi credentials cannot be opened.
+The following destroy the in-RAM VMK and pending secret/session material:
 
-### PROVISIONING
-
-A security-sensitive Vault replacement, recovery, re-key, or initial registration operation is in progress. Failure or transport loss must wipe transient key material and leave the Device non-decrypting.
-
-### UNLOCKED
-
-Encrypted Vault remains persisted; VMK exists only in RAM. TOTP operations and encrypted Wi-Fi credential access are permitted subject to trusted-time rules.
-
-### ERROR
-
-Secret-bearing transient state is wiped. Recovery must not silently downgrade security or expose an old plaintext/development storage path.
-
-## Lock boundary
-
-The following always destroy the in-RAM VMK and other secret-bearing temporary keys/buffers:
-
-- reboot
-- power loss / shutdown
+- reboot / power loss / shutdown
 - explicit Lock
 - fatal security error
 - Factory Reset
-- entry into Vault replacement, recovery provisioning, or re-key operations
+- recovery provisioning
+- Trusted Browser replacement
+- VMK rotation/re-key
 
-The following do **not** lock by themselves:
+USB power detection, USB enumeration, and opening an ordinary Web Serial management connection do not lock by themselves.
 
-- USB power detection
-- USB enumeration
-- opening an ordinary Web Serial management connection
-- non-destructive status/time communication
+### Ordinary same-VMK generation updates
 
-This intentionally allows charging or ordinary USB use without destroying an existing unlocked session.
+An account/Wi-Fi mutation by the **currently active canonical Browser** while the Device is already `UNLOCKED` is a same-VMK authenticated generation update, not a recovery-root replacement.
 
-## Cold-boot unlock
+It does not destroy the active VMK or require another physical confirmation for each edit. It must still validate the expected `vault_id`/generation, authenticate the new ciphertext, commit atomically, and fail closed on mismatch or interruption.
 
-After reboot or complete power loss the Device always starts without a VMK:
+## Plaintext lifetime
 
-```text
-Power on
-  -> encrypted Vault detected
-  -> VMK absent
-  -> LOCKED
-```
+Although V1 uses one ciphertext per generation, the decrypted logical Vault must not remain resident for the full `UNLOCKED` session.
 
-The Device cannot autonomously decrypt the Vault from Flash.
+For TOTP/Wi-Fi access:
 
-### First registration / untrusted Browser / recovery
+1. verify the Device is still `UNLOCKED` with the current VMK
+2. decrypt the bounded Vault into transient mutable memory
+3. locate/use only the required credential record
+4. complete the operation
+5. zeroize credential working buffers and the decrypted Vault buffer
 
-The Passphrase path requires access to the Web canonical encrypted state, including the Passphrase-wrapped VMK. On first registration that state is created locally. On another Browser it is obtained through the encrypted Recovery Package described below.
+Account selection/display metadata may be cached in RAM only while unlocked; it is cleared on Lock. OTP rendering buffers are separately short-lived and are never persisted.
 
-```text
-Web canonical encrypted state available
-  -> user enters Passphrase
-  -> KDF derives Passphrase KEK
-  -> Web unwraps VMK
-  -> protected fresh unlock/provisioning session
-  -> Device user-presence confirmation
-  -> VMK accepted into Device RAM
-  -> UNLOCKED
-```
+## Web canonical state
 
-A Passphrase alone cannot reconstruct a lost random VMK. If both browser state and its encrypted Recovery Package are lost, the existing Device Vault cannot be recovered after the VMK has left RAM; the user must re-provision from the authoritative authenticator/source credentials.
-
-### Trusted Browser quick unlock
-
-A Trusted Browser has its own browser-local Browser Unlock Key (BUK). The Web Provisioner may persist a BUK-wrapped copy of the VMK for that Browser.
-
-```text
-LOCKED Device
-  -> registered Trusted Browser connection
-  -> BUK unwraps VMK without Passphrase re-entry
-  -> protected fresh unlock session
-  -> explicit Device user-presence confirmation
-  -> VMK accepted into Device RAM
-  -> UNLOCKED
-```
-
-Trusted Browser quick unlock must not become an unattended automatic unlock. The Device must require explicit physical user presence before accepting the VMK.
-
-`extractable=false` is defense in depth only. It does not make the Browser a hardware root of trust and does not protect against arbitrary code executing in the trusted browser context.
-
-## Encrypted Recovery Package
-
-V1 permits export/import of the **Web canonical encrypted state** so a user can recover on another Browser without exporting plaintext TOTP credentials.
-
-The Recovery Package may contain:
+The Web side may persist in IndexedDB:
 
 - Encrypted Vault
 - Passphrase-wrapped VMK
-- KDF / AEAD / Vault-format metadata
-- generation/version metadata
-- non-secret registration metadata required for recovery
+- BUK-wrapped VMK
+- non-extractable BUK
+- non-extractable BRK private key and corresponding public registration metadata
+- KDF/AEAD/Vault/package version metadata
+- generation / `vault_id`
+- approved non-secret Device metadata
+
+It must not persist plaintext credentials, the Passphrase, Passphrase-derived KEK, plaintext VMK, decrypted Vault records, imported QR images, or decoded migration payloads.
+
+JavaScript cannot guarantee universal memory zeroization. The Web design therefore minimizes plaintext lifetime, uses mutable byte buffers where practical, avoids unnecessary copies, and never claims perfect browser-RAM erasure.
+
+## Single active Trusted Browser
+
+V1 permits exactly **one active Trusted Browser registration per logical Vault/Device**.
+
+The Device stores the active BRK public key and registration id/epoch as non-secret registration state. A normal quick unlock requires proof of the active BRK private key plus fresh Device user presence.
+
+A Recovery Package imported into a different Browser does not silently create a second writer. To operate the existing Device, that Browser must complete an explicit Trusted Browser replacement/recovery flow. A successful replacement installs a new BRK public key, increments the registration epoch, and prevents the old BRK from authorizing future quick unlocks.
+
+This does not remotely erase an old Browser's local data and is not equivalent to revoking already leaked credential snapshots.
+
+## Encrypted Recovery Package
+
+The Recovery Package is a portable copy of the Web canonical **encrypted** state. It may contain:
+
+- Encrypted Vault
+- Passphrase-wrapped VMK
+- Argon2id / wrapping / Vault format metadata
+- generation / `vault_id`
+- explicitly non-secret recovery/registration metadata
 
 It must not contain:
 
-- plaintext TOTP secrets or Wi-Fi passwords
+- plaintext TOTP/Wi-Fi credentials
 - plaintext VMK
-- user Passphrase or Passphrase-derived KEK
-- Browser Unlock Key (BUK)
-- browser-specific material that bypasses the Passphrase recovery step
+- Passphrase or derived KEK
+- BUK
+- BRK private key
+- browser-specific material that bypasses Passphrase recovery
 
-A new Browser imports the encrypted package, requires the Passphrase to unwrap the VMK, then generates its own new browser-local BUK and corresponding Trusted-Browser-wrapped VMK.
+On import, the user enters the Passphrase; the Browser unwraps VMK locally and generates fresh BUK/BRK keys.
 
-The Recovery Package creates an offline Passphrase-guessing target. Therefore the Passphrase and password KDF are part of the security boundary for backup theft. A six-digit PIN or similarly low-entropy secret is not acceptable.
+Recovery Package theft creates an offline Passphrase-guessing target. User-generated Recovery Packages therefore remain security-sensitive and must never be committed, attached to Issues/PRs, uploaded as CI artifacts, or treated as safe public ciphertext.
 
-This is distinct from Device secret export. Release firmware still provides no operation that reads or exports stored plaintext TOTP secrets, Wi-Fi passwords, or VMK. The package originates from the Web canonical encrypted state.
+### Passphrase change and old packages
 
-## Unlock transport
+A normal Passphrase change updates the current canonical wrapped VMK. It **does not revoke** previously exported Recovery Packages: an old package can still be opened with the Passphrase that wrapped its VMK at export time.
 
-VMK transfer must use a fresh session mechanism rather than a reusable plaintext protocol operation. The concrete mechanism belongs to Task #41, but the following properties are mandatory:
+VMK rotation also cannot erase an already exported old package; that package still contains a decryptable historical Vault snapshot if its old wrapping secret remains known. To make leaked historical TOTP/Wi-Fi credential material unusable, rotate/re-enroll the credentials at their authoritative source service and change the Wi-Fi password where applicable.
 
-- fresh per-session key establishment or equivalent freshness
-- integrity/authentication of transferred unlock material
-- no VMK echo in responses, logs, errors, URLs, crash reports, or artifacts
-- timeout/cancel/transport failure wipes the pending session material
-- Device user presence is bound to the current unlock attempt
+The UI should prompt the user to export a replacement package and delete controlled old copies after a Passphrase change, but must not claim cryptographic remote revocation.
 
-Device ID / registration metadata may prevent accidental provisioning to the wrong Device, but it is not described as strong hardware-backed Device authentication.
+## Fresh unlock / registration session
 
-## Web persistence boundary
+Protocol v2 protects VMK delivery using:
 
-The Web side is the canonical Vault state for V1. Browser persistence may contain:
+- ephemeral P-256 ECDH on Web and Device
+- HKDF-SHA-256 to derive a 32-byte session key from the ECDH shared secret with explicit domain separation and fresh attempt material
+- AES-256-GCM with fresh random 96-bit nonce and 128-bit tag for VMK delivery
+- ECDSA P-256/SHA-256 BRK signature for normal Trusted Browser requests
 
-- encrypted Vault
-- Passphrase-wrapped VMK
-- Trusted-Browser-wrapped VMK
-- Browser-local non-extractable BUK
-- KDF/crypto format metadata
-- generation/version metadata
-- registered Device metadata that is non-secret
+Each attempt uses a fresh random 128-bit `attempt_id` and random 256-bit Device challenge. The cryptographic transcript is built from a versioned fixed-order encoding, independent of incidental JSON property ordering, and binds at least:
 
-Browser persistence must not contain plaintext TOTP secrets, plaintext Wi-Fi passwords, the user passphrase, or decrypted Vault records.
+- protocol/domain and operation
+- Device ID
+- `vault_id` and expected generation
+- registration id/epoch where applicable
+- attempt id and challenge
+- both ephemeral ECDH public keys
+- current/proposed BRK identity as applicable
 
-Imported QR images and decoded plaintext credential material remain ephemeral and must be discarded after the encrypted canonical Vault and Device runtime copy have been updated successfully.
+Pending unlock material expires after 30 seconds. Invalid/stale keys, replay, old challenges, wrong generation, invalid signatures, failed AEAD, rejection, timeout, cancel, superseding attempt, or disconnect fail closed and wipe pending session material.
 
-## Generation and rollback semantics
+The fresh session protects against passive serial observation/replay and authenticates the active Browser to the Device. Because V1 has no hardware-backed Device private identity, it does not claim protection from a compromised host/OS or active fake-device/Evil-Maid attack.
 
-Web and Device track a Vault `generation` so stale or mismatched copies can be detected. The Web canonical state decides the current generation during management/recovery.
+## Device user-presence scope
 
-Because V1 intentionally uses no secure monotonic counter/eFuse root, generation is **not** a hardware-backed rollback guarantee. An attacker able to restore the entire Device Flash image may also restore its generation metadata. Documentation and UI must not claim stronger rollback protection than this design provides.
+Fresh physical confirmation is mandatory before VMK acceptance or browser/recovery-root change for:
 
-## TOTP use and plaintext lifetime
+- Trusted Browser quick unlock of a locked Device
+- initial provisioning / first registration
+- new/untrusted Browser recovery of an existing Device
+- Trusted Browser replacement
+- VMK rotation/re-key
 
-While `UNLOCKED`, plaintext credential lifetime must be minimized. The exact behavior depends on the Vault format selected by Task #41:
+The confirmation is valid only for the current 30-second attempt. Ordinary same-VMK generation updates while already `UNLOCKED` do not require repeated confirmation.
 
-- if credentials are independently authenticated/encrypted, only the selected credential should be decrypted for TOTP generation;
-- if the Vault is a single authenticated ciphertext, the plaintext logical Vault may be opened only in a bounded transient operation and must be wiped immediately after extracting/using the required credential; it must not remain resident for the full unlocked session.
+## Generation and conflict semantics
 
-In either representation, the TOTP secret used for calculation must be wiped as soon as practical after the OTP is derived.
+Web and Device track `generation` plus `vault_id` to detect stale or mismatched replicas. Expected generation is checked before accepting updates.
 
-The VMK remains in RAM only for the unlocked session.
+V1 has no secure monotonic counter, so generation is not a hardware-backed rollback guarantee. A full Device Flash restore may also restore older generation metadata.
+
+Unexpected Web/Device divergence never uses last-writer-wins and is not automatically merged. It enters an explicit recovery/reconciliation path. The single-active-Browser rule prevents normal multi-writer operation by construction.
 
 ## Trusted time interaction
 
-Because the encrypted Wi-Fi password is not usable while locked, cold-boot readiness is ordered as:
+OTP reveal requires:
 
 ```text
-LOCKED
-  -> unlock VMK
-  -> UNLOCKED
-  -> NTP and/or USB trusted-time sync
-  -> READY for TOTP reveal
+Device security state = UNLOCKED
+AND
+trusted-time state = READY
 ```
 
-A Device may therefore be unlocked but not yet READY if trusted time has not been established for the current boot.
+Credential-backed NTP requires unlock because Wi-Fi credentials are in the Vault.
+
+`time.status` may be read while locked because it is non-secret. `time.sync` may **mutate the trusted anchor only while `UNLOCKED`**. A locked/unprovisioned/provisioning request fails with a bounded non-secret invalid-state response.
+
+An already-established current-boot trusted-time anchor is not cleared merely by explicit Lock. OTP remains blocked by the independent security state. If the same boot is unlocked again before the anchor becomes stale, READY may be reused. Reboot/power loss clears the runtime anchor.
 
 ## Factory Reset
 
 Factory Reset must:
 
-- wipe VMK and all secret-bearing RAM state
-- remove the encrypted Vault
-- remove user/settings and Device registration state owned by M5Authenticator
-- remove/reset browser registration state when the Web side performs the paired reset flow
-- return the Device to `UNPROVISIONED`
+- wipe VMK and secret/session RAM state
+- erase the Device Encrypted Vault
+- erase M5Authenticator user/settings/registration state
+- remove matching browser canonical/pairing state in the explicitly paired Web reset flow
+- return Device to `UNPROVISIONED`
+- perform no M5Authenticator-specific eFuse operation
 
-Factory Reset must not read, burn, rotate, or depend on project-specific eFuse security material.
+An exported Recovery Package outside the current browser/device is outside this erase boundary and cannot be deleted remotely by Factory Reset.
 
-An exported encrypted Recovery Package is intentionally external to Device Factory Reset. If the user wants old credentials to become unrecoverable, any separately saved Recovery Package must also be deleted; Factory Reset cannot erase copies outside the Device/browser it controls.
+## Version transition and implementation ownership
 
-## Security limitations
+Current development main may still implement Protocol 1 / Storage Schema 1 using the deliberately public synthetic development storage backend. That state is not production-ready security and remains release-ineligible.
 
-This design intentionally does not guarantee protection against:
+Target V1 is:
 
-- a compromised Trusted Browser profile or endpoint OS
-- malicious extension/XSS capable of executing in the trusted browser context
-- RAM/debug extraction while the Device is `UNLOCKED`
-- malicious firmware installed before a later legitimate unlock
-- sophisticated physical attacks
-- hardware-backed anti-rollback
+- `PROTOCOL_VERSION = 2`
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
 
-The primary protected scenarios remain powered-off/rebooted device loss, Flash copying/dumping, accidental or release-interface secret export, and plaintext credential persistence.
+The former catch-all Task #41 is superseded. Implementation is decomposed into Tasks #51-#56, followed by the security closeout Task #15. Firmware/Web must not advertise the target version tuple before the complete Protocol v2 integration semantics are active.
 
 ## Superseded design
 
