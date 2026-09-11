@@ -1,6 +1,7 @@
 #include "m5auth/provisioning/session_protocol_v2.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace m5auth::provisioning {
 namespace {
@@ -37,6 +38,19 @@ bool existing_registration_matches(
         context.registration_epoch == snapshot.registration_epoch;
 }
 
+bool replacement_registration_is_next(
+    const session::protocol_v2::BeginContext& context,
+    const SessionV2DeviceSnapshot& snapshot
+) {
+    if (!snapshot.registration_present ||
+        snapshot.registration_epoch == std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+    return !all_zero(context.registration_id) &&
+        !same_bytes(context.registration_id, snapshot.registration_id) &&
+        context.registration_epoch == snapshot.registration_epoch + 1;
+}
+
 bool current_brk_is_device_owned(
     const session::protocol_v2::BeginContext& context,
     const SessionV2DeviceSnapshot& snapshot,
@@ -69,6 +83,8 @@ bool session_v2_begin_matches_snapshot(
         case session::protocol_v2::Operation::kInitialProvisioning:
             return clean_unprovisioned_snapshot(snapshot) &&
                 context.expected_generation == 0 &&
+                context.registration_epoch == 0 &&
+                !all_zero(context.registration_id) &&
                 all_zero(context.current_brk_public_key) &&
                 !all_zero(context.proposed_brk_public_key);
 
@@ -82,7 +98,7 @@ bool session_v2_begin_matches_snapshot(
         case session::protocol_v2::Operation::kRecovery:
         case session::protocol_v2::Operation::kBrowserReplacement:
             return existing_vault_matches(context, snapshot) &&
-                existing_registration_matches(context, snapshot) &&
+                replacement_registration_is_next(context, snapshot) &&
                 current_brk_is_device_owned(context, snapshot, true) &&
                 !all_zero(context.proposed_brk_public_key) &&
                 !same_bytes(context.proposed_brk_public_key, snapshot.brk_public_key);
