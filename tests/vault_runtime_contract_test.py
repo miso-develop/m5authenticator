@@ -6,6 +6,8 @@ RUNTIME = ROOT / "firmware/components/m5auth_vault_runtime/runtime.cpp"
 HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_runtime/runtime.hpp"
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
 VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
+TOTP_CORE = ROOT / "firmware/components/m5auth_totp/totp_core.cpp"
+TIME_SERVICE = ROOT / "firmware/components/m5auth_time/time_service.cpp"
 CORE_METADATA = ROOT / "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp"
 
 
@@ -16,6 +18,8 @@ class VaultRuntimeContractTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.nvs = NVS.read_text(encoding="utf-8")
         cls.vault_format = VAULT_FORMAT.read_text(encoding="utf-8")
+        cls.totp_core = TOTP_CORE.read_text(encoding="utf-8")
+        cls.time_service = TIME_SERVICE.read_text(encoding="utf-8")
         cls.core_metadata = CORE_METADATA.read_text(encoding="utf-8")
         cls.component = cls.runtime + "\n" + cls.header + "\n" + cls.nvs
 
@@ -24,6 +28,17 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertIn("Runtime::~Runtime()", self.runtime)
         destructor_start = self.runtime.index("Runtime::~Runtime()")
         self.assertIn("wipe_vmk();", self.runtime[destructor_start:destructor_start + 120])
+
+    def test_all_trust_root_change_entry_points_destroy_vmk(self) -> None:
+        self.assertIn("Status enter_recovery_boundary();", self.header)
+        self.assertIn("Status enter_registration_replacement_boundary()", self.header)
+        self.assertIn("Status enter_vmk_rekey_boundary()", self.header)
+        self.assertGreaterEqual(
+            self.header.count("return enter_recovery_boundary();"),
+            2,
+        )
+        recovery_start = self.runtime.index("Status Runtime::enter_recovery_boundary()")
+        self.assertIn("wipe_vmk();", self.runtime[recovery_start:recovery_start + 240])
 
     def test_locked_paths_gate_plaintext_access(self) -> None:
         self.assertGreaterEqual(
@@ -50,6 +65,21 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("std::vector<std::uint8_t> bytes", read_text)
         self.assertIn("wipe_string(&value);", read_text)
 
+    def test_totp_working_buffers_are_zeroized(self) -> None:
+        self.assertIn("clear_bytes(&key);", self.totp_core)
+        self.assertIn("secure_zero(message.data(), message.size());", self.totp_core)
+        self.assertGreaterEqual(
+            self.totp_core.count("secure_zero(digest.data(), digest.size());"),
+            3,
+        )
+
+    def test_wifi_driver_storage_is_ram_only_and_runtime_is_torn_down(self) -> None:
+        self.assertIn("esp_wifi_set_storage(WIFI_STORAGE_RAM)", self.time_service)
+        self.assertIn("storage::secure_zero(&config, sizeof(config));", self.time_service)
+        self.assertIn("esp_wifi_disconnect()", self.time_service)
+        self.assertIn("esp_wifi_stop()", self.time_service)
+        self.assertIn("esp_wifi_deinit()", self.time_service)
+
     def test_nvs_update_uses_inactive_slot_then_active_pointer(self) -> None:
         phase1 = self.nvs.index("Phase 1")
         staged_blob = self.nvs.index("nvs_set_blob(handle, inactive_key", phase1)
@@ -59,6 +89,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertLess(phase2, active_pointer)
         self.assertIn("nvs_commit(handle)", self.nvs[staged_blob:phase2])
         self.assertIn("nvs_commit(handle)", self.nvs[active_pointer:active_pointer + 240])
+        self.assertIn("Validate the durable staged copy", self.nvs[staged_blob:phase2])
 
     def test_only_opaque_last_used_is_persisted_outside_ciphertext(self) -> None:
         self.assertIn('constexpr char kLastUsedKey[] = "last_used";', self.nvs)
