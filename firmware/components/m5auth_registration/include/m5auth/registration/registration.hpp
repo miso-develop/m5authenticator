@@ -58,6 +58,10 @@ public:
         const BrkPublicKey& brk_public_key
     );
 
+    // Factory Reset removes the active Trusted Browser registration but keeps
+    // the stable, non-secret Device ID in the reg2 namespace.
+    Status clear_registration();
+
     // Used only after the auth_nvs partition has been explicitly erased/formatted.
     Status reinitialize_after_partition_reset();
 
