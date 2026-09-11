@@ -16,6 +16,7 @@ The following MUST NOT appear in this repository, Git history, Issues, Pull Requ
 - PATs, OAuth tokens, API keys, access/refresh tokens, session credentials
 - SSH/TLS/signing/private keys or seed material
 - Vault Master Key (VMK), passphrase-derived KEK, Browser Unlock Key (BUK), or unlock-session key material
+- user-generated encrypted Recovery Packages or other credential-bearing backups, even when ciphertext-only
 - decrypted user account stores
 - NVS, flash, RAM, crash, serial, packet, or filesystem dumps that may contain credentials
 - any other value that allows authentication, secret recovery, impersonation, or decryption of user secrets
@@ -35,6 +36,8 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 - Trusted Browser quick unlock may avoid repeated Passphrase entry, but explicit Device-side user presence is mandatory before accepting the VMK.
 - A Trusted Browser is not a hardware root of trust. Browser/OS compromise, malicious extensions, and XSS remain outside the strong V1 guarantee.
 - Release firmware must never depend on a public/synthetic development storage key that would make user credentials decryptable from a Flash dump.
+- V1 may export/import the Web canonical encrypted state as a Recovery Package, but that package must not contain plaintext credentials, plaintext VMK, Passphrase/KEK, BUK, or browser-specific quick-unlock material that bypasses Passphrase recovery.
+- An encrypted Recovery Package remains security-sensitive because theft permits offline Passphrase guessing; never treat ciphertext-only backup as safe for public disclosure.
 
 ## Secret handling requirements
 
@@ -55,6 +58,7 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 - Do not place sensitive values in URLs, query strings, fragments, analytics events, error reporting, or console logs.
 - Plaintext TOTP/Wi-Fi credential records must not be persisted in browser storage.
 - Browser persistence may contain the Encrypted Vault, wrapped VMK values, non-secret crypto/version metadata, and a browser-local non-extractable BUK as defined by `docs/SECRET_VAULT.md`.
+- The user may explicitly export/import the versioned encrypted Recovery Package defined by `docs/SECRET_VAULT.md`; it must be handled as sensitive local data and must never be uploaded automatically.
 - Imported QR images are ephemeral input. Do not upload or persist them by default.
 - Network dependencies added to provisioning/security-sensitive paths require explicit security review.
 
@@ -75,11 +79,13 @@ Allowed:
 - clearly synthetic credentials generated only for tests
 - synthetic QR payloads that cannot authenticate to a real account
 - synthetic VMK/KEK/BUK/session material generated solely for tests
+- synthetic Recovery Packages generated entirely from synthetic test credentials
 
 Forbidden:
 
 - copied personal authenticator exports
 - real QR screenshots with values blurred only visually
+- real/user Recovery Packages, even when encrypted
 - production/user dumps
 - credentials copied from local configuration
 
@@ -95,12 +101,13 @@ Never log:
 - Wi-Fi passwords
 - VMK / KEK / BUK / unlock-session keys
 - decrypted account records
+- user Recovery Package contents
 
 Identifiers such as issuer/account names may also be personal data. Log them only where necessary and prefer synthetic identifiers in tests and bug reports.
 
 ## Repository hygiene
 
-- Keep local secrets and captures in ignored local-only paths.
+- Keep local secrets, Recovery Packages, and captures in ignored local-only paths.
 - Review staged changes before every commit for credentials and private artifacts.
 - Do not use actual credentials to reproduce a bug in a public Issue/PR.
 - Examples must use unmistakably synthetic values.
@@ -113,6 +120,7 @@ Automated secret scanning is defense in depth, not permission to handle secrets 
 Any change affecting the following is security-sensitive and must be reviewed as such before merge:
 
 - Vault storage, encryption, key wrapping, KDF, VMK/BUK/session-key lifetime, or zeroization
+- encrypted Recovery Package format/import/export
 - eFuse usage or any proposal to introduce an irreversible hardware security state
 - lock/unlock state machine and Device user-presence behavior
 - provisioning/import
@@ -141,6 +149,8 @@ If a real secret is exposed anywhere public:
 Deleting or rewriting a Git commit/comment is NOT sufficient remediation because copies may already exist.
 
 For a leaked TOTP secret, replace/re-enroll the affected 2FA credential at the service. Do not continue trusting the old secret merely because the repository history was cleaned.
+
+For an exposed encrypted Recovery Package, treat the package as credential-bearing security material. Exposure does not by itself prove that the enclosed TOTP secrets were decrypted, but it gives an attacker an offline Passphrase-guessing target. Rotate/re-provision if the Passphrase strength or KDF protection is uncertain or if risk tolerance requires it.
 
 ## Threat-model boundary
 
