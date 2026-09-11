@@ -1,7 +1,10 @@
-# Web security primitives
+# Web security modules
 
-This directory stages the V1 Vault Format 1 cryptographic and serialization primitives for Task #51.
+This directory contains the staged V1 application-level Vault implementation for the Web Provisioner.
 
-The modules here are intentionally not wired into the current Protocol 1 / Storage Schema 1 runtime. Protocol 2 / Storage Schema 2 activation belongs to later integration Tasks.
+- `vault-format.ts` defines the versioned encrypted Vault plaintext/AAD framing shared with firmware interoperability vectors.
+- `vault-crypto.ts` implements AES-256-GCM Vault encryption plus Argon2id/AES-GCM Passphrase VMK wrapping.
+- `browser-vault.ts` implements the browser canonical encrypted state: allowlisted IndexedDB persistence, non-extractable BUK/BRK ownership, BUK quick-unlock VMK wrapping, Recovery Package import/export, Passphrase re-wrap, replacement-pending state, and generation-conflict fail-closed checks.
+- `security-panel.ts` exposes the staged Security & Recovery UI without activating Protocol 2 or changing the current Device management version tuple.
 
-Security-sensitive values must remain browser-local and ephemeral unless the durable V1 architecture explicitly permits encrypted persistence. See `../../docs/SECRET_VAULT.md` and `../../SECURITY.md`.
+No module in this directory may persist plaintext TOTP/Wi-Fi credentials, Passphrases, Passphrase-derived KEKs, plaintext VMKs, decrypted Vault records, BUK exports, or BRK private-key exports. Recovery Packages are encrypted but security-sensitive offline Passphrase-guessing targets and must not be committed or uploaded as public artifacts.
