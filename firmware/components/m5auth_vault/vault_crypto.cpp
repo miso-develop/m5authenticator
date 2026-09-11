@@ -319,4 +319,87 @@ bool decrypt_vault(
     return true;
 }
 
+bool wrap_vmk_with_key_and_nonce(
+    const std::array<std::uint8_t, kVmkBytes>& vmk,
+    const std::array<std::uint8_t, kVmkBytes>& wrapping_key,
+    const std::array<std::uint8_t, kVaultIdBytes>& vault_id,
+    const std::array<std::uint8_t, kVaultNonceBytes>& nonce,
+    VmkWrapEnvelope& envelope
+) {
+    std::vector<std::uint8_t> aad;
+    if (!build_vmk_wrap_aad(vault_id, aad)) return false;
+
+    std::vector<std::uint8_t> plaintext(vmk.begin(), vmk.end());
+    std::vector<std::uint8_t> ciphertext;
+    std::array<std::uint8_t, kVaultTagBytes> tag{};
+    const bool ok = aes_gcm_encrypt(
+        plaintext,
+        wrapping_key,
+        nonce,
+        aad,
+        ciphertext,
+        tag
+    );
+    clear_bytes(plaintext);
+    if (!ok || ciphertext.size() != kVmkBytes) {
+        clear_bytes(ciphertext);
+        return false;
+    }
+
+    VmkWrapEnvelope candidate;
+    candidate.vault_id = vault_id;
+    candidate.nonce = nonce;
+    std::copy(ciphertext.begin(), ciphertext.end(), candidate.ciphertext.begin());
+    candidate.tag = tag;
+    clear_bytes(ciphertext);
+
+    envelope = candidate;
+    return true;
+}
+
+bool unwrap_vmk_with_key(
+    const VmkWrapEnvelope& envelope,
+    const std::array<std::uint8_t, kVmkBytes>& wrapping_key,
+    std::array<std::uint8_t, kVmkBytes>& vmk
+) {
+    if (envelope.package_version != kRecoveryPackageVersion ||
+        envelope.wrap_version != kVmkWrapVersion) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> aad;
+    if (!build_vmk_wrap_aad(
+            envelope.vault_id,
+            aad,
+            envelope.package_version,
+            envelope.wrap_version
+        )) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> ciphertext(
+        envelope.ciphertext.begin(),
+        envelope.ciphertext.end()
+    );
+    std::vector<std::uint8_t> plaintext;
+    if (!aes_gcm_decrypt(
+            ciphertext,
+            wrapping_key,
+            envelope.nonce,
+            aad,
+            envelope.tag,
+            plaintext
+        ) || plaintext.size() != kVmkBytes) {
+        clear_bytes(plaintext);
+        return false;
+    }
+
+    std::array<std::uint8_t, kVmkBytes> candidate{};
+    std::copy(plaintext.begin(), plaintext.end(), candidate.begin());
+    clear_bytes(plaintext);
+    vmk = candidate;
+    candidate.fill(0);
+    return true;
+}
+
 }  // namespace m5auth::vault
