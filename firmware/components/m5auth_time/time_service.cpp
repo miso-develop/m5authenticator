@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstring>
+#include <string>
 #include <sys/time.h>
 
 #include "esp_event.h"
@@ -27,6 +28,12 @@ bool acceptable_unix_seconds(std::uint64_t unix_seconds) {
            unix_seconds <= kMaxAcceptedUnixSeconds;
 }
 
+void wipe_string(std::string* value) {
+    if (value == nullptr) return;
+    if (!value->empty()) vault_runtime::secure_zero(value->data(), value->size());
+    value->clear();
+}
+
 }  // namespace
 
 const char* sync_result_code(SyncResult result) {
@@ -48,6 +55,14 @@ TimeService::TimeService(storage::Store& store, TrustedClock& clock)
 
 TimeService::TimeService(vault_runtime::Runtime& runtime, TrustedClock& clock)
     : vault_runtime_(&runtime), clock_(clock) {}
+
+TimeService::TimeService(
+    vault_runtime::Runtime& runtime,
+    TrustedClock& clock,
+    std::recursive_mutex& runtime_access_mutex
+) : vault_runtime_(&runtime),
+    runtime_access_mutex_(&runtime_access_mutex),
+    clock_(clock) {}
 
 TimeService::~TimeService() {
     if (periodic_task_ != nullptr) {
@@ -187,17 +202,44 @@ SyncResult TimeService::sync_ntp_once() {
     SyncResult outcome = SyncResult::kNotConfigured;
 
     if (vault_runtime_ != nullptr) {
-        const vault_runtime::Status status = vault_runtime_->with_wifi(
-            [&](const vault::WifiRecord& wifi) {
-                outcome = connect_and_sync(wifi.ssid, wifi.password);
-                return vault_runtime::Status::kOk;
-            }
-        );
-        if (status == vault_runtime::Status::kNotFound) return SyncResult::kNotConfigured;
+        std::string ssid;
+        std::string password;
+        vault_runtime::Status status = vault_runtime::Status::kInternalError;
+        const auto copy_credentials = [&]() {
+            return vault_runtime_->with_wifi(
+                [&](const vault::WifiRecord& wifi) {
+                    ssid = wifi.ssid;
+                    password = wifi.password;
+                    return vault_runtime::Status::kOk;
+                }
+            );
+        };
+        if (runtime_access_mutex_ != nullptr) {
+            std::lock_guard<std::recursive_mutex> access(*runtime_access_mutex_);
+            status = copy_credentials();
+        } else {
+            status = copy_credentials();
+        }
+
+        if (status == vault_runtime::Status::kNotFound) {
+            wipe_string(&ssid);
+            wipe_string(&password);
+            return SyncResult::kNotConfigured;
+        }
         if (status == vault_runtime::Status::kLocked || status == vault_runtime::Status::kInvalidState) {
+            wipe_string(&ssid);
+            wipe_string(&password);
             return SyncResult::kLocked;
         }
-        if (status != vault_runtime::Status::kOk) return SyncResult::kInternalError;
+        if (status != vault_runtime::Status::kOk) {
+            wipe_string(&ssid);
+            wipe_string(&password);
+            return SyncResult::kInternalError;
+        }
+
+        outcome = connect_and_sync(ssid, password);
+        wipe_string(&ssid);
+        wipe_string(&password);
         return outcome;
     }
 
@@ -230,15 +272,24 @@ SyncResult TimeService::boot_sync() {
 SyncResult TimeService::sync_from_usb(std::uint64_t unix_seconds) {
     if (!acceptable_unix_seconds(unix_seconds)) return SyncResult::kInvalidTime;
     std::lock_guard<std::mutex> lock(sync_mutex_);
-    if (vault_runtime_ != nullptr && !vault_runtime_->unlocked()) {
-        return SyncResult::kLocked;
+
+    const auto apply_sync = [&]() {
+        if (vault_runtime_ != nullptr && !vault_runtime_->unlocked()) {
+            return SyncResult::kLocked;
+        }
+        struct timeval value {};
+        value.tv_sec = static_cast<time_t>(unix_seconds);
+        value.tv_usec = 0;
+        if (settimeofday(&value, nullptr) != 0) return SyncResult::kInternalError;
+        clock_.mark_synchronized(unix_seconds, esp_timer_get_time(), Source::kUsb);
+        return SyncResult::kOk;
+    };
+
+    if (vault_runtime_ != nullptr && runtime_access_mutex_ != nullptr) {
+        std::lock_guard<std::recursive_mutex> access(*runtime_access_mutex_);
+        return apply_sync();
     }
-    struct timeval value {};
-    value.tv_sec = static_cast<time_t>(unix_seconds);
-    value.tv_usec = 0;
-    if (settimeofday(&value, nullptr) != 0) return SyncResult::kInternalError;
-    clock_.mark_synchronized(unix_seconds, esp_timer_get_time(), Source::kUsb);
-    return SyncResult::kOk;
+    return apply_sync();
 }
 
 SyncResult TimeService::resync_if_due() {
