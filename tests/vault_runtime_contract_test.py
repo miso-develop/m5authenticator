@@ -71,16 +71,25 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("std::vector<std::uint8_t> bytes", read_text)
         self.assertIn("wipe_string(&value);", read_text)
 
-    def test_vault_crypto_zeroization_is_not_plain_std_fill(self) -> None:
+    def test_vault_crypto_zeroization_preserves_public_failure_contract(self) -> None:
         self.assertIn("volatile auto* cursor", self.vault_crypto)
         self.assertIn("secure_zero_memory(value.data(), value.size())", self.vault_crypto)
-        self.assertIn("secure_zero_memory(vmk.data(), vmk.size())", self.vault_crypto)
         self.assertIn("secure_zero_memory(candidate.data(), candidate.size())", self.vault_crypto)
+
         decrypt_start = self.vault_crypto.index("bool decrypt_vault(")
         decrypt_end = self.vault_crypto.index("bool wrap_vmk_with_key_and_nonce(", decrypt_start)
         decrypt_body = self.vault_crypto[decrypt_start:decrypt_end]
-        self.assertIn("clear_bytes(plaintext);", decrypt_body)
-        self.assertIn("plaintext.clear();", decrypt_body)
+        self.assertIn("clear_bytes(candidate);", decrypt_body)
+        self.assertIn("plaintext.swap(candidate);", decrypt_body)
+        prefix_before_candidate = decrypt_body[:decrypt_body.index("std::vector<std::uint8_t> candidate;")]
+        self.assertNotIn("clear_bytes(plaintext);", prefix_before_candidate)
+        self.assertNotIn("plaintext.clear();", prefix_before_candidate)
+
+        unwrap_start = self.vault_crypto.index("bool unwrap_vmk_with_key(")
+        unwrap_body = self.vault_crypto[unwrap_start:]
+        prefix_before_local_candidate = unwrap_body[:unwrap_body.index("std::array<std::uint8_t, kVmkBytes> candidate{};")]
+        self.assertNotIn("secure_zero_memory(vmk.data(), vmk.size())", prefix_before_local_candidate)
+        self.assertIn("secure_zero_memory(candidate.data(), candidate.size())", unwrap_body)
 
     def test_totp_working_buffers_are_zeroized(self) -> None:
         self.assertIn("clear_bytes(&key);", self.totp_core)
