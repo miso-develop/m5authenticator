@@ -1,17 +1,18 @@
 # V1 Distribution and Update Paths
 
-M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, TOTP secrets, Wi-Fi credentials, device dumps, or a universal production encryption key.
+M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, TOTP secrets, Wi-Fi credentials, VMK/KEK/BUK/session keys, device dumps, or a universal production encryption key.
 
 ## Release gate
 
 `firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage constants and `firmware/partitions.csv`.
 
-The current profile is intentionally `development-synthetic` with `production_release_allowed: false`. This means:
+The current profile is intentionally development-only with `production_release_allowed: false`. Decision #40 superseded the planned Production HMAC/eFuse security backend. This means:
 
 - ordinary CI may build and validate a non-published development package;
-- GitHub Pages shows the Firmware Flash surface but does not expose a flash manifest/binary;
+- GitHub Pages shows the Firmware Flash surface but does not expose a production flash manifest/binary;
 - a `v*.*.*` Release workflow fails closed before publishing anything;
-- Task #26 must install the production device-specific security backend and deliberately change the release eligibility contract before public firmware distribution is enabled.
+- Task #41 must implement and validate the application-level Encrypted Vault + RAM-only VMK + Trusted Browser quick-unlock architecture before public firmware distribution is enabled;
+- a public/synthetic development storage key must never be accepted as a production release protection boundary.
 
 Changing only a tag does not bypass this gate.
 
@@ -55,9 +56,11 @@ The V1 8 MiB release layout places both 0x3d0000-byte OTA application slots befo
 The merged image is generated without `--pad-to-size`, so its normal write range ends before `auth_nvs`. This allows the **same CI-built binary** to serve both installation modes:
 
 - **First install:** erase flash, then flash the merged image at `0x0`.
-- **Normal update:** do not erase flash; flash the same merged image at `0x0`. `auth_nvs` remains outside the write range and therefore preserves accounts, secrets, Wi-Fi credentials, and user settings.
+- **Normal update:** do not erase flash; flash the same merged image at `0x0`. `auth_nvs` remains outside the write range and therefore preserves the Encrypted Vault and non-secret user/registration metadata.
 
-Factory Reset is not an update mechanism. Factory Reset explicitly erases `auth_nvs`; a normal update must not expose or invoke a full-flash erase operation.
+Preserving `auth_nvs` does not persist the VMK: VMK remains RAM-only and is lost on reboot/power loss as required by Decision #40. After an update/reboot the Device returns to `LOCKED` and must be unlocked again before TOTP use.
+
+Factory Reset is not an update mechanism. Factory Reset explicitly erases M5Authenticator user/Vault state; a normal update must not expose or invoke a full-flash erase operation.
 
 Task #14 moved `auth_nvs` from its early development position to the V1 release position before any production release. Existing development data from the old layout is not migration-compatible and must be reprovisioned once after this transition.
 
@@ -91,7 +94,7 @@ The update implementation also requires:
 
 `update-manifest.json` keeps the generic ESP Web Tools erase prompt enabled only as a defense-in-depth warning if someone opens that manifest outside the M5Authenticator Update UI. It is not the normal update execution path.
 
-Until Task #26 enables production release eligibility, the Flasher page remains visible but fail-closed: no firmware manifest is offered.
+Until Task #41 enables production release eligibility after the new Vault architecture is implemented and validated, the Flasher page remains visible but fail-closed: no production firmware manifest is offered.
 
 ## GitHub Releases
 
@@ -118,7 +121,7 @@ GitHub Pages deployment requires a Pages staging artifact. It is the only intent
 
 M5Stack's current M5Burner workflow uses `USER CUSTOM` -> `Publish` and asks for Name, Version, Description, Device Type, GitHub link, Firmware, and Cover metadata. The GitHub Release provides the exact `.bin`, version metadata, and checksum needed for that manual publication step.
 
-For M5Authenticator, **do not use M5Burner's Firmware Export function on a provisioned device**, even though generic M5Burner documentation recommends Export as a convenient source for publishing. A full-device export can capture credential-bearing flash contents. That conflicts with `SECURITY.md`.
+For M5Authenticator, **do not use M5Burner's Firmware Export function on a provisioned device**. A full-device export can capture the Encrypted Vault and other user state; even though the Vault is encrypted, credential-bearing device dumps are prohibited by `SECURITY.md` and must not become public artifacts.
 
 Instead:
 
@@ -129,7 +132,7 @@ Instead:
 5. verify version/checksum against `release-metadata.json` and `SHA256SUMS`;
 6. never source a public M5Burner upload from a user/provisioned device dump.
 
-M5Burner community publication remains a deliberate manual operation after Task #26 makes the build production eligible. M5Burner is a distribution/install surface, not the designated state-preserving normal-update path; normal updates use the Web Flasher Update operation described above. The repository does not store M5Stack account credentials in GitHub Actions.
+M5Burner community publication remains a deliberate manual operation after Task #41 makes the build production eligible. M5Burner is a distribution/install surface, not the designated state-preserving normal-update path; normal updates use the Web Flasher Update operation described above. The repository does not store M5Stack account credentials in GitHub Actions.
 
 ## Build-output retention
 

@@ -1,50 +1,156 @@
 # Provisioning Protocol
 
-`PROTOCOL_VERSION = 1` is independent from firmware SemVer and storage schema version. V1 transport is USB Serial / Web Serial using newline-delimited JSON (NDJSON).
+Decision #40 changes the V1 security boundary from development encrypted-NVS / planned eFuse keying to an application-level Encrypted Vault with a RAM-only Vault Master Key (VMK) and Trusted Browser quick unlock.
 
-Requests use `{"v":1,"id":42,"op":"hello","params":{}}`; responses use the same version/id with either `ok:true,data` or a bounded error code. Errors never echo request payloads, and credential-bearing parsed fields are wiped before release.
+This is a wire/state-machine breaking change. Task #41 must therefore advance the protocol from the existing development `PROTOCOL_VERSION = 1` to **`PROTOCOL_VERSION = 2`** rather than silently changing v1 semantics.
+
+Transport remains USB Serial / Web Serial using newline-delimited JSON (NDJSON). Requests and responses remain versioned and request-id correlated. Credential-bearing values must never be echoed in errors or logs.
+
+## Protocol v2 security states
+
+The protocol exposes only bounded non-secret state such as:
+
+- `unprovisioned`
+- `locked`
+- `unlock_pending`
+- `provisioning`
+- `unlocked`
+- `error`
+
+The protocol must not claim that Device ID or registration metadata is hardware-backed authentication.
 
 ## Device/status
 
 ### `hello`
-Returns device/firmware/protocol/storage/build metadata, security profile/storage readiness/production eligibility, and trusted-time state/source/age/resync metadata. All are non-secret.
 
-The Web Provisioner validates the response envelope and protocol version before enabling management actions. Unsupported protocol versions fail closed.
+Returns non-secret metadata including:
+
+- firmware/build version
+- protocol version
+- storage/Vault format version
+- security profile (`ram_only_vault` or equivalent)
+- lock state
+- provisioned/registration state
+- Device Vault generation
+- trusted-time state/source/age/resync metadata
+
+Unsupported protocol versions fail closed for security-sensitive operations.
+
+### `vault.status`
+
+Returns only non-secret Vault presence/version/generation/compatibility state. It never returns ciphertext through a generic diagnostic export path and never returns VMK or plaintext records.
+
+## Unlock session
+
+Protocol v2 must provide a **fresh-session** unlock flow. Exact message names/cryptographic fields may be finalized by Task #41, but the externally observable contract is:
+
+```text
+unlock.begin
+  -> fresh Device session/challenge material + attempt id
+  -> Device displays an unlock request
+  -> explicit physical user-presence confirmation
+  -> Web and Device establish/bind fresh session protection
+  -> Web sends VMK protected for this attempt only
+  -> Device validates current Vault/generation/session
+  -> VMK enters Device RAM
+  -> unlocked
+```
+
+Mandatory properties:
+
+- VMK is never a reusable plaintext protocol value.
+- A new unlock attempt uses fresh session material.
+- Pending unlock state has a bounded timeout.
+- cancel, timeout, malformed messages, user-presence rejection, disconnect, or cryptographic failure wipe pending secret/session material.
+- Device user presence is bound to the current attempt; confirmation from an earlier attempt cannot authorize a later attempt.
+- Trusted Browser vs Passphrase recovery is a Web-side VMK recovery distinction. The Device accepts only the protected fresh-session unlock material after user presence.
+
+An explicit `lock` operation is allowed and must wipe Device VMK/session secret material immediately.
+
+## Trusted Browser and Passphrase recovery
+
+The serial protocol does not receive the user Passphrase or Browser Unlock Key (BUK).
+
+Web-side flow:
+
+```text
+new/untrusted Browser:
+Passphrase -> KDF -> KEK -> unwrap VMK
+
+Trusted Browser:
+BUK -> unwrap VMK
+```
+
+Both paths converge on the same fresh Device unlock session. BUK and Passphrase-derived KEK remain browser-local and are never provisioned to Device Flash.
+
+## Encrypted Vault update
+
+Web is the canonical V1 Vault state. Account/Wi-Fi mutations should be sent to the Device as a versioned authenticated **encrypted Vault replacement/update**, not as a release-mode stored-secret read/export flow.
+
+A security-sensitive replacement follows an atomic state transition:
+
+```text
+unlocked/locked
+  -> begin replacement
+  -> Device wipes current VMK as required by Decision #40
+  -> provisioning
+  -> receive versioned encrypted Vault + non-secret metadata/generation
+  -> validate bounded structure
+  -> fresh unlock/session key delivery as required
+  -> authenticate/decrypt validation
+  -> atomic commit
+  -> unlocked or locked according to completed flow
+```
+
+Failure or disconnect must retain the previous valid committed generation or leave the Device safely non-decrypting. It must not create a partially accepted canonical generation.
+
+The exact ciphertext chunking/size framing belongs to Task #41. Maximum message/request sizes must remain bounded and testable.
+
+## Account management
+
+V1 account mutation is Web-canonical. QR decoding, migration parsing, rename, reorder, delete, and Wi-Fi edits modify the logical Vault in browser transient memory, produce a new encrypted canonical generation, and synchronize that encrypted generation to Device.
+
+Release protocol vocabulary must contain no operation that reads or exports stored TOTP secrets, Wi-Fi passwords, VMK, Passphrase material, or BUK.
+
+Device account metadata may be exposed only while the Device is in a state where the required Vault data can be safely opened, and responses must remain limited to non-secret display metadata.
+
+## Wi-Fi
+
+Wi-Fi credentials are part of the approved encrypted credential Vault. The protocol must not return the Wi-Fi password.
+
+Because Device cannot decrypt Wi-Fi credentials while `LOCKED`, NTP boot synchronization is deferred until after successful unlock. USB `time.sync` may remain available independently because it carries no stored credential material.
 
 ## Trusted time
 
 ### `time.status`
-Returns `time_state` (`not_synced`, `ready`, `stale`), `time_source` (`none`, `ntp`, `usb`), `last_sync`, `time_age_seconds`, and `time_resync_due`. `last_sync` and age are `null` before the first successful current-boot sync.
+
+Returns non-secret trusted-time state such as `not_synced`, `ready`, `stale`, source, last-sync metadata, age, and resync-due state.
 
 ### `time.sync`
-Accepts exact integer `unix_seconds` from the local Web Provisioner, bounded to 2020-01-01 through 2100-01-01 UTC. Success establishes USB as the trusted source and returns the same non-secret status. It accepts or returns no TOTP material.
 
-## Account metadata
-
-`accounts.list` returns stable id, manual order, issuer, account label, and display name only. `account.rename`, `account.delete`, `accounts.reorder`, and `selection.get`/`selection.set` manage non-secret account state. There is no stored-secret read/export operation.
-
-## Transactional import
-
-Secret-bearing import is write-directional only: `import.begin -> import.item * N -> import.validate -> import.commit`. At most 32 items are accepted. `import.cancel` wipes the in-memory transaction. A validation/commit failure does not intentionally modify the previously committed snapshot. Import secrets never appear in responses or logs.
-
-The Web Provisioner keeps QR-decoded secret bytes inside its ephemeral import session, converts each secret to Base32 only for the corresponding `import.item` request, and clears the import session after a successful commit.
-
-## Wi-Fi
-
-`wifi.set` stores SSID/password in encrypted `auth_nvs`; password is write-only. `wifi.status` returns only configured state and SSID. `wifi.clear` removes the stored credentials. Runtime NTP explicitly uses ESP-IDF `WIFI_STORAGE_RAM`, so default flash-backed Wi-Fi persistence is not canonical.
+Accepts a bounded host Unix timestamp and establishes USB trusted time for the current boot. It accepts or returns no Vault/VMK/TOTP material and may be used while locked; OTP reveal still requires both `UNLOCKED` and trusted-time `READY`.
 
 ## Factory Reset
 
-### `factory.reset`
+`factory.reset` remains an explicit destructive Web/USB operation with strong user confirmation.
 
-Erases and reinitializes the `auth_nvs` user partition through the active Security Backend. It clears any in-memory import transaction first. The reset is serialized against NTP synchronization so a periodic Wi-Fi credential read cannot race the partition erase.
+It must:
 
-Factory Reset removes accounts, stored TOTP secrets, Wi-Fi credentials, selection/settings stored in the user partition, and returns the device to an unprovisioned-equivalent user state. It does **not** read, burn, rotate, or erase eFuse security material.
+- wipe current VMK and pending session keys
+- erase the Device Encrypted Vault and M5Authenticator user/registration state
+- return Device to `UNPROVISIONED`
+- perform no project-specific eFuse read/burn/rotation
 
-The Web UI exposes this operation only after an explicit destructive confirmation (`RESET` plus a browser confirmation dialog).
+The Web paired-reset flow must also remove the matching canonical encrypted state / Trusted Browser registration as defined by the product UX, without exporting plaintext secrets.
 
-## Fail-closed limits
+## Fail-closed behavior
 
-Maximum request line is 1024 bytes. Malformed JSON, invalid id, unsupported protocol/version/op, oversized requests, and invalid USB timestamps are rejected. Storage schema/security failures block storage operations. Current-boot time starts unsynchronized; TOTP generation remains blocked until NTP or USB succeeds, and becomes blocked again after more than 24 hours without trusted synchronization.
+The protocol rejects malformed/oversized messages, unsupported versions/operations, invalid state transitions, stale or mismatched generations, invalid unlock attempts, failed user presence, and authentication/integrity failures.
 
-The protocol vocabulary intentionally contains no operation that reads or exports stored TOTP secrets.
+Unknown newer Vault/storage formats must not be automatically erased or interpreted.
+
+The protocol must never fall back to the legacy development synthetic-key storage path in a production/release profile.
+
+## Migration from development protocol v1
+
+Protocol v1 remains historical development behavior. Task #41 owns the explicit transition to v2. Web and firmware must not advertise v2 until the new lock/unlock/Vault semantics are actually implemented and validated.
