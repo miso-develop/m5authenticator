@@ -288,13 +288,15 @@ CanonicalProtocolV2Handler::CanonicalProtocolV2Handler(
     registration::Store& registration,
     time::TimeService& time_service,
     StagedSessionV2Handler& session_handler,
-    CanonicalVmkSink& vmk_sink
+    CanonicalVmkSink& vmk_sink,
+    std::recursive_mutex& runtime_access_mutex
 ) : metadata_(metadata),
     runtime_(runtime),
     registration_(registration),
     time_service_(time_service),
     session_handler_(session_handler),
-    vmk_sink_(vmk_sink) {}
+    vmk_sink_(vmk_sink),
+    runtime_access_mutex_(runtime_access_mutex) {}
 
 CanonicalProtocolV2Handler::~CanonicalProtocolV2Handler() {
     disconnect();
@@ -379,14 +381,17 @@ std::string CanonicalProtocolV2Handler::handle_line(
     if (operation == "hello") {
         vault_runtime::Metadata runtime_metadata{};
         registration::Snapshot registration_snapshot{};
-        if (runtime_.metadata(&runtime_metadata) != vault_runtime::Status::kOk ||
-            registration_.snapshot(&registration_snapshot) != registration::Status::kOk ||
-            (runtime_metadata.has_vault != registration_snapshot.registration_present) ||
-            (runtime_metadata.has_vault &&
-             runtime_metadata.vault_id != registration_snapshot.vault_id)) {
-            response = error_response(id, "invalid_state");
-        } else {
-            response = hello_success(id, metadata_, runtime_metadata, registration_snapshot);
+        {
+            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+            if (runtime_.metadata(&runtime_metadata) != vault_runtime::Status::kOk ||
+                registration_.snapshot(&registration_snapshot) != registration::Status::kOk ||
+                (runtime_metadata.has_vault != registration_snapshot.registration_present) ||
+                (runtime_metadata.has_vault &&
+                 runtime_metadata.vault_id != registration_snapshot.vault_id)) {
+                response = error_response(id, "invalid_state");
+            } else {
+                response = hello_success(id, metadata_, runtime_metadata, registration_snapshot);
+            }
         }
     } else if (operation == "vault.install") {
         vault::VaultEnvelope envelope{};
@@ -407,10 +412,14 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 &expected_generation)) {
             response = error_response(id, "invalid_request");
         } else {
-            const vault_runtime::Status status = runtime_.update_encrypted_vault(
-                expected_generation,
-                std::move(envelope)
-            );
+            vault_runtime::Status status = vault_runtime::Status::kIo;
+            {
+                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                status = runtime_.update_encrypted_vault(
+                    expected_generation,
+                    std::move(envelope)
+                );
+            }
             response = status == vault_runtime::Status::kOk
                 ? empty_success(id)
                 : error_response(id, vault_runtime::status_code(status));
@@ -448,35 +457,52 @@ std::string CanonicalProtocolV2Handler::handle_line(
     } else if (operation == "device.lock") {
         session_handler_.disconnect();
         vmk_sink_.cancel_pending();
-        const vault_runtime::Status status = runtime_.lock();
+        vault_runtime::Status status = vault_runtime::Status::kIo;
+        {
+            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+            status = runtime_.lock();
+        }
         response = status == vault_runtime::Status::kOk
             ? empty_success(id)
             : error_response(id, vault_runtime::status_code(status));
     } else if (operation == "factory_reset") {
-        vault_runtime::Metadata runtime_metadata{};
-        registration::Snapshot registration_snapshot{};
-        if (runtime_.metadata(&runtime_metadata) != vault_runtime::Status::kOk ||
-            registration_.snapshot(&registration_snapshot) != registration::Status::kOk) {
-            response = error_response(id, "invalid_state");
-        } else {
-            const bool retry_cleanup = !runtime_metadata.has_vault &&
-                registration_snapshot.registration_present;
-            if (!runtime_.unlocked() && !retry_cleanup) {
+        bool reset_allowed = false;
+        {
+            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+            vault_runtime::Metadata runtime_metadata{};
+            registration::Snapshot registration_snapshot{};
+            if (runtime_.metadata(&runtime_metadata) != vault_runtime::Status::kOk ||
+                registration_.snapshot(&registration_snapshot) != registration::Status::kOk) {
                 response = error_response(id, "invalid_state");
             } else {
-                session_handler_.disconnect();
-                vmk_sink_.cancel_pending();
-                time_service_.prepare_factory_reset();
-                const vault_runtime::Status vault_status = runtime_.factory_reset();
-                const registration::Status registration_status =
-                    vault_status == vault_runtime::Status::kOk
+                const bool retry_cleanup = !runtime_metadata.has_vault &&
+                    registration_snapshot.registration_present;
+                reset_allowed = runtime_.unlocked() || retry_cleanup;
+                if (!reset_allowed) response = error_response(id, "invalid_state");
+            }
+        }
+
+        if (reset_allowed) {
+            session_handler_.disconnect();
+            vmk_sink_.cancel_pending();
+            // TimeService owns sync_mutex/network teardown. Do not hold the
+            // runtime mutex while waiting for it, avoiding lock-order inversion
+            // with the periodic NTP task (sync_mutex -> runtime mutex).
+            time_service_.prepare_factory_reset();
+
+            vault_runtime::Status vault_status = vault_runtime::Status::kIo;
+            registration::Status registration_status = registration::Status::kIo;
+            {
+                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                vault_status = runtime_.factory_reset();
+                registration_status = vault_status == vault_runtime::Status::kOk
                     ? registration_.clear_registration()
                     : registration::Status::kIo;
-                response = vault_status == vault_runtime::Status::kOk &&
-                        registration_status == registration::Status::kOk
-                    ? empty_success(id)
-                    : error_response(id, "reset_failed");
             }
+            response = vault_status == vault_runtime::Status::kOk &&
+                    registration_status == registration::Status::kOk
+                ? empty_success(id)
+                : error_response(id, "reset_failed");
         }
     } else {
         response = error_response(id, "unsupported_op");
