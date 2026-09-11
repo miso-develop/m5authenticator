@@ -1,11 +1,15 @@
 import { argon2id } from "hash-wasm";
 import {
+  RECOVERY_PACKAGE_VERSION,
   VAULT_FORMAT_VERSION,
   VAULT_ID_BYTES,
   VAULT_TARGET_STORAGE_SCHEMA_VERSION,
+  VMK_WRAP_VERSION,
   buildVaultAad,
   buildVmkWrapAad,
 } from "./vault-format";
+
+export { RECOVERY_PACKAGE_VERSION, VMK_WRAP_VERSION } from "./vault-format";
 
 export const AES_GCM_KEY_BYTES = 32;
 export const AES_GCM_NONCE_BYTES = 12;
@@ -16,7 +20,6 @@ export const ARGON2ID_ITERATIONS = 3;
 export const ARGON2ID_PARALLELISM = 1;
 export const ARGON2ID_SALT_BYTES = 32;
 export const ARGON2ID_OUTPUT_BYTES = 32;
-export const VMK_WRAP_VERSION = 1;
 
 const textEncoder = new TextEncoder();
 
@@ -42,6 +45,7 @@ export interface Argon2idKdfMetadata {
 }
 
 export interface PassphraseWrappedVmk {
+  packageVersion: number;
   wrapVersion: number;
   vaultFormatVersion: number;
   vaultId: Uint8Array;
@@ -57,7 +61,10 @@ export interface RandomSource {
 
 const browserRandomSource: RandomSource = {
   fill(target) {
-    crypto.getRandomValues(target);
+    const random = new Uint8Array(new ArrayBuffer(target.byteLength));
+    crypto.getRandomValues(random);
+    target.set(random);
+    random.fill(0);
   },
 };
 
@@ -66,9 +73,7 @@ function copyBuffer(value: Uint8Array): ArrayBuffer {
 }
 
 function assertLength(value: Uint8Array, expected: number, field: string): void {
-  if (value.length !== expected) {
-    throw new Error(`${field} must be ${expected} bytes`);
-  }
+  if (value.length !== expected) throw new Error(`${field} must be ${expected} bytes`);
 }
 
 function randomBytes(length: number, source: RandomSource): Uint8Array {
@@ -217,9 +222,7 @@ export function normalizeAndValidatePassphrase(passphrase: string): Uint8Array {
   return encoded;
 }
 
-export function createArgon2idMetadata(
-  source: RandomSource = browserRandomSource,
-): Argon2idKdfMetadata {
+export function createArgon2idMetadata(source: RandomSource = browserRandomSource): Argon2idKdfMetadata {
   return {
     algorithm: "argon2id",
     version: ARGON2ID_VERSION,
@@ -272,6 +275,9 @@ export async function derivePassphraseKek(
 }
 
 function validateWrappedVmk(value: PassphraseWrappedVmk): void {
+  if (value.packageVersion !== RECOVERY_PACKAGE_VERSION) {
+    throw new Error(`unsupported Recovery Package version: ${value.packageVersion}`);
+  }
   if (value.wrapVersion !== VMK_WRAP_VERSION) {
     throw new Error(`unsupported VMK wrap version: ${value.wrapVersion}`);
   }
@@ -300,16 +306,18 @@ export async function wrapVmkWithPassphrase(
   const nonce = randomBytes(AES_GCM_NONCE_BYTES, source);
   const kek = await derivePassphraseKek(passphrase, kdf);
   try {
-    const aad = buildVmkWrapAad({ vaultId });
+    const aad = buildVmkWrapAad({
+      vaultId,
+      packageVersion: RECOVERY_PACKAGE_VERSION,
+      wrapVersion: VMK_WRAP_VERSION,
+    });
     const encrypted = await aesGcmEncrypt(kek, nonce, vmk, aad);
     return {
+      packageVersion: RECOVERY_PACKAGE_VERSION,
       wrapVersion: VMK_WRAP_VERSION,
       vaultFormatVersion: VAULT_FORMAT_VERSION,
       vaultId: vaultId.slice(),
-      kdf: {
-        ...kdf,
-        salt: kdf.salt.slice(),
-      },
+      kdf: { ...kdf, salt: kdf.salt.slice() },
       nonce,
       ciphertext: encrypted.ciphertext,
       tag: encrypted.tag,
@@ -328,8 +336,8 @@ export async function unwrapVmkWithPassphrase(
   try {
     const aad = buildVmkWrapAad({
       vaultId: wrapped.vaultId,
+      packageVersion: wrapped.packageVersion,
       wrapVersion: wrapped.wrapVersion,
-      vaultFormatVersion: wrapped.vaultFormatVersion,
     });
     const vmk = await aesGcmDecrypt(kek, wrapped.nonce, wrapped.ciphertext, wrapped.tag, aad);
     assertLength(vmk, AES_GCM_KEY_BYTES, "unwrapped VMK");
