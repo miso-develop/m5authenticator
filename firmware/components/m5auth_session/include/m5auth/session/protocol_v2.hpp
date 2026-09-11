@@ -83,13 +83,29 @@ enum class AttemptState : std::uint8_t {
     kConfirmed,
 };
 
+// Adapter implemented by the StickS3 UI model. Keeping the coordinator on this
+// interface ensures the same gate that owns the physical button also authorizes
+// VMK acceptance; no second software-only confirmation path exists.
+class PresenceBinding {
+public:
+    virtual ~PresenceBinding() = default;
+    virtual bool begin_presence(
+        PresenceOperation operation,
+        const AttemptId& attempt_id,
+        std::uint64_t now_ms
+    ) = 0;
+    virtual bool consume_presence(const AttemptId& attempt_id, std::uint64_t now_ms) = 0;
+    virtual void cancel_presence() = 0;
+    virtual bool presence_confirmed() const = 0;
+};
+
 // Staged Device integration primitive for Task #54. It deliberately does not
 // advertise Protocol 2 or mutate registration/Vault persistence; Task #55 owns
 // routing these operations into the canonical application state. Every begin()
 // supersedes and wipes any previous attempt.
 class AttemptCoordinator final {
 public:
-    AttemptCoordinator() = default;
+    explicit AttemptCoordinator(PresenceBinding& presence);
     ~AttemptCoordinator();
 
     AttemptCoordinator(const AttemptCoordinator&) = delete;
@@ -102,20 +118,17 @@ public:
     );
 
     // Web public key and BRK authentication are transcript-bound. Normal
-    // Trusted Browser unlock always requires the current BRK signature before
-    // the user-presence gate is opened.
+    // Trusted Browser unlock and VMK re-key require the current BRK signature
+    // before the Device UI enters the fresh physical-presence state.
     bool authorize(
         const P256PublicKey& web_public_key,
         std::span<const std::uint8_t> brk_signature,
-        std::uint64_t now_ms,
-        std::uint64_t input_generation
+        std::uint64_t now_ms
     );
 
-    bool confirm_user_presence(std::uint64_t now_ms, std::uint64_t input_generation);
-
     // The HKDF contract is attempt_id || challenge as salt and the canonical
-    // transcript as both HKDF info and AES-GCM AAD. A physical confirmation is
-    // one-shot and consumed before cryptographic VMK acceptance.
+    // transcript as both HKDF info and AES-GCM AAD. The Device UI confirmation
+    // is one-shot and consumed before cryptographic VMK acceptance.
     bool complete(
         std::span<const std::uint8_t> nonce,
         std::span<const std::uint8_t> ciphertext,
@@ -135,8 +148,8 @@ public:
 private:
     void wipe_staged();
 
+    PresenceBinding& presence_;
     DeviceSession crypto_;
-    UserPresenceGate presence_;
     BeginContext context_{};
     AttemptDescriptor descriptor_{};
     P256PublicKey web_public_key_{};
