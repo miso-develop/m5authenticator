@@ -83,6 +83,13 @@ class SecurityScanTests(unittest.TestCase):
         findings = security_scan.scan_content("config.toml", content)
         self.assertEqual(["credential-literal"], [f.rule for f in findings])
 
+    def test_detects_browser_registration_key_literal_in_config(self) -> None:
+        content = (
+            "browser_" + "registration_" + 'key = "synthetic-brk-material"'
+        ).encode("utf-8")
+        findings = security_scan.scan_content("config.toml", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
     def test_detects_unlock_session_key_literal_in_config(self) -> None:
         content = (
             "unlock_" + "session_" + 'key = "synthetic-session-material"'
@@ -97,6 +104,11 @@ class SecurityScanTests(unittest.TestCase):
 
     def test_detects_dangerous_vmk_log_in_code(self) -> None:
         content = ("console." + "log(v" + "mk)").encode("utf-8")
+        findings = security_scan.scan_content("main.ts", content)
+        self.assertEqual(["dangerous-log"], [f.rule for f in findings])
+
+    def test_detects_dangerous_brk_log_in_code(self) -> None:
+        content = ("console." + "log(b" + "rk)").encode("utf-8")
         findings = security_scan.scan_content("main.ts", content)
         self.assertEqual(["dangerous-log"], [f.rule for f in findings])
 
