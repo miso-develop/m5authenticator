@@ -7,6 +7,7 @@ HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_r
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
 COMPAT_NVS = ROOT / "firmware/components/m5auth_vault_runtime/compatible_nvs_persistence.cpp"
 VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
+VAULT_CRYPTO = ROOT / "firmware/components/m5auth_vault/vault_crypto.cpp"
 TOTP_CORE = ROOT / "firmware/components/m5auth_totp/totp_core.cpp"
 TIME_SERVICE = ROOT / "firmware/components/m5auth_time/time_service.cpp"
 CORE_METADATA = ROOT / "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp"
@@ -20,6 +21,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
         cls.nvs = NVS.read_text(encoding="utf-8")
         cls.compat_nvs = COMPAT_NVS.read_text(encoding="utf-8")
         cls.vault_format = VAULT_FORMAT.read_text(encoding="utf-8")
+        cls.vault_crypto = VAULT_CRYPTO.read_text(encoding="utf-8")
         cls.totp_core = TOTP_CORE.read_text(encoding="utf-8")
         cls.time_service = TIME_SERVICE.read_text(encoding="utf-8")
         cls.core_metadata = CORE_METADATA.read_text(encoding="utf-8")
@@ -68,6 +70,17 @@ class VaultRuntimeContractTest(unittest.TestCase):
         read_text = self.vault_format[read_text_start:read_text_end]
         self.assertNotIn("std::vector<std::uint8_t> bytes", read_text)
         self.assertIn("wipe_string(&value);", read_text)
+
+    def test_vault_crypto_zeroization_is_not_plain_std_fill(self) -> None:
+        self.assertIn("volatile auto* cursor", self.vault_crypto)
+        self.assertIn("secure_zero_memory(value.data(), value.size())", self.vault_crypto)
+        self.assertIn("secure_zero_memory(vmk.data(), vmk.size())", self.vault_crypto)
+        self.assertIn("secure_zero_memory(candidate.data(), candidate.size())", self.vault_crypto)
+        decrypt_start = self.vault_crypto.index("bool decrypt_vault(")
+        decrypt_end = self.vault_crypto.index("bool wrap_vmk_with_key_and_nonce(", decrypt_start)
+        decrypt_body = self.vault_crypto[decrypt_start:decrypt_end]
+        self.assertIn("clear_bytes(plaintext);", decrypt_body)
+        self.assertIn("plaintext.clear();", decrypt_body)
 
     def test_totp_working_buffers_are_zeroized(self) -> None:
         self.assertIn("clear_bytes(&key);", self.totp_core)
