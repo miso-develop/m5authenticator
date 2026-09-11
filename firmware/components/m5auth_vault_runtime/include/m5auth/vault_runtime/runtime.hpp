@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "m5auth/vault.hpp"
 
@@ -117,6 +119,17 @@ struct Metadata {
     std::optional<CredentialId> last_used;
 };
 
+// Secret-free projection for the Device UI. Values are only obtainable while
+// the Vault is UNLOCKED. Callers must clear these strings when Runtime leaves
+// UNLOCKED so Vault-private labels do not outlive the RAM-only VMK session.
+struct CredentialMetadata {
+    CredentialId credential_id{};
+    std::string issuer;
+    std::string account;
+    std::string display_name;
+    std::uint16_t manual_order{0};
+};
+
 using CredentialConsumer = std::function<Status(const vault::CredentialRecord&)>;
 using WifiConsumer = std::function<Status(const vault::WifiRecord&)>;
 
@@ -176,6 +189,7 @@ public:
     );
 
     Status metadata(Metadata* metadata) const;
+    Status list_credentials(std::vector<CredentialMetadata>* credentials);
 
     // Consumers are synchronous and must not retain references beyond the call.
     // The decrypted Vault is wiped before these methods return.
