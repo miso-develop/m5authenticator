@@ -72,6 +72,10 @@ int main() {
     recovery.proposed_brk_public_key = public_key(0x90);
     assert(session_v2_begin_matches_snapshot(recovery, snapshot));
 
+    BeginContext replacement = recovery;
+    replacement.operation = Operation::kBrowserReplacement;
+    assert(session_v2_begin_matches_snapshot(replacement, snapshot));
+
     recovery.proposed_brk_public_key = snapshot.brk_public_key;
     assert(!session_v2_begin_matches_snapshot(recovery, snapshot));
 
@@ -99,6 +103,10 @@ int main() {
     assert(!session_v2_begin_matches_snapshot(initial, empty));
 
     empty.registration_present = false;
+    empty.generation = 1;
+    assert(!session_v2_begin_matches_snapshot(initial, empty));
+
+    empty.generation = 0;
     initial.device_id = "other-device";
     assert(!session_v2_begin_matches_snapshot(initial, empty));
 
