@@ -69,17 +69,55 @@ class SecurityScanTests(unittest.TestCase):
         findings = security_scan.scan_content("config.toml", content)
         self.assertEqual(["credential-literal"], [f.rule for f in findings])
 
+    def test_detects_vault_master_key_literal_in_config(self) -> None:
+        content = (
+            "vault_" + "master_" + 'key = "synthetic-vmk-material"'
+        ).encode("utf-8")
+        findings = security_scan.scan_content("config.toml", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_browser_unlock_key_literal_in_config(self) -> None:
+        content = (
+            "browser_" + "unlock_" + 'key = "synthetic-buk-material"'
+        ).encode("utf-8")
+        findings = security_scan.scan_content("config.toml", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_unlock_session_key_literal_in_config(self) -> None:
+        content = (
+            "unlock_" + "session_" + 'key = "synthetic-session-material"'
+        ).encode("utf-8")
+        findings = security_scan.scan_content("config.toml", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
     def test_detects_dangerous_log_in_code(self) -> None:
         content = ("Serial." + "println(secret)").encode("utf-8")
         findings = security_scan.scan_content("main.cpp", content)
+        self.assertEqual(["dangerous-log"], [f.rule for f in findings])
+
+    def test_detects_dangerous_vmk_log_in_code(self) -> None:
+        content = ("console." + "log(v" + "mk)").encode("utf-8")
+        findings = security_scan.scan_content("main.ts", content)
         self.assertEqual(["dangerous-log"], [f.rule for f in findings])
 
     def test_detects_forbidden_dump_path(self) -> None:
         findings = security_scan.scan_path("captures/device-flash-dump.bin")
         self.assertEqual(["forbidden-path"], [f.rule for f in findings])
 
+    def test_detects_recovery_package_path(self) -> None:
+        findings = security_scan.scan_path("local/device-recovery-package.json")
+        self.assertEqual(["forbidden-path"], [f.rule for f in findings])
+
+    def test_detects_vault_backup_path(self) -> None:
+        findings = security_scan.scan_path("exports/vault-backup.json")
+        self.assertEqual(["forbidden-path"], [f.rule for f in findings])
+
     def test_documentation_name_is_not_treated_as_dump(self) -> None:
         findings = security_scan.scan_path("docs/authenticator-migration.md")
+        self.assertEqual([], findings)
+
+    def test_recovery_documentation_name_is_not_treated_as_backup(self) -> None:
+        findings = security_scan.scan_path("docs/recovery-package.md")
         self.assertEqual([], findings)
 
     def test_allowlist_requires_safe_fixture_location(self) -> None:
