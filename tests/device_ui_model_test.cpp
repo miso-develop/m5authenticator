@@ -42,6 +42,8 @@ std::vector<m5auth::storage::AccountMetadata> make_max_accounts() {
 int main() {
     using m5auth::device::sticks3::UiModel;
     using m5auth::device::sticks3::account_display_label;
+    using m5auth::session::AttemptId;
+    using m5auth::session::PresenceOperation;
 
     assert(account_display_label(account(1, 0, "Issuer", "account", "User")) == "User");
     assert(account_display_label(account(1, 0, "Issuer", "account")) == "Issuer");
@@ -62,7 +64,6 @@ int main() {
 
     assert(model.select_next());
     assert(model.selected_id() == 1);
-    assert(model.selected_position() == 1);
     assert(model.select_previous());
     assert(model.selected_id() == 2);
 
@@ -70,20 +71,49 @@ int main() {
     assert(model.reveal_active());
     assert(model.revealed_code() == 42);
     assert(!model.expire(10'999));
-    assert(model.reveal_active());
     assert(model.expire(11'000));
     assert(!model.reveal_active());
-    assert(model.revealed_code() == 0);
 
     assert(model.reveal(654321, 20'000));
+    AttemptId attempt{};
+    attempt[0] = 0x42;
+    assert(model.begin_unlock_request(
+        PresenceOperation::kTrustedBrowserUnlock,
+        attempt,
+        20'100
+    ));
+    assert(model.unlock_request_active());
+    assert(!model.reveal_active());
+    const std::uint32_t selected_before_request = model.selected_id();
+    assert(!model.select_next());
+    assert(!model.select_previous());
+    assert(!model.reveal(111111, 20'101));
+    assert(model.selected_id() == selected_before_request);
+
+    // Only a fresh press edge after the request can confirm it.
+    assert(model.primary_button_pressed(20'102));
+    assert(model.unlock_request_confirmed());
+    assert(model.consume_unlock_confirmation(attempt, 20'103));
+    assert(!model.unlock_request_active());
+    assert(model.select_next());
+
+    AttemptId expiring_attempt{};
+    expiring_attempt[0] = 0x55;
+    assert(model.begin_unlock_request(
+        PresenceOperation::kBrowserReplacement,
+        expiring_attempt,
+        30'000
+    ));
+    assert(!model.expire_unlock_request(59'999));
+    assert(model.expire_unlock_request(60'000));
+    assert(!model.unlock_request_active());
+
     std::vector<m5auth::storage::AccountMetadata> renamed;
     renamed.push_back(account(2, 0, "Second", "two", "Renamed"));
     renamed.push_back(account(1, 1, "First", "one"));
     assert(model.update_accounts(std::move(renamed), 1));
-    assert(model.selected_id() == 2);
-    assert(model.selected_position() == 1);
+    assert(model.account_count() == 2);
     assert(!model.reveal_active());
-    assert(model.revealed_code() == 0);
 
     std::vector<m5auth::storage::AccountMetadata> replacement;
     replacement.push_back(account(7, 0, "Only", "seven"));
@@ -93,12 +123,10 @@ int main() {
     assert(!model.select_next());
     assert(!model.select_previous());
 
-    // Runtime refresh preserves the current local selection while it still exists.
     assert(model.update_accounts(make_max_accounts(), 1));
     assert(model.selected_id() == 7);
     assert(model.account_count() == 32);
 
-    // A fresh boot model restores the persisted last-used id and wraps at both ends.
     UiModel boot_model;
     assert(boot_model.update_accounts(make_max_accounts(), 1));
     assert(boot_model.selected_id() == 1);

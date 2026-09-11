@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "m5auth/session/session.hpp"
 #include "m5auth/storage/storage.hpp"
 
 namespace m5auth::device::sticks3 {
@@ -36,6 +37,22 @@ public:
     bool reveal_active() const;
     std::uint32_t revealed_code() const;
 
+    bool begin_unlock_request(
+        session::PresenceOperation operation,
+        const session::AttemptId& attempt_id,
+        std::uint64_t now_ms
+    );
+    bool expire_unlock_request(std::uint64_t now_ms);
+    void cancel_unlock_request();
+    bool unlock_request_active() const;
+    bool unlock_request_confirmed() const;
+    session::PresenceOperation unlock_request_operation() const;
+    bool primary_button_pressed(std::uint64_t now_ms);
+    bool consume_unlock_confirmation(
+        const session::AttemptId& attempt_id,
+        std::uint64_t now_ms
+    );
+
 private:
     static bool accounts_equal(
         const std::vector<storage::AccountMetadata>& left,
@@ -48,6 +65,8 @@ private:
     bool reveal_active_{false};
     std::uint32_t revealed_code_{0};
     std::uint64_t reveal_deadline_ms_{0};
+    std::uint64_t button_press_generation_{0};
+    session::UserPresenceGate presence_;
 };
 
 }  // namespace m5auth::device::sticks3

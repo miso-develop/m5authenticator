@@ -29,6 +29,7 @@ std::string account_display_label(const storage::AccountMetadata& account) {
 
 UiModel::~UiModel() {
     hide_reveal();
+    presence_.cancel();
 }
 
 bool UiModel::accounts_equal(
@@ -83,6 +84,7 @@ bool UiModel::update_accounts(
 }
 
 bool UiModel::select_next() {
+    if (presence_.active()) return false;
     bool changed = hide_reveal();
     if (accounts_.empty()) {
         selected_id_ = 0;
@@ -112,6 +114,7 @@ bool UiModel::select_next() {
 }
 
 bool UiModel::select_previous() {
+    if (presence_.active()) return false;
     bool changed = hide_reveal();
     if (accounts_.empty()) {
         selected_id_ = 0;
@@ -167,7 +170,7 @@ std::size_t UiModel::account_count() const {
 }
 
 bool UiModel::reveal(std::uint32_t code, std::uint64_t now_ms) {
-    if (selected_account() == nullptr) return false;
+    if (presence_.active() || selected_account() == nullptr) return false;
     revealed_code_ = code;
     reveal_active_ = true;
     reveal_deadline_ms_ = now_ms >
@@ -196,6 +199,56 @@ bool UiModel::reveal_active() const {
 
 std::uint32_t UiModel::revealed_code() const {
     return revealed_code_;
+}
+
+bool UiModel::begin_unlock_request(
+    session::PresenceOperation operation,
+    const session::AttemptId& attempt_id,
+    std::uint64_t now_ms
+) {
+    const bool reveal_was_visible = hide_reveal();
+    (void)presence_.begin(
+        operation,
+        attempt_id,
+        now_ms,
+        button_press_generation_
+    );
+    return reveal_was_visible || presence_.active();
+}
+
+bool UiModel::expire_unlock_request(std::uint64_t now_ms) {
+    return presence_.expire(now_ms);
+}
+
+void UiModel::cancel_unlock_request() {
+    presence_.cancel();
+}
+
+bool UiModel::unlock_request_active() const {
+    return presence_.active();
+}
+
+bool UiModel::unlock_request_confirmed() const {
+    return presence_.state() == session::PresenceState::kConfirmed;
+}
+
+session::PresenceOperation UiModel::unlock_request_operation() const {
+    return presence_.operation();
+}
+
+bool UiModel::primary_button_pressed(std::uint64_t now_ms) {
+    if (button_press_generation_ != std::numeric_limits<std::uint64_t>::max()) {
+        ++button_press_generation_;
+    }
+    if (!presence_.active()) return false;
+    return presence_.confirm_current(now_ms, button_press_generation_);
+}
+
+bool UiModel::consume_unlock_confirmation(
+    const session::AttemptId& attempt_id,
+    std::uint64_t now_ms
+) {
+    return presence_.consume_confirmation(attempt_id, now_ms);
 }
 
 }  // namespace m5auth::device::sticks3

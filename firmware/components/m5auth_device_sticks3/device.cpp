@@ -144,6 +144,22 @@ void UiController::render() {
     M5.Display.clear();
     prepare_readable_display();
     M5.Display.println("M5 Authenticator");
+
+    if (model_.unlock_request_active()) {
+        M5.Display.println("UNLOCK REQUEST");
+        M5.Display.println(
+            session::presence_operation_text(model_.unlock_request_operation())
+        );
+        if (model_.unlock_request_confirmed()) {
+            M5.Display.println("Confirmed");
+            M5.Display.println("Waiting for browser");
+        } else {
+            M5.Display.println("Press A to confirm");
+            M5.Display.println("Expires in 30 sec");
+        }
+        return;
+    }
+
     M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
 
     if (storage_error_) {
@@ -203,6 +219,11 @@ void UiController::run() {
         std::uint64_t now_ms = monotonic_ms();
         const time::Readiness readiness = time_service_.status().readiness;
 
+        dirty = model_.expire_unlock_request(now_ms) || dirty;
+        if (M5.BtnA.wasPressed()) {
+            dirty = model_.primary_button_pressed(now_ms) || dirty;
+        }
+
         if (readiness != previous_readiness) {
             previous_readiness = readiness;
             dirty = true;
@@ -223,47 +244,52 @@ void UiController::run() {
             dirty = false;
         }
 
-        if (M5.BtnA.wasHold()) {
-            if (model_.hide_reveal()) {
-                render();
-            }
-            last_generate_result_ = totp::GenerateResult::kOk;
-            const storage::AccountMetadata* selected = model_.selected_account();
-            if (selected != nullptr) {
-                std::uint32_t code = 0;
-                {
-                    std::lock_guard<std::mutex> lock(storage_access_mutex_);
-                    last_generate_result_ = generator_.generate_for_account(
-                        selected->id,
-                        &code
-                    );
+        // A security confirmation owns BtnA while active. Normal next/previous/
+        // reveal gestures cannot run until #54 consumes or cancels the attempt.
+        if (!model_.unlock_request_active()) {
+            if (M5.BtnA.wasHold()) {
+                if (model_.hide_reveal()) {
+                    render();
                 }
-                now_ms = monotonic_ms();
-                if (last_generate_result_ == totp::GenerateResult::kOk) {
-                    (void)model_.reveal(code, now_ms);
+                last_generate_result_ = totp::GenerateResult::kOk;
+                const storage::AccountMetadata* selected = model_.selected_account();
+                if (selected != nullptr) {
+                    std::uint32_t code = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(storage_access_mutex_);
+                        last_generate_result_ = generator_.generate_for_account(
+                            selected->id,
+                            &code
+                        );
+                    }
+                    now_ms = monotonic_ms();
+                    if (last_generate_result_ == totp::GenerateResult::kOk) {
+                        (void)model_.reveal(code, now_ms);
+                    }
+                    storage::secure_zero(&code, sizeof(code));
                 }
-                storage::secure_zero(&code, sizeof(code));
-            }
-            dirty = true;
-        } else if (M5.BtnA.wasDoubleClicked()) {
-            last_generate_result_ = totp::GenerateResult::kOk;
-            const bool was_revealing = model_.reveal_active();
-            if (model_.select_previous()) {
-                if (was_revealing) render();
-                (void)persist_selection();
                 dirty = true;
-            }
-        } else if (M5.BtnA.wasSingleClicked()) {
-            last_generate_result_ = totp::GenerateResult::kOk;
-            const bool was_revealing = model_.reveal_active();
-            if (model_.select_next()) {
-                if (was_revealing) render();
-                (void)persist_selection();
-                dirty = true;
+            } else if (M5.BtnA.wasDoubleClicked()) {
+                last_generate_result_ = totp::GenerateResult::kOk;
+                const bool was_revealing = model_.reveal_active();
+                if (model_.select_previous()) {
+                    if (was_revealing) render();
+                    (void)persist_selection();
+                    dirty = true;
+                }
+            } else if (M5.BtnA.wasSingleClicked()) {
+                last_generate_result_ = totp::GenerateResult::kOk;
+                const bool was_revealing = model_.reveal_active();
+                if (model_.select_next()) {
+                    if (was_revealing) render();
+                    (void)persist_selection();
+                    dirty = true;
+                }
             }
         }
 
         if (!model_.reveal_active() &&
+            !model_.unlock_request_active() &&
             now_ms - last_refresh_ms >= kAccountRefreshIntervalMs) {
             dirty = refresh_accounts() || dirty;
             last_refresh_ms = now_ms;
