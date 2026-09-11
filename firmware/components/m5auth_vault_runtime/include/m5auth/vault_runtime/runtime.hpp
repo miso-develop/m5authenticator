@@ -73,6 +73,7 @@ public:
     virtual Status erase_all() = 0;
 };
 
+// Low-level plaintext-NVS adapter for the target Schema 2 representation.
 class NvsPersistence final : public Persistence {
 public:
     Status load(PersistedSnapshot* snapshot) override;
@@ -83,6 +84,26 @@ public:
     ) override;
     Status set_last_used(const std::optional<CredentialId>& credential_id) override;
     Status erase_all() override;
+};
+
+// Runtime-facing adapter. It first attempts target Schema 2 and, if that cannot
+// be opened, performs a read-only probe using the deliberately public legacy
+// development NVS keys. A positively identified Schema 1 returns
+// kReprovisionRequired. Unknown/corrupt states retain the original fail-closed
+// result; this probe never erases or migrates storage.
+class CompatibleNvsPersistence final : public Persistence {
+public:
+    Status load(PersistedSnapshot* snapshot) override;
+    Status format_schema2() override;
+    Status replace_envelope(
+        std::uint64_t expected_generation,
+        const vault::VaultEnvelope& envelope
+    ) override;
+    Status set_last_used(const std::optional<CredentialId>& credential_id) override;
+    Status erase_all() override;
+
+private:
+    NvsPersistence schema2_;
 };
 
 struct Metadata {
