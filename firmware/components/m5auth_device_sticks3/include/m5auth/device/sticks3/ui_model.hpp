@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "m5auth/session/session.hpp"
+#include "m5auth/session/protocol_v2.hpp"
 #include "m5auth/storage/storage.hpp"
 
 namespace m5auth::device::sticks3 {
@@ -14,9 +14,9 @@ inline constexpr std::uint64_t kOtpRevealDurationMs = 10'000;
 
 std::string account_display_label(const storage::AccountMetadata& account);
 
-class UiModel {
+class UiModel final : public session::protocol_v2::PresenceBinding {
 public:
-    ~UiModel();
+    ~UiModel() override;
 
     bool update_accounts(
         std::vector<storage::AccountMetadata> accounts,
@@ -52,6 +52,22 @@ public:
         const session::AttemptId& attempt_id,
         std::uint64_t now_ms
     );
+
+    bool begin_presence(
+        session::PresenceOperation operation,
+        const session::AttemptId& attempt_id,
+        std::uint64_t now_ms
+    ) override {
+        return begin_unlock_request(operation, attempt_id, now_ms);
+    }
+    bool consume_presence(
+        const session::AttemptId& attempt_id,
+        std::uint64_t now_ms
+    ) override {
+        return consume_unlock_confirmation(attempt_id, now_ms);
+    }
+    void cancel_presence() override { cancel_unlock_request(); }
+    bool presence_confirmed() const override { return unlock_request_confirmed(); }
 
 private:
     static bool accounts_equal(

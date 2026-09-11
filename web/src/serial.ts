@@ -5,6 +5,12 @@ import {
   parseResponseData,
   type HelloData,
 } from "./protocol";
+import {
+  buildSessionV2Request,
+  parseSessionV2Response,
+  SessionProtocolV2Error,
+  type SessionWireOperation,
+} from "./security/session-protocol-v2";
 
 const MAX_RESPONSE_BYTES = 4096;
 const RESPONSE_TIMEOUT_MS = 5000;
@@ -29,11 +35,16 @@ export interface DeviceTransport {
   close(): Promise<void>;
 }
 
+export interface SessionV2Transport {
+  requestV2(op: SessionWireOperation, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  close(): Promise<void>;
+}
+
 function browserSerial(): SerialLike | undefined {
   return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
 }
 
-export class SerialSession implements DeviceTransport {
+export class SerialSession implements DeviceTransport, SessionV2Transport {
   private readonly port: SerialPortLike;
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -85,33 +96,25 @@ export class SerialSession implements DeviceTransport {
     op: string,
     params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
-    if (this.closed) {
-      throw new Error("Device is not connected");
-    }
-    if (this.inFlight) {
-      throw new Error("Another device request is already in progress");
-    }
+    return this.exchange(
+      (id) => buildRequest(id, op, params),
+      parseResponseData,
+      (error) => error instanceof DeviceProtocolError,
+    );
+  }
 
-    this.inFlight = true;
-    const id = this.allocateRequestId();
-    try {
-      const request = buildRequest(id, op, params);
-      const payload = new TextEncoder().encode(request);
-      try {
-        await this.writer.write(payload);
-      } finally {
-        payload.fill(0);
-      }
-      const line = await this.readLine();
-      return parseResponseData(line, id);
-    } catch (error) {
-      if (!(error instanceof DeviceProtocolError)) {
-        await this.closeSilently();
-      }
-      throw error;
-    } finally {
-      this.inFlight = false;
-    }
+  // Staged only: callers must explicitly select the Protocol v2 session
+  // surface. connect()/hello and canonical management remain Protocol 1 until
+  // Task #55 activates the complete v2/Schema 2/Vault 1 application contract.
+  public async requestV2(
+    op: SessionWireOperation,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    return this.exchange(
+      (id) => buildSessionV2Request(id, op, params),
+      parseSessionV2Response,
+      (error) => error instanceof SessionProtocolV2Error,
+    );
   }
 
   public async close(): Promise<void> {
@@ -136,6 +139,34 @@ export class SerialSession implements DeviceTransport {
       // The browser may already have released the writer.
     }
     await this.port.close();
+  }
+
+  private async exchange(
+    build: (id: number) => string,
+    parse: (raw: string, expectedId: number) => Record<string, unknown>,
+    isDeviceRejection: (error: unknown) => boolean,
+  ): Promise<Record<string, unknown>> {
+    if (this.closed) throw new Error("Device is not connected");
+    if (this.inFlight) throw new Error("Another device request is already in progress");
+
+    this.inFlight = true;
+    const id = this.allocateRequestId();
+    try {
+      const request = build(id);
+      const payload = new TextEncoder().encode(request);
+      try {
+        await this.writer.write(payload);
+      } finally {
+        payload.fill(0);
+      }
+      const line = await this.readLine();
+      return parse(line, id);
+    } catch (error) {
+      if (!isDeviceRejection(error)) await this.closeSilently();
+      throw error;
+    } finally {
+      this.inFlight = false;
+    }
   }
 
   private allocateRequestId(): number {
@@ -163,9 +194,7 @@ export class SerialSession implements DeviceTransport {
         if (done) throw new Error("Device disconnected before responding");
         if (value) {
           this.pendingBytes += value.byteLength;
-          if (this.pendingBytes > MAX_RESPONSE_BYTES) {
-            throw new Error("Device response was too large");
-          }
+          if (this.pendingBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
           this.pending += this.decoder.decode(value, { stream: true });
         }
       } finally {
