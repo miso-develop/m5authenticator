@@ -140,11 +140,12 @@ class VaultRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.nvs.lower())
 
-    def test_schema2_is_staged_without_canonical_activation(self) -> None:
+    def test_schema2_is_canonically_activated(self) -> None:
         self.assertIn("kStorageSchemaVersion = 2", self.header)
         self.assertIn("kTargetStorageSchemaVersion", self.nvs)
-        self.assertIn("kProtocolVersion = 1", self.core_metadata)
-        self.assertIn("kStorageSchemaVersion = 1", self.core_metadata)
+        self.assertIn("kProtocolVersion = 2", self.core_metadata)
+        self.assertIn("kStorageSchemaVersion = 2", self.core_metadata)
+        self.assertIn("kVaultFormatVersion = 1", self.core_metadata)
         self.assertNotIn("kProtocolVersion", self.component)
 
     def test_known_schema1_requires_reprovision_and_newer_fails_closed(self) -> None:
