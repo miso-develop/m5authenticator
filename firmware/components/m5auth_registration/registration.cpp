@@ -13,8 +13,11 @@
 namespace m5auth::registration {
 namespace {
 
-constexpr char kPartitionLabel[] = "auth_nvs";
-constexpr char kNamespace[] = "reg2";
+// Registration/public Device identity is deliberately kept in the ordinary NVS
+// partition, separate from the dedicated auth_nvs encrypted-Vault replica. A
+// Vault format/reprovision erase can therefore never rotate the Device ID or
+// silently discard the active BRK registration as a side effect.
+constexpr char kNamespace[] = "m5auth_reg2";
 constexpr char kDeviceIdKey[] = "device_id";
 constexpr char kRegistrationKey[] = "active";
 constexpr std::array<std::uint8_t, 8> kRegistrationMagic{
@@ -56,7 +59,7 @@ std::uint32_t read_u32(const std::uint8_t* input) {
 
 Status open_namespace(nvs_open_mode_t mode, nvs_handle_t* handle) {
     if (handle == nullptr) return Status::kInvalidArgument;
-    return map_error(nvs_open_from_partition(kPartitionLabel, kNamespace, mode, handle));
+    return map_error(nvs_open(kNamespace, mode, handle));
 }
 
 }  // namespace
@@ -95,10 +98,10 @@ Status Store::initialize() {
     ready_ = false;
     snapshot_ = Snapshot{};
 
-    const esp_err_t partition_status = nvs_flash_init_partition(kPartitionLabel);
-    if (partition_status != ESP_OK && partition_status != ESP_ERR_NVS_NO_FREE_PAGES) {
-        return map_error(partition_status);
-    }
+    // Never erase NVS implicitly here. Corrupt/newer NVS is a fail-closed state;
+    // destructive recovery belongs to an explicit confirmed reset path.
+    const esp_err_t nvs_status = nvs_flash_init();
+    if (nvs_status != ESP_OK) return map_error(nvs_status);
 
     Status status = load_or_create_device_id();
     if (status != Status::kOk) return status;
