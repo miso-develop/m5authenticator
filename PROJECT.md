@@ -32,6 +32,7 @@ V1はM5StickS3を対象とし、Google Authenticator等を正本として保持�
 - Vault Master Key (VMK)はDevice Flashへ永続化せず、`UNLOCKED`中だけDevice RAMへ保持する
 - cold boot後はTrusted Browser quick unlockを利用でき、通常時はPassphrase再入力を不要とする。ただしDevice上の明示的user presenceを必須とする
 - 新Browser / recoveryではPassphraseから導出したKEKでwrapped VMKを復旧する
+- Web canonical Encrypted Vault + Passphrase-wrapped VMKを、plaintext credential/VMK/BUKを含まない暗号化Recovery Packageとしてexport/importできる
 - Wi-Fi credentialもapproved encrypted Vault boundaryへ保存し、unlock後のNTP syncにのみ利用する
 - USB接続、USB enumeration、通常のWeb Serial接続だけでは既存UNLOCKED sessionをLockしない
 - current bootでNTPまたはUSB time syncが一度も成功していない場合はOTPを表示しない
@@ -75,7 +76,7 @@ BLE Presenceは後半phaseでfeasibilityとsecurity benefitを再評価し、採
 - decrypted production/user account database
 - equivalent authentication material
 
-Web Provisioner must not transmit TOTP secrets, QR payloads, Wi-Fi credentials, VMK, or decrypted account data to GitHub Pages or any other server. Parsing, encrypted persistence, and provisioning are local-only.
+Web Provisioner must not transmit TOTP secrets, QR payloads, Wi-Fi credentials, VMK, or decrypted account data to GitHub Pages or any other server. Parsing, encrypted persistence, encrypted Recovery Package export/import, and provisioning are local-only.
 
 Tests must use published public test vectors or explicitly synthetic, non-user credentials only.
 
@@ -89,7 +90,8 @@ See `SECURITY.md` and `docs/SECRET_VAULT.md` for mandatory handling and architec
 - Trusted Browserが利用できる場合、cold boot後の通常unlockではPassphrase再入力を要求しないが、Device上のuser-presence確認は要求する。
 - smartphone remains the canonical recovery/source copy for TOTP enrollment; the M5 device is a derived authenticator.
 - TOTP secret export from the M5 device is intentionally unsupported.
-- Factory Reset removes encrypted Vault/user state/settings/registration state and leaves no project-specific irreversible eFuse state.
+- Passphrase単体では失われたrandom VMKを再生成できない。別Browserで既存Web Vaultを復旧するには暗号化Recovery Packageが必要で、それも失った場合はauthoritative authenticator/source credentialsから再provisionする。
+- Factory Reset removes encrypted Vault/user state/settings/registration state and leaves no project-specific irreversible eFuse state. Separately exported Recovery Packages are outside the Factory Reset erase boundary.
 
 ## Invariants / decisions
 
@@ -98,14 +100,15 @@ See `SECURITY.md` and `docs/SECRET_VAULT.md` for mandatory handling and architec
 - Device FlashにVMK、Passphrase、Passphrase由来KEK、BUK、plaintext TOTP secret、plaintext Wi-Fi passwordを保存しない。
 - Encrypted Vault本体はランダム256-bit VMKで保護し、VMKはDeviceでは`UNLOCKED`中だけRAMへ保持する。
 - PassphraseはVault本体ではなくVMKをwrapするKEKの導出に使う。通常のPassphrase変更ではVMKをre-wrapする。
-- Trusted Browserはbrowser-local non-extractable Browser Unlock Key (BUK)でVMKの別wrapped copyを解除できる。BUKはbackup/exportへ含めない。
+- Trusted Browserはbrowser-local non-extractable Browser Unlock Key (BUK)でVMKの別wrapped copyを解除できる。BUKはRecovery Package/exportへ含めない。
+- 暗号化Recovery PackageはWeb canonical ciphertext + Passphrase-wrapped VMKをportableにするためのものであり、Device stored-secret exportとは区別する。plaintext TOTP/Wi-Fi credential、VMK、Passphrase/KEK、BUKを含めない。
 - Trusted Browser unlockは完全自動化せず、Device側の明示的user presenceを必須とする。
 - reboot / power loss / explicit Lock / fatal security error / Factory Reset / security-sensitive re-provision or re-key entryではVMKをzeroizeする。
 - USB電源接続、USB enumeration、通常Web Serial接続そのものはLock条件にしない。
 - Web encrypted Vaultをcanonical state、Device encrypted Vaultをruntime copyとして扱い、generationで不整合を検出する。ただしhardware-backed rollback protectionとは主張しない。
 - Secret-bearing data must never be written to logs, exception text, telemetry, URL query strings, analytics, crash reports, or external requests.
 - Sensitive fields are redacted by default; debug mode does not relax this rule.
-- Secret export is not a supported release feature.
+- Device stored-secret export is not a supported release feature.
 - Browser import of QR screenshots is ephemeral: decode in memory, update encrypted canonical Vault/provision locally, then discard; do not upload or persist plaintext images/secrets by default.
 - Security regressions are blocking defects even when functional tests pass.
 - Map / Decision / Spec knowledge that remains current must be promoted into repository truth instead of being left only in closed Issues.
