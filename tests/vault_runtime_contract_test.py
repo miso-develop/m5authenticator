@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "firmware/components/m5auth_vault_runtime/runtime.cpp"
 HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_runtime/runtime.hpp"
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
+VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
 CORE_METADATA = ROOT / "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp"
 
 
@@ -14,6 +15,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
         cls.runtime = RUNTIME.read_text(encoding="utf-8")
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.nvs = NVS.read_text(encoding="utf-8")
+        cls.vault_format = VAULT_FORMAT.read_text(encoding="utf-8")
         cls.core_metadata = CORE_METADATA.read_text(encoding="utf-8")
         cls.component = cls.runtime + "\n" + cls.header + "\n" + cls.nvs
 
@@ -36,6 +38,17 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertIn("credential.credential_id.fill(0);", self.runtime)
         self.assertIn("wipe_bytes(&credential.secret);", self.runtime)
         self.assertIn("wipe_string(&plaintext->wifi->password);", self.runtime)
+
+    def test_vault_codec_zeroizes_internal_plaintext_temporaries(self) -> None:
+        self.assertIn("ByteVectorWipeGuard candidate_wipe(candidate);", self.vault_format)
+        self.assertIn("PlaintextWipeGuard candidate_wipe(candidate);", self.vault_format)
+        self.assertIn("candidate.credentials.reserve(count);", self.vault_format)
+        self.assertIn("wipe_plaintext_candidate(&value);", self.vault_format)
+        read_text_start = self.vault_format.index("bool read_sized_text(std::string& value)")
+        read_text_end = self.vault_format.index("bool at_end() const", read_text_start)
+        read_text = self.vault_format[read_text_start:read_text_end]
+        self.assertNotIn("std::vector<std::uint8_t> bytes", read_text)
+        self.assertIn("wipe_string(&value);", read_text)
 
     def test_nvs_update_uses_inactive_slot_then_active_pointer(self) -> None:
         phase1 = self.nvs.index("Phase 1")
