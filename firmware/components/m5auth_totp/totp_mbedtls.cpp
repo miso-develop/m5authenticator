@@ -20,6 +20,14 @@ bool hmac_sha1(
 
 }  // namespace
 
+CoreResult generate_raw(
+    std::span<const std::uint8_t> secret,
+    std::uint64_t unix_seconds,
+    std::uint32_t* code
+) {
+    return generate_raw_with_provider(secret, unix_seconds, &hmac_sha1, code);
+}
+
 CoreResult generate(
     std::string_view base32_secret,
     std::uint64_t unix_seconds,
