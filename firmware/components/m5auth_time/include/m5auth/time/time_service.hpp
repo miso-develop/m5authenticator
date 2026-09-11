@@ -36,9 +36,15 @@ public:
     // removes/reclassifies the historical Protocol 1 implementation.
     TimeService(storage::Store& store, TrustedClock& clock);
 
-    // Canonical Protocol v2 path. Wi-Fi credentials are opened transiently from
-    // the application-level Vault and are therefore inaccessible while LOCKED.
+    // Staged canonical constructor retained for isolated tests. Production #55
+    // uses the mutex-aware overload below so UI/protocol/time tasks serialize
+    // access to the non-thread-safe Vault Runtime.
     TimeService(vault_runtime::Runtime& runtime, TrustedClock& clock);
+    TimeService(
+        vault_runtime::Runtime& runtime,
+        TrustedClock& clock,
+        std::recursive_mutex& runtime_access_mutex
+    );
     ~TimeService();
 
     TimeService(const TimeService&) = delete;
@@ -71,6 +77,7 @@ private:
 
     storage::Store* legacy_store_{nullptr};
     vault_runtime::Runtime* vault_runtime_{nullptr};
+    std::recursive_mutex* runtime_access_mutex_{nullptr};
     TrustedClock& clock_;
     mutable std::mutex sync_mutex_;
     bool network_initialized_{false};
