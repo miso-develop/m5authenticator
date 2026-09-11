@@ -94,12 +94,31 @@ jobs:
           && /tmp/m5auth-vault-runtime-test
       - name: Test Vault runtime security contract
         run: python -m unittest tests/vault_runtime_contract_test.py
+      - name: Test Device session crypto primitives
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror
+          -Ifirmware/components/m5auth_session/include
+          firmware/components/m5auth_session/session_crypto.cpp
+          tests/session_crypto_test.cpp
+          -lcrypto
+          -o /tmp/m5auth-session-crypto-test
+          && /tmp/m5auth-session-crypto-test
+      - name: Test Device user-presence gate
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror
+          -Ifirmware/components/m5auth_session/include
+          firmware/components/m5auth_session/user_presence.cpp
+          tests/user_presence_test.cpp
+          -o /tmp/m5auth-user-presence-test
+          && /tmp/m5auth-user-presence-test
       - name: Test StickS3 UI model
         run: >-
           g++ -std=c++20 -Wall -Wextra -Werror
           -Ifirmware/components/m5auth_device_sticks3/include
+          -Ifirmware/components/m5auth_session/include
           -Ifirmware/components/m5auth_storage/include
           firmware/components/m5auth_device_sticks3/ui_model.cpp
+          firmware/components/m5auth_session/user_presence.cpp
           tests/device_ui_model_test.cpp
           -o /tmp/m5auth-device-ui-model-test
           && /tmp/m5auth-device-ui-model-test
