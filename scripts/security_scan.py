@@ -68,12 +68,21 @@ RULE_PATTERNS = {
 _CREDENTIAL_NAME = (
     r"(?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|"
     r"client[_-]?secret|wifi[_-]?password|totp[_-]?secret|"
-    r"vault[_-]?master[_-]?key|vmk|passphrase[_-]?(?:derived[_-]?)?kek|"
-    r"browser[_-]?unlock[_-]?key|buk|browser[_-]?registration[_-]?key|brk|"
+    r"vault[_-]?master[_-]?key|vmk|kek|passphrase[_-]?(?:derived[_-]?)?kek|"
+    r"browser[_-]?unlock[_-]?key|buk|"
+    r"browser[_-]?registration[_-]?private[_-]?key|brk[_-]?private[_-]?key|"
+    r"browser[_-]?registration[_-]?key|brk|"
     r"unlock[_-]?session[_-]?key|session[_-]?key)"
 )
+_CREDENTIAL_KEY = (
+    r"(?:"
+    + _CREDENTIAL_NAME
+    + r"|(?P<credential_quote>[\"'])"
+    + _CREDENTIAL_NAME
+    + r"(?P=credential_quote))"
+)
 CREDENTIAL_LITERAL_PATTERN = re.compile(
-    _CREDENTIAL_NAME
+    _CREDENTIAL_KEY
     + r"""\s*[:=]\s*["'][^"'\r\n]{8,}["']""",
     re.IGNORECASE,
 )
