@@ -454,7 +454,10 @@ bool DeviceSession::begin(std::uint64_t now_ms, AttemptDescriptor& descriptor) {
     }
 
 #ifdef ESP_PLATFORM
-    if (psa_crypto_init() != PSA_SUCCESS) return false;
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        impl_->reset();
+        return false;
+    }
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(
         &attributes,
