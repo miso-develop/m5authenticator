@@ -12,6 +12,7 @@ constexpr std::size_t kMaxFieldBytes = 1024;
 constexpr std::size_t kMaxSecretBytes = 512;
 constexpr char kPlaintextMagic[] = "M5AUTH-VLT-PT1";
 constexpr char kVaultAadMagic[] = "M5AUTH-VLT-AAD1";
+constexpr char kVmkWrapAadMagic[] = "M5AUTH-VMK-WRAP1";
 
 void append_u16(std::vector<std::uint8_t>& output, std::uint16_t value) {
     output.push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
@@ -301,6 +302,30 @@ bool build_vault_aad(
     append_u16(candidate, storage_schema_version);
     candidate.insert(candidate.end(), vault_id.begin(), vault_id.end());
     append_u64(candidate, generation);
+
+    aad.swap(candidate);
+    return true;
+}
+
+bool build_vmk_wrap_aad(
+    const std::array<std::uint8_t, kVaultIdBytes>& vault_id,
+    std::vector<std::uint8_t>& aad,
+    std::uint16_t package_version,
+    std::uint16_t wrap_version
+) {
+    if (package_version != kRecoveryPackageVersion || wrap_version != kVmkWrapVersion) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> candidate;
+    candidate.insert(
+        candidate.end(),
+        reinterpret_cast<const std::uint8_t*>(kVmkWrapAadMagic),
+        reinterpret_cast<const std::uint8_t*>(kVmkWrapAadMagic) + sizeof(kVmkWrapAadMagic)
+    );
+    append_u16(candidate, package_version);
+    append_u16(candidate, wrap_version);
+    candidate.insert(candidate.end(), vault_id.begin(), vault_id.end());
 
     aad.swap(candidate);
     return true;
