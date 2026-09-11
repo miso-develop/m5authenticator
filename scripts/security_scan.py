@@ -69,8 +69,8 @@ _CREDENTIAL_NAME = (
     r"(?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|"
     r"client[_-]?secret|wifi[_-]?password|totp[_-]?secret|"
     r"vault[_-]?master[_-]?key|vmk|passphrase[_-]?(?:derived[_-]?)?kek|"
-    r"browser[_-]?unlock[_-]?key|buk|unlock[_-]?session[_-]?key|"
-    r"session[_-]?key)"
+    r"browser[_-]?unlock[_-]?key|buk|browser[_-]?registration[_-]?key|brk|"
+    r"unlock[_-]?session[_-]?key|session[_-]?key)"
 )
 CREDENTIAL_LITERAL_PATTERN = re.compile(
     _CREDENTIAL_NAME
@@ -85,7 +85,7 @@ LOG_SINK_PATTERN = re.compile(
     r"logger\.(?:debug|info|warning|error|exception)))"
     r"\s*\([^\)\n]*(?:secret|password|token|credential|migration|otpauth|decrypted|"
     r"vault[_-]?master[_-]?key|\bvmk\b|browser[_-]?unlock[_-]?key|\bbuk\b|"
-    r"session[_-]?key)",
+    r"browser[_-]?registration[_-]?key|\bbrk\b|session[_-]?key)",
     re.IGNORECASE,
 )
 
