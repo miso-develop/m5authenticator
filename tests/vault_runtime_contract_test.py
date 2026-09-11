@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "firmware/components/m5auth_vault_runtime/runtime.cpp"
 HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_runtime/runtime.hpp"
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
+COMPAT_NVS = ROOT / "firmware/components/m5auth_vault_runtime/compatible_nvs_persistence.cpp"
 VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
 TOTP_CORE = ROOT / "firmware/components/m5auth_totp/totp_core.cpp"
 TIME_SERVICE = ROOT / "firmware/components/m5auth_time/time_service.cpp"
@@ -17,11 +18,14 @@ class VaultRuntimeContractTest(unittest.TestCase):
         cls.runtime = RUNTIME.read_text(encoding="utf-8")
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.nvs = NVS.read_text(encoding="utf-8")
+        cls.compat_nvs = COMPAT_NVS.read_text(encoding="utf-8")
         cls.vault_format = VAULT_FORMAT.read_text(encoding="utf-8")
         cls.totp_core = TOTP_CORE.read_text(encoding="utf-8")
         cls.time_service = TIME_SERVICE.read_text(encoding="utf-8")
         cls.core_metadata = CORE_METADATA.read_text(encoding="utf-8")
-        cls.component = cls.runtime + "\n" + cls.header + "\n" + cls.nvs
+        cls.component = (
+            cls.runtime + "\n" + cls.header + "\n" + cls.nvs + "\n" + cls.compat_nvs
+        )
 
     def test_vmk_is_explicitly_wiped_and_destructor_wipes(self) -> None:
         self.assertIn("secure_zero(vmk_.data(), vmk_.size())", self.runtime)
@@ -91,6 +95,15 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertIn("nvs_commit(handle)", self.nvs[active_pointer:active_pointer + 240])
         self.assertIn("Validate the durable staged copy", self.nvs[staged_blob:phase2])
 
+    def test_legacy_schema1_probe_is_read_only_and_positive_only(self) -> None:
+        self.assertIn("nvs_flash_secure_init_partition", self.compat_nvs)
+        self.assertIn("schema_result == ESP_OK && schema == 1", self.compat_nvs)
+        self.assertIn("return Status::kReprovisionRequired;", self.compat_nvs)
+        self.assertIn("return primary;", self.compat_nvs)
+        self.assertNotIn("nvs_flash_erase_partition", self.compat_nvs)
+        self.assertNotIn("nvs_set_", self.compat_nvs)
+        self.assertNotIn("nvs_commit", self.compat_nvs)
+
     def test_only_opaque_last_used_is_persisted_outside_ciphertext(self) -> None:
         self.assertIn('constexpr char kLastUsedKey[] = "last_used";', self.nvs)
         self.assertIn("credential_id->data()", self.nvs)
@@ -115,6 +128,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
     def test_known_schema1_requires_reprovision_and_newer_fails_closed(self) -> None:
         self.assertIn("if (schema == 1) return Status::kReprovisionRequired;", self.nvs)
         self.assertIn("if (schema > kStorageSchemaVersion) return Status::kUnsupportedSchema;", self.nvs)
+        self.assertIn("CompatibleNvsPersistence", self.header)
         self.assertNotIn("format_schema2();", self.runtime[self.runtime.index("Status Runtime::initialize()"):self.runtime.index("Status Runtime::reload_after_persistence()")])
 
     def test_component_has_no_project_efuse_or_secret_logging_path(self) -> None:
