@@ -32,6 +32,43 @@ async function exportRawPublicKey(publicKey: CryptoKey): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.exportKey("raw", publicKey));
 }
 
+async function deriveDeviceDecryptKey(input: {
+  privateKey: CryptoKey;
+  peerPublicKeyRaw: Uint8Array;
+  hkdfSalt: Uint8Array;
+  hkdfInfo: Uint8Array;
+}): Promise<CryptoKey> {
+  const peer = await crypto.subtle.importKey(
+    "raw",
+    buffer(input.peerPublicKeyRaw),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const shared = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: "ECDH", public: peer },
+    input.privateKey,
+    256,
+  ));
+  try {
+    const hkdf = await crypto.subtle.importKey("raw", buffer(shared), "HKDF", false, ["deriveKey"]);
+    return await crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: buffer(input.hkdfSalt),
+        info: buffer(input.hkdfInfo),
+      },
+      hkdf,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+  } finally {
+    shared.fill(0);
+  }
+}
+
 function joinCiphertextAndTag(ciphertext: Uint8Array, tag: Uint8Array): Uint8Array {
   const combined = new Uint8Array(ciphertext.length + tag.length);
   combined.set(ciphertext);
@@ -71,7 +108,7 @@ describe("Web Protocol v2 session cryptographic primitives", () => {
     expect(second.publicKeyRaw).not.toEqual(first.publicKeyRaw);
   });
 
-  it("derives interoperable non-extractable AES-256-GCM keys from explicit HKDF context", async () => {
+  it("derives an interoperable non-extractable encrypt-only AES-256-GCM key from explicit HKDF context", async () => {
     const web = await generateWebEphemeralKeyPair();
     const device = await generateDevicePair();
     const devicePublicKeyRaw = await exportRawPublicKey(device.publicKey);
@@ -84,7 +121,7 @@ describe("Web Protocol v2 session cryptographic primitives", () => {
       hkdfSalt: salt,
       hkdfInfo: info,
     });
-    const deviceKey = await deriveSessionAeadKey({
+    const deviceKey = await deriveDeviceDecryptKey({
       privateKey: device.privateKey,
       peerPublicKeyRaw: web.publicKeyRaw,
       hkdfSalt: salt,
@@ -92,7 +129,9 @@ describe("Web Protocol v2 session cryptographic primitives", () => {
     });
 
     expect(webKey.extractable).toBe(false);
+    expect(webKey.usages).toEqual(["encrypt"]);
     expect(deviceKey.extractable).toBe(false);
+    expect(deviceKey.usages).toEqual(["decrypt"]);
     expect(webKey.algorithm).toMatchObject({ name: "AES-GCM", length: 256 });
 
     const vmk = bytes(32, 17);
@@ -117,22 +156,28 @@ describe("Web Protocol v2 session cryptographic primitives", () => {
     const devicePublicKeyRaw = await exportRawPublicKey(device.publicKey);
     const salt = bytes(32, 4);
     const info = bytes(32, 66);
-    const key = await deriveSessionAeadKey({
+    const webKey = await deriveSessionAeadKey({
       privateKey: web.privateKey,
       peerPublicKeyRaw: devicePublicKeyRaw,
       hkdfSalt: salt,
       hkdfInfo: info,
     });
+    const deviceKey = await deriveDeviceDecryptKey({
+      privateKey: device.privateKey,
+      peerPublicKeyRaw: web.publicKeyRaw,
+      hkdfSalt: salt,
+      hkdfInfo: info,
+    });
     const vmk = bytes(32, 77);
     const transcript = bytes(96, 21);
-    const sealed = await sealVmkForSession({ sessionKey: key, vmk, aad: transcript });
+    const sealed = await sealVmkForSession({ sessionKey: webKey, vmk, aad: transcript });
     const combined = joinCiphertextAndTag(sealed.ciphertext, sealed.tag);
     const altered = transcript.slice();
     altered[0] = (altered[0] ?? 0) ^ 0x01;
 
     await expect(crypto.subtle.decrypt(
       { name: "AES-GCM", iv: buffer(sealed.nonce), additionalData: buffer(altered), tagLength: 128 },
-      key,
+      deviceKey,
       buffer(combined),
     )).rejects.toBeDefined();
 
@@ -165,10 +210,19 @@ describe("Web Protocol v2 session cryptographic primitives", () => {
     const web = await generateWebEphemeralKeyPair();
     const invalidPublic = bytes(SESSION_P256_PUBLIC_KEY_BYTES, 2);
     invalidPublic[0] = 0x05;
+    const invalidPoint = new Uint8Array(SESSION_P256_PUBLIC_KEY_BYTES);
+    invalidPoint[0] = 0x04;
 
     await expect(deriveSessionAeadKey({
       privateKey: web.privateKey,
       peerPublicKeyRaw: invalidPublic,
+      hkdfSalt: bytes(32, 1),
+      hkdfInfo: bytes(32, 2),
+    })).rejects.toThrow(/public key/i);
+
+    await expect(deriveSessionAeadKey({
+      privateKey: web.privateKey,
+      peerPublicKeyRaw: invalidPoint,
       hkdfSalt: bytes(32, 1),
       hkdfInfo: bytes(32, 2),
     })).rejects.toThrow(/public key/i);
