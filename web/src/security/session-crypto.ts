@@ -67,7 +67,7 @@ function validateSessionAeadKey(key: CryptoKey): void {
   assert(key.algorithm.name === "AES-GCM", "session key must use AES-GCM");
   const algorithm = key.algorithm as AesKeyAlgorithm;
   assert(algorithm.length === 256, "session key must be AES-256-GCM");
-  assert(key.usages.includes("encrypt"), "session key must permit encryption");
+  assert(key.usages.length === 1 && key.usages[0] === "encrypt", "Web session key must be encrypt-only");
 }
 
 export function validateDeviceSessionBinding(input: DeviceSessionBinding): DeviceSessionBinding {
@@ -137,7 +137,7 @@ export async function deriveSessionAeadKey(input: SessionAeadKeyInput): Promise<
       hkdfKey,
       { name: "AES-GCM", length: 256 },
       false,
-      ["encrypt", "decrypt"],
+      ["encrypt"],
     );
     validateSessionAeadKey(sessionKey);
     return sessionKey;
@@ -161,7 +161,6 @@ export async function sealVmkForSession(input: {
   aad: Uint8Array;
 }): Promise<SealedSessionVmk> {
   validateSessionAeadKey(input.sessionKey);
-  assert(input.sessionKey.usages.includes("encrypt"), "session key cannot seal VMK material");
   assertExactLength(input.vmk, AES_GCM_KEY_BYTES, "VMK");
   assertBoundedNonEmpty(input.aad, MAX_TRANSCRIPT_BYTES, "session transcript AAD");
 
