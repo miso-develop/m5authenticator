@@ -79,6 +79,8 @@ jobs:
           tests/device_ui_model_test.cpp
           -o /tmp/m5auth-device-ui-model-test
           && /tmp/m5auth-device-ui-model-test
+      - name: Test StickS3 runtime contract
+        run: python -m unittest tests/sticks3_runtime_contract_test.py
       - name: Validate release profile and package rules
         run: |
           python scripts/validate_release.py

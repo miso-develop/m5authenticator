@@ -13,6 +13,8 @@ namespace {
 
 constexpr std::uint64_t kAccountRefreshIntervalMs = 1'000;
 constexpr TickType_t kUiPollInterval = pdMS_TO_TICKS(20);
+constexpr std::uint8_t kReadableTextSize = 2;
+constexpr std::uint8_t kOtpTextSize = 4;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -33,17 +35,31 @@ const char* readiness_text(time::Readiness readiness) {
     return "TIME ERROR";
 }
 
+void prepare_readable_display() {
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(0xffff, 0x0000);
+    M5.Display.setTextWrap(false);
+    M5.Display.setCursor(0, 0);
+}
+
 }  // namespace
 
 void initialize() {
     auto config = M5.config();
+
+    // M5Authenticator has no audio feature. Keep the StickS3 audio path off so
+    // the ES8311/AW8737 chain is not needlessly powered during USB operation.
+    config.internal_spk = false;
+    config.internal_mic = false;
     M5.begin(config);
 
+    // Remain fail-silent even if a future library/default change initializes
+    // the speaker path despite the configuration above.
+    M5.Speaker.end();
+
     M5.Display.setRotation(1);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(0xffff, 0x0000);
     M5.Display.clear();
-    M5.Display.setCursor(0, 0);
+    prepare_readable_display();
     M5.Display.println("M5 Authenticator");
     M5.Display.println("Starting...");
 }
@@ -126,9 +142,7 @@ void UiController::render() {
     const time::Snapshot time_status = time_service_.status();
 
     M5.Display.clear();
-    M5.Display.setTextColor(0xffff, 0x0000);
-    M5.Display.setTextSize(1);
-    M5.Display.setCursor(0, 0);
+    prepare_readable_display();
     M5.Display.println("M5 Authenticator");
     M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
 
@@ -140,7 +154,7 @@ void UiController::render() {
     const storage::AccountMetadata* selected = model_.selected_account();
     if (selected == nullptr) {
         M5.Display.println("No accounts");
-        M5.Display.println("Use Web Provisioner");
+        M5.Display.println("Open Web setup");
         return;
     }
 
@@ -160,9 +174,9 @@ void UiController::render() {
             "%06lu",
             static_cast<unsigned long>(model_.revealed_code())
         );
-        M5.Display.setTextSize(3);
+        M5.Display.setTextSize(kOtpTextSize);
         M5.Display.println(otp);
-        M5.Display.setTextSize(1);
+        M5.Display.setTextSize(kReadableTextSize);
         storage::secure_zero(otp, sizeof(otp));
         return;
     }
