@@ -122,7 +122,18 @@ public:
     // VMK is retained only after successful authenticated open of the active Vault.
     Status unlock(Vmk vmk);
     Status lock();
+
+    // Security-root transition boundaries all destroy the resident VMK before
+    // subsequent recovery/registration/re-key processing begins. Keeping the
+    // entry points distinct makes it difficult for downstream protocol code to
+    // accidentally treat an ordinary same-VMK generation update as a re-key.
     Status enter_recovery_boundary();
+    Status enter_registration_replacement_boundary() {
+        return enter_recovery_boundary();
+    }
+    Status enter_vmk_rekey_boundary() {
+        return enter_recovery_boundary();
+    }
     Status fatal_security_error();
 
     // Same-VMK generation update while UNLOCKED. The active VMK remains resident
