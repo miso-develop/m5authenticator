@@ -33,29 +33,26 @@ Status Runtime::list_credentials(std::vector<CredentialMetadata>* credentials) {
     if (!encoded_plaintext.empty()) secure_zero(encoded_plaintext.data(), encoded_plaintext.size());
     encoded_plaintext.clear();
 
-    try {
-        credentials->reserve(plaintext.credentials.size());
-        for (const auto& credential : plaintext.credentials) {
-            CredentialMetadata metadata;
-            metadata.credential_id = credential.credential_id;
-            metadata.issuer = credential.issuer;
-            metadata.account = credential.account;
-            metadata.display_name = credential.display_name;
-            metadata.manual_order = credential.manual_order;
-            credentials->push_back(std::move(metadata));
-        }
-        std::stable_sort(
-            credentials->begin(),
-            credentials->end(),
-            [](const CredentialMetadata& left, const CredentialMetadata& right) {
-                return left.manual_order < right.manual_order;
-            }
-        );
-    } catch (...) {
-        credentials->clear();
-        wipe_plaintext(&plaintext);
-        return Status::kIo;
+    // ESP-IDF production builds do not rely on C++ exception handling. Memory
+    // exhaustion remains a process-level failure rather than creating an
+    // exception-only security cleanup path that is absent on Device.
+    credentials->reserve(plaintext.credentials.size());
+    for (const auto& credential : plaintext.credentials) {
+        CredentialMetadata metadata;
+        metadata.credential_id = credential.credential_id;
+        metadata.issuer = credential.issuer;
+        metadata.account = credential.account;
+        metadata.display_name = credential.display_name;
+        metadata.manual_order = credential.manual_order;
+        credentials->push_back(std::move(metadata));
     }
+    std::stable_sort(
+        credentials->begin(),
+        credentials->end(),
+        [](const CredentialMetadata& left, const CredentialMetadata& right) {
+            return left.manual_order < right.manual_order;
+        }
+    );
 
     wipe_plaintext(&plaintext);
     return Status::kOk;
