@@ -18,9 +18,6 @@ using session::P256PublicKey;
 using session::Vmk;
 using session::protocol_v2::AttemptState;
 using session::protocol_v2::BeginContext;
-using session::protocol_v2::Operation;
-using session::protocol_v2::RegistrationId;
-using session::protocol_v2::VaultId;
 
 void secure_zero(void* data, std::size_t size) {
     volatile std::uint8_t* cursor = static_cast<volatile std::uint8_t*>(data);
@@ -29,7 +26,33 @@ void secure_zero(void* data, std::size_t size) {
 
 template <typename Container>
 void wipe(Container& value) {
-    if (!value.empty()) secure_zero(value.data(), value.size() * sizeof(typename Container::value_type));
+    if (!value.empty()) {
+        secure_zero(value.data(), value.size() * sizeof(typename Container::value_type));
+    }
+}
+
+bool sensitive_json_field(const char* key) {
+    if (key == nullptr) return false;
+    return std::strcmp(key, "brk_signature") == 0 ||
+        std::strcmp(key, "web_public_key") == 0 ||
+        std::strcmp(key, "nonce") == 0 ||
+        std::strcmp(key, "ciphertext") == 0 ||
+        std::strcmp(key, "tag") == 0;
+}
+
+void wipe_sensitive_json(cJSON* item) {
+    if (item == nullptr) return;
+    for (cJSON* child = item->child; child != nullptr; child = child->next) {
+        if (cJSON_IsString(child) && child->valuestring != nullptr && sensitive_json_field(child->string)) {
+            secure_zero(child->valuestring, std::strlen(child->valuestring));
+        }
+        if (cJSON_IsObject(child) || cJSON_IsArray(child)) wipe_sensitive_json(child);
+    }
+}
+
+void delete_request(cJSON* root) {
+    wipe_sensitive_json(root);
+    cJSON_Delete(root);
 }
 
 std::string serialize(cJSON* root) {
@@ -152,7 +175,9 @@ bool read_optional_signature(cJSON* object, std::vector<std::uint8_t>* output) {
 
 bool same_attempt(const AttemptId& left, const AttemptId& right) {
     std::uint8_t diff = 0;
-    for (std::size_t index = 0; index < left.size(); ++index) diff |= left[index] ^ right[index];
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        diff |= static_cast<std::uint8_t>(left[index] ^ right[index]);
+    }
     return diff == 0;
 }
 
@@ -170,7 +195,9 @@ std::string begin_success(int id, const session::AttemptDescriptor& descriptor, 
     cJSON_AddStringToObject(data, "attempt_id", attempt.c_str());
     cJSON_AddStringToObject(data, "challenge", challenge.c_str());
     cJSON_AddStringToObject(data, "device_public_key", device_key.c_str());
-    const std::uint64_t remaining = descriptor.expires_at_ms > now_ms ? descriptor.expires_at_ms - now_ms : 0;
+    const std::uint64_t remaining = descriptor.expires_at_ms > now_ms
+        ? descriptor.expires_at_ms - now_ms
+        : 0;
     cJSON_AddNumberToObject(data, "expires_in_ms", static_cast<double>(remaining));
     return serialize(root);
 }
@@ -205,9 +232,14 @@ bool parse_begin_context(cJSON* params, BeginContext* context) {
         !read_string(params, "device_id", &context->device_id, session::protocol_v2::kMaxDeviceIdBytes) ||
         !read_binary(params, "vault_id", &context->vault_id) ||
         !read_binary(params, "registration_id", &context->registration_id) ||
-        !read_u32_allow_zero(cJSON_GetObjectItemCaseSensitive(params, "registration_epoch"), &context->registration_epoch) ||
+        !read_u32_allow_zero(
+            cJSON_GetObjectItemCaseSensitive(params, "registration_epoch"),
+            &context->registration_epoch
+        ) ||
         !read_binary(params, "current_brk_public_key", &context->current_brk_public_key) ||
-        !read_binary(params, "proposed_brk_public_key", &context->proposed_brk_public_key)) return false;
+        !read_binary(params, "proposed_brk_public_key", &context->proposed_brk_public_key)) {
+        return false;
+    }
     cJSON* generation = cJSON_GetObjectItemCaseSensitive(params, "expected_generation");
     return cJSON_IsString(generation) && generation->valuestring != nullptr &&
         parse_u64_decimal(generation->valuestring, &context->expected_generation);
@@ -217,72 +249,79 @@ bool parse_begin_context(cJSON* params, BeginContext* context) {
 
 StagedSessionV2Handler::StagedSessionV2Handler(
     session::protocol_v2::AttemptCoordinator& coordinator,
+    const SessionV2BindingSource& binding_source,
     SessionV2VmkSink& vmk_sink
-) : coordinator_(coordinator), vmk_sink_(vmk_sink) {}
+) : coordinator_(coordinator), binding_source_(binding_source), vmk_sink_(vmk_sink) {}
 
 StagedSessionV2Handler::~StagedSessionV2Handler() {
     disconnect();
 }
 
 std::string StagedSessionV2Handler::handle_line(std::string_view line, std::uint64_t now_ms) {
-    if (line.empty()) return error_response(0, "invalid_request");
-    if (line.size() > kMaxSessionV2MessageBytes) return session_v2_message_too_large_response();
+    if (line.empty()) return fail_closed(0, "invalid_request");
+    if (line.size() > kMaxSessionV2MessageBytes) return fail_closed(0, "message_too_large");
 
     cJSON* root = cJSON_ParseWithLength(line.data(), line.size());
     if (root == nullptr || !cJSON_IsObject(root)) {
-        if (root != nullptr) cJSON_Delete(root);
-        return error_response(0, "invalid_json");
+        if (root != nullptr) delete_request(root);
+        return fail_closed(0, "invalid_json");
     }
 
     int id = 0;
     int version = 0;
     if (!read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(root, "id"), &id)) {
-        cJSON_Delete(root);
-        return error_response(0, "invalid_id");
+        delete_request(root);
+        return fail_closed(0, "invalid_id");
     }
     if (!read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(root, "v"), &version) ||
         version != session::protocol_v2::kProtocolVersion) {
-        cJSON_Delete(root);
-        return error_response(id, "unsupported_version");
+        delete_request(root);
+        return fail_closed(id, "unsupported_version");
     }
 
     cJSON* op = cJSON_GetObjectItemCaseSensitive(root, "op");
     cJSON* params = cJSON_GetObjectItemCaseSensitive(root, "params");
     if (!cJSON_IsString(op) || op->valuestring == nullptr || !cJSON_IsObject(params)) {
-        cJSON_Delete(root);
-        return error_response(id, "invalid_request");
+        delete_request(root);
+        return fail_closed(id, "invalid_request");
     }
 
     const std::string operation(op->valuestring);
     std::string response;
+
     if (operation == "session.begin") {
         BeginContext parsed{};
         session::AttemptDescriptor descriptor{};
+        SessionV2DeviceSnapshot snapshot{};
+        coordinator_.cancel();
+        clear_context();
         if (!parse_begin_context(params, &parsed)) {
             response = error_response(id, "invalid_request");
+        } else if (!binding_source_.snapshot(&snapshot)) {
+            response = error_response(id, "invalid_state");
+        } else if (!session_v2_begin_matches_snapshot(parsed, snapshot)) {
+            response = error_response(id, "binding_mismatch");
+        } else if (!coordinator_.begin(parsed, now_ms, &descriptor)) {
+            response = error_response(id, "invalid_request");
         } else {
-            clear_context();
-            if (!coordinator_.begin(parsed, now_ms, &descriptor)) {
-                response = error_response(id, "invalid_request");
-            } else {
-                context_ = parsed;
-                context_active_ = true;
-                response = begin_success(id, descriptor, now_ms);
-            }
+            context_ = parsed;
+            context_active_ = true;
+            response = begin_success(id, descriptor, now_ms);
         }
     } else if (operation == "session.authorize") {
         AttemptId attempt{};
         P256PublicKey web_public{};
         std::vector<std::uint8_t> signature;
         const bool parsed = read_binary(params, "attempt_id", &attempt) &&
-            read_binary(params, "web_public_key", &web_public) && read_optional_signature(params, &signature);
+            read_binary(params, "web_public_key", &web_public) &&
+            read_optional_signature(params, &signature);
         if (!parsed) {
-            response = error_response(id, "invalid_request");
+            response = fail_closed(id, "invalid_request");
         } else if (!context_active_ || !coordinator_.active() ||
             !same_attempt(attempt, coordinator_.descriptor().attempt_id)) {
-            coordinator_.cancel();
-            clear_context();
-            response = error_response(id, "stale_attempt");
+            response = fail_closed(id, "stale_attempt");
+        } else if (!current_binding_matches()) {
+            response = fail_closed(id, "binding_mismatch");
         } else if (!coordinator_.authorize(web_public, signature, now_ms)) {
             clear_context();
             response = error_response(id, "authentication_failed");
@@ -295,12 +334,12 @@ std::string StagedSessionV2Handler::handle_line(std::string_view line, std::uint
     } else if (operation == "session.status") {
         AttemptId attempt{};
         if (!read_binary(params, "attempt_id", &attempt)) {
-            response = error_response(id, "invalid_request");
+            response = fail_closed(id, "invalid_request");
         } else if (!context_active_ || !coordinator_.active() ||
             !same_attempt(attempt, coordinator_.descriptor().attempt_id)) {
-            coordinator_.cancel();
-            clear_context();
-            response = error_response(id, "stale_attempt");
+            response = fail_closed(id, "stale_attempt");
+        } else if (!current_binding_matches()) {
+            response = fail_closed(id, "binding_mismatch");
         } else if (coordinator_.expire(now_ms)) {
             clear_context();
             response = state_success(id, "expired");
@@ -318,18 +357,22 @@ std::string StagedSessionV2Handler::handle_line(std::string_view line, std::uint
             read_binary(params, "ciphertext", &ciphertext) &&
             read_binary(params, "tag", &tag);
         if (!parsed) {
-            response = error_response(id, "invalid_request");
+            response = fail_closed(id, "invalid_request");
         } else if (!context_active_ || !coordinator_.active() ||
             !same_attempt(attempt, coordinator_.descriptor().attempt_id)) {
-            coordinator_.cancel();
-            clear_context();
-            response = error_response(id, "stale_attempt");
+            response = fail_closed(id, "stale_attempt");
+        } else if (!current_binding_matches()) {
+            response = fail_closed(id, "binding_mismatch");
         } else {
             Vmk vmk{};
             const bool opened = coordinator_.complete(nonce, ciphertext, tag, now_ms, &vmk);
             if (!opened) {
                 clear_context();
                 response = error_response(id, "session_rejected");
+            } else if (!current_binding_matches()) {
+                wipe(vmk);
+                clear_context();
+                response = error_response(id, "binding_mismatch");
             } else {
                 const bool installed = vmk_sink_.install_vmk(context_, vmk);
                 wipe(vmk);
@@ -345,14 +388,12 @@ std::string StagedSessionV2Handler::handle_line(std::string_view line, std::uint
     } else if (operation == "session.cancel") {
         AttemptId attempt{};
         if (!read_binary(params, "attempt_id", &attempt)) {
-            response = error_response(id, "invalid_request");
+            response = fail_closed(id, "invalid_request");
         } else if (!context_active_ || !coordinator_.active()) {
             clear_context();
             response = empty_success(id);
         } else if (!same_attempt(attempt, coordinator_.descriptor().attempt_id)) {
-            coordinator_.cancel();
-            clear_context();
-            response = error_response(id, "stale_attempt");
+            response = fail_closed(id, "stale_attempt");
         } else {
             coordinator_.cancel();
             clear_context();
@@ -360,11 +401,24 @@ std::string StagedSessionV2Handler::handle_line(std::string_view line, std::uint
         }
         wipe(attempt);
     } else {
-        response = error_response(id, "unsupported_op");
+        response = fail_closed(id, "unsupported_op");
     }
 
-    cJSON_Delete(root);
+    delete_request(root);
     return response;
+}
+
+bool StagedSessionV2Handler::current_binding_matches() const {
+    if (!context_active_) return false;
+    SessionV2DeviceSnapshot snapshot{};
+    return binding_source_.snapshot(&snapshot) &&
+        session_v2_begin_matches_snapshot(context_, snapshot);
+}
+
+std::string StagedSessionV2Handler::fail_closed(int id, const char* code) {
+    coordinator_.cancel();
+    clear_context();
+    return error_response(id, code);
 }
 
 void StagedSessionV2Handler::disconnect() {
