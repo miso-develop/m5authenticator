@@ -19,6 +19,7 @@ inline constexpr std::size_t kRegistrationIdBytes = 16;
 inline constexpr std::size_t kMaxDeviceIdBytes = 64;
 inline constexpr std::size_t kTranscriptFixedBytes = 360;
 inline constexpr std::size_t kMaxEncodedTranscriptBytes = kTranscriptFixedBytes + kMaxDeviceIdBytes;
+inline constexpr std::size_t kHkdfSaltBytes = kAttemptIdBytes + kDeviceChallengeBytes;
 
 using VaultId = std::array<std::uint8_t, kVaultIdBytes>;
 using RegistrationId = std::array<std::uint8_t, kRegistrationIdBytes>;
@@ -53,7 +54,7 @@ struct TranscriptInput {
 
 // Fixed-order binary transcript. Numeric fields are big-endian. The only
 // variable-width field is device_id, prefixed by one byte. Missing optional
-// registration/BRK identities are represented by all-zero fixed-width fields.
+// BRK identities are represented by all-zero fixed-width fields.
 bool encode_transcript(const TranscriptInput& input, std::vector<std::uint8_t>* output);
 
 // Canonical RFC 4648 base64url without padding. Decode rejects '=', whitespace,
@@ -63,5 +64,85 @@ bool base64url_decode(std::string_view value, std::vector<std::uint8_t>* output)
 
 bool is_zero_public_key(const P256PublicKey& key);
 bool valid_optional_p256_identity(const P256PublicKey& key);
+
+struct BeginContext {
+    Operation operation{Operation::kTrustedBrowserUnlock};
+    std::string device_id;
+    VaultId vault_id{};
+    std::uint64_t expected_generation{0};
+    RegistrationId registration_id{};
+    std::uint32_t registration_epoch{0};
+    BrkPublicKey current_brk_public_key{};
+    BrkPublicKey proposed_brk_public_key{};
+};
+
+enum class AttemptState : std::uint8_t {
+    kIdle,
+    kAwaitingAuthorization,
+    kAwaitingPresence,
+    kConfirmed,
+};
+
+// Staged Device integration primitive for Task #54. It deliberately does not
+// advertise Protocol 2 or mutate registration/Vault persistence; Task #55 owns
+// routing these operations into the canonical application state. Every begin()
+// supersedes and wipes any previous attempt.
+class AttemptCoordinator final {
+public:
+    AttemptCoordinator() = default;
+    ~AttemptCoordinator();
+
+    AttemptCoordinator(const AttemptCoordinator&) = delete;
+    AttemptCoordinator& operator=(const AttemptCoordinator&) = delete;
+
+    bool begin(
+        const BeginContext& context,
+        std::uint64_t now_ms,
+        AttemptDescriptor* descriptor
+    );
+
+    // Web public key and BRK authentication are transcript-bound. Normal
+    // Trusted Browser unlock always requires the current BRK signature before
+    // the user-presence gate is opened.
+    bool authorize(
+        const P256PublicKey& web_public_key,
+        std::span<const std::uint8_t> brk_signature,
+        std::uint64_t now_ms,
+        std::uint64_t input_generation
+    );
+
+    bool confirm_user_presence(std::uint64_t now_ms, std::uint64_t input_generation);
+
+    // The HKDF contract is attempt_id || challenge as salt and the canonical
+    // transcript as both HKDF info and AES-GCM AAD. A physical confirmation is
+    // one-shot and consumed before cryptographic VMK acceptance.
+    bool complete(
+        std::span<const std::uint8_t> nonce,
+        std::span<const std::uint8_t> ciphertext,
+        std::span<const std::uint8_t> tag,
+        std::uint64_t now_ms,
+        Vmk* vmk
+    );
+
+    bool expire(std::uint64_t now_ms);
+    void cancel();
+    void disconnect() { cancel(); }
+
+    AttemptState state() const;
+    bool active() const;
+    const AttemptDescriptor& descriptor() const;
+
+private:
+    void wipe_staged();
+
+    DeviceSession crypto_;
+    UserPresenceGate presence_;
+    BeginContext context_{};
+    AttemptDescriptor descriptor_{};
+    P256PublicKey web_public_key_{};
+    std::vector<std::uint8_t> transcript_;
+    bool active_{false};
+    AttemptState state_{AttemptState::kIdle};
+};
 
 }  // namespace m5auth::session::protocol_v2
