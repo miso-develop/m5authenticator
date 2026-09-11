@@ -296,8 +296,6 @@ bool decrypt_vault(
     const std::array<std::uint8_t, kVmkBytes>& vmk,
     std::vector<std::uint8_t>& plaintext
 ) {
-    clear_bytes(plaintext);
-    plaintext.clear();
     if (envelope.vault_format_version != kVaultFormatVersion ||
         envelope.storage_schema_version != kTargetStorageSchemaVersion) {
         return false;
@@ -324,10 +322,13 @@ bool decrypt_vault(
             candidate
         )) {
         clear_bytes(candidate);
+        candidate.clear();
         return false;
     }
 
     plaintext.swap(candidate);
+    // After swap candidate owns the caller's previous output. Wipe that retired
+    // buffer without changing the successful plaintext result.
     clear_bytes(candidate);
     candidate.clear();
     return true;
@@ -379,7 +380,6 @@ bool unwrap_vmk_with_key(
     const std::array<std::uint8_t, kVmkBytes>& wrapping_key,
     std::array<std::uint8_t, kVmkBytes>& vmk
 ) {
-    secure_zero_memory(vmk.data(), vmk.size());
     if (envelope.package_version != kRecoveryPackageVersion ||
         envelope.wrap_version != kVmkWrapVersion) {
         return false;
