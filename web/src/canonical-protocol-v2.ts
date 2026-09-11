@@ -205,9 +205,13 @@ export function encryptedVaultParams(envelope: EncryptedVaultEnvelope): Record<s
 
 function decodeFixed(value: unknown, length: number, field: string): Uint8Array {
   if (typeof value !== "string") throw new Error(`Device returned invalid ${field}`);
-  const decoded = decodeBase64UrlCanonical(value, length, field);
-  if (decoded.length !== length) throw new Error(`Device returned invalid ${field}`);
-  return decoded;
+  try {
+    const decoded = decodeBase64UrlCanonical(value, length);
+    if (decoded.length !== length) throw new Error(`Device returned invalid ${field}`);
+    return decoded;
+  } catch {
+    throw new Error(`Device returned invalid ${field}`);
+  }
 }
 
 function parseU64Decimal(value: unknown, field: string): bigint {
