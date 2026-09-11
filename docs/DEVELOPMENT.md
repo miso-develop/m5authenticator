@@ -33,14 +33,16 @@ Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26
 
 ### Target V1 security transition
 
-The target V1 architecture is defined by `docs/SECRET_VAULT.md`:
+The target V1 architecture is defined by `docs/SECRET_VAULT.md` and settled Decisions #40/#45-#49:
 
 - application-level authenticated Encrypted Vault in `auth_nvs`
+- one AES-256-GCM ciphertext per Vault generation
 - random 256-bit Vault Master Key (VMK)
 - VMK persisted nowhere on the Device and held only in RAM while `UNLOCKED`
-- Passphrase-derived KEK for recovery wrapping
-- browser-local Browser Unlock Key (BUK) for Trusted Browser quick unlock
-- fresh protected Web-to-Device unlock session with Device user presence
+- Argon2id-derived Passphrase KEK for recovery wrapping
+- browser-local non-extractable Browser Unlock Key (BUK) for quick-unlock wrapping
+- separate browser-local non-extractable ECDSA P-256 Browser Registration Key (BRK) for the single active Trusted Browser registration
+- fresh P-256 ECDH + HKDF-SHA-256 + AES-256-GCM Web-to-Device unlock session with Device user presence
 - no M5Authenticator-specific eFuse burn
 
 The transition is intentionally breaking and must not silently reinterpret development protocol/storage v1. The target boundaries are:
@@ -49,14 +51,29 @@ The transition is intentionally breaking and must not silently reinterpret devel
 - `STORAGE_SCHEMA_VERSION = 2`
 - `VAULT_FORMAT_VERSION = 1`
 
-The former catch-all Task #41 was closed as not planned because it mixed unresolved security decisions with an oversized implementation surface. Map #17 now owns Decisions #45-#49. After those decisions are settled, Spec #7 must be updated and the security implementation decomposed into narrow Tasks before production code changes begin.
+The former catch-all Task #41 was closed as not planned because it mixed security decisions with an oversized implementation surface. Decisions #45-#49 are now settled and promoted into Spec #7 and the durable architecture documents. Implementation is decomposed as follows:
+
+```text
+#43 -> #51 -> +-> #52 -+
+              +-> #53 -+-> #54 -> #55 -> #56 -> #15 -> #16
+#44 -------------------------------------> #56
+```
+
+- #43 reconciles repository truth and security enforcement.
+- #44 preserves the non-eFuse StickS3 hardware fixes discovered in superseded PR #39.
+- #51 implements the Vault crypto format and interoperability vectors without activating v2 runtime semantics.
+- #52 and #53 implement Web canonical-state/Trusted-Browser ownership and Device RAM-only-VMK runtime respectively; they may proceed in parallel after #51.
+- #54 implements the fresh Protocol v2 unlock/session primitives.
+- #55 is the only Task that activates the complete Protocol 2 / Storage Schema 2 / Vault Format 1 tuple in the canonical application.
+- #56 replaces the development release gate with the V1 Vault production contract.
+- #15 performs final security closeout; #16 completes durable documentation closeout.
 
 Until that replacement implementation is complete and release validation explicitly permits production distribution, do not:
 
 - enable `production_release_allowed`
 - treat the synthetic development storage key as production protection
 - add an eFuse burn/provisioning path
-- invent KDF/AEAD/session parameters inside an implementation Task
+- change the settled KDF/AEAD/session parameters inside an implementation Task without a new Decision
 - advertise protocol/storage/Vault versions that are not actually implemented
 
 The native state-codec check can be run from the repository root with:
