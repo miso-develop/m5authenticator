@@ -141,5 +141,56 @@ int main() {
     std::vector<std::uint8_t> invalid_encoded;
     assert(!encode_plaintext(invalid_utf8, invalid_encoded));
 
+    std::vector<std::uint8_t> wrap_aad;
+    assert(build_vmk_wrap_aad(vault_id, wrap_aad));
+    assert(
+        hex(wrap_aad.data(), wrap_aad.size()) ==
+        "4d35415554482d564d4b2d575241503100"
+        "0001"
+        "0001"
+        "000102030405060708090a0b0c0d0e0f"
+    );
+
+    const std::array<std::uint8_t, kVmkBytes> wrapping_key = {
+        0xfe, 0x49, 0x5a, 0x7c, 0x9e, 0x22, 0x44, 0xd9,
+        0x21, 0x16, 0x9b, 0x17, 0x7a, 0xd0, 0x86, 0x86,
+        0x1d, 0xb2, 0x97, 0xc9, 0x68, 0x4f, 0x6a, 0x83,
+        0x8b, 0xeb, 0xc5, 0x37, 0x65, 0xa6, 0x5b, 0x97,
+    };
+    const auto wrap_nonce = sequence<kVaultNonceBytes>(0xb0);
+    VmkWrapEnvelope wrapped;
+    assert(wrap_vmk_with_key_and_nonce(vmk, wrapping_key, vault_id, wrap_nonce, wrapped));
+    assert(
+        hex(wrapped.ciphertext.data(), wrapped.ciphertext.size()) ==
+        "539fe562291b3e6503ec2f35c42cc8fd8b7e6ece98eed59410e780eabbd75fd5"
+    );
+    assert(
+        hex(wrapped.tag.data(), wrapped.tag.size()) ==
+        "04f7af67328726ba0bc6bc1c48a74f69"
+    );
+
+    std::array<std::uint8_t, kVmkBytes> unwrapped{};
+    assert(unwrap_vmk_with_key(wrapped, wrapping_key, unwrapped));
+    assert(unwrapped == vmk);
+
+    VmkWrapEnvelope invalid_wrap = wrapped;
+    invalid_wrap.tag[0] ^= 0x01;
+    unwrapped.fill(0xaa);
+    assert(!unwrap_vmk_with_key(invalid_wrap, wrapping_key, unwrapped));
+    for (const auto byte : unwrapped) assert(byte == 0xaa);
+
+    assert(!build_vmk_wrap_aad(
+        vault_id,
+        wrap_aad,
+        kRecoveryPackageVersion + 1,
+        kVmkWrapVersion
+    ));
+    assert(!build_vmk_wrap_aad(
+        vault_id,
+        wrap_aad,
+        kRecoveryPackageVersion,
+        kVmkWrapVersion + 1
+    ));
+
     return 0;
 }
