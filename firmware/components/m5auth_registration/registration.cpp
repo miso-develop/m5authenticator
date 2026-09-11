@@ -275,6 +275,25 @@ Status Store::replace(
     return persist_registration(vault_id, registration_id, new_epoch, brk_public_key);
 }
 
+Status Store::clear_registration() {
+    if (!ready_) return Status::kIo;
+
+    nvs_handle_t handle = 0;
+    Status status = open_namespace(NVS_READWRITE, &handle);
+    if (status != Status::kOk) return status;
+
+    esp_err_t result = nvs_erase_key(handle, kRegistrationKey);
+    if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    if (result != ESP_OK) return map_error(result);
+
+    const DeviceId device_id = snapshot_.device_id;
+    snapshot_ = Snapshot{};
+    snapshot_.device_id = device_id;
+    return Status::kOk;
+}
+
 Status Store::reinitialize_after_partition_reset() {
     ready_ = false;
     snapshot_ = Snapshot{};
