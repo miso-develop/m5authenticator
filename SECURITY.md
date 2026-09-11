@@ -15,27 +15,46 @@ The following MUST NOT appear in this repository, Git history, Issues, Pull Requ
 - passwords, Wi-Fi passwords, recovery codes
 - PATs, OAuth tokens, API keys, access/refresh tokens, session credentials
 - SSH/TLS/signing/private keys or seed material
+- Vault Master Key (VMK), passphrase-derived KEK, Browser Unlock Key (BUK), or unlock-session key material
 - decrypted user account stores
 - NVS, flash, RAM, crash, serial, packet, or filesystem dumps that may contain credentials
 - any other value that allows authentication, secret recovery, impersonation, or decryption of user secrets
 
 If unsure whether a value is sensitive, treat it as sensitive and do not publish it.
 
+## V1 vault security invariants
+
+`docs/SECRET_VAULT.md` is the canonical V1 secret-storage/unlock architecture.
+
+- M5Authenticator V1 does not burn project-specific eFuse security material.
+- Device Flash must not persist the VMK, user passphrase, passphrase-derived KEK, BUK, plaintext TOTP secret, plaintext Wi-Fi password, or a decrypted credential snapshot.
+- Device Flash may persist only an authenticated Encrypted Vault and non-secret/versioning/registration metadata required to operate it.
+- VMK exists on the Device only in RAM while the Device is `UNLOCKED`.
+- reboot, power loss, explicit Lock, fatal security error, Factory Reset, and entry into credential-state replacement/recovery/re-key operations must wipe VMK and transient secret material.
+- USB power, USB enumeration, and ordinary Web Serial connection are not sufficient reasons to destroy an existing unlocked session.
+- Trusted Browser quick unlock may avoid repeated Passphrase entry, but explicit Device-side user presence is mandatory before accepting the VMK.
+- A Trusted Browser is not a hardware root of trust. Browser/OS compromise, malicious extensions, and XSS remain outside the strong V1 guarantee.
+- Release firmware must never depend on a public/synthetic development storage key that would make user credentials decryptable from a Flash dump.
+
 ## Secret handling requirements
 
 ### Firmware
 
-- Public firmware images must not contain user secrets, shared production credentials, or universal encryption keys.
+- Public firmware images must not contain user secrets, shared production credentials, universal Vault keys, or reusable release decryption keys.
 - Secrets must be provisioned after flashing.
-- Release builds must store TOTP material only in the approved encrypted storage backend.
+- Release builds must store credential-bearing data only inside the approved authenticated Encrypted Vault.
+- TOTP/Wi-Fi plaintext should be opened only for the minimum practical lifetime and explicitly wiped afterward.
 - Secret-bearing buffers must not be printed or included in assertions/errors.
 - Debug builds do not get an exception to secret-redaction rules.
+- Production crash/core-dump behavior must not persist credential-bearing RAM in a way that defeats the RAM-only-key boundary.
 
 ### Web Provisioner
 
 - QR decoding and migration parsing must happen locally in the browser.
-- TOTP secrets, migration payloads, Wi-Fi credentials, and decrypted account records must never be sent to GitHub Pages or another server.
-- Do not place sensitive values in URLs, query strings, fragments, analytics events, browser storage, error reporting, or console logs.
+- TOTP secrets, migration payloads, Wi-Fi credentials, VMK, decrypted account records, and Passphrase material must never be sent to GitHub Pages or another server.
+- Do not place sensitive values in URLs, query strings, fragments, analytics events, error reporting, or console logs.
+- Plaintext TOTP/Wi-Fi credential records must not be persisted in browser storage.
+- Browser persistence may contain the Encrypted Vault, wrapped VMK values, non-secret crypto/version metadata, and a browser-local non-extractable BUK as defined by `docs/SECRET_VAULT.md`.
 - Imported QR images are ephemeral input. Do not upload or persist them by default.
 - Network dependencies added to provisioning/security-sensitive paths require explicit security review.
 
@@ -44,6 +63,8 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 - The protocol must not provide a release-mode operation that exports stored TOTP secrets.
 - Commands and responses must avoid echoing secret values.
 - Errors must identify the failing field/account without including its secret-bearing payload.
+- VMK delivery must be bound to a fresh unlock session and must not become a reusable plaintext read/write operation.
+- A Trusted Browser quick-unlock attempt must require explicit Device user presence before the Device accepts the VMK.
 - Factory Reset must be explicit and destructive, and available only through the Provisioner in V1.
 
 ### Tests and fixtures
@@ -53,6 +74,7 @@ Allowed:
 - official/published public RFC test vectors
 - clearly synthetic credentials generated only for tests
 - synthetic QR payloads that cannot authenticate to a real account
+- synthetic VMK/KEK/BUK/session material generated solely for tests
 
 Forbidden:
 
@@ -71,7 +93,7 @@ Never log:
 - complete `otpauth` URIs
 - migration payloads
 - Wi-Fi passwords
-- encryption keys
+- VMK / KEK / BUK / unlock-session keys
 - decrypted account records
 
 Identifiers such as issuer/account names may also be personal data. Log them only where necessary and prefer synthetic identifiers in tests and bug reports.
@@ -90,12 +112,14 @@ Automated secret scanning is defense in depth, not permission to handle secrets 
 
 Any change affecting the following is security-sensitive and must be reviewed as such before merge:
 
-- secret storage or encryption
-- eFuse usage
+- Vault storage, encryption, key wrapping, KDF, VMK/BUK/session-key lifetime, or zeroization
+- eFuse usage or any proposal to introduce an irreversible hardware security state
+- lock/unlock state machine and Device user-presence behavior
 - provisioning/import
 - Web Serial / USB protocol
+- browser persistence / Trusted Browser registration and recovery
 - QR / migration parsing
-- logging / diagnostics
+- logging / diagnostics / crash dumps
 - firmware update or Factory Reset
 - Wi-Fi credential handling
 - BLE authentication/presence
@@ -120,4 +144,6 @@ For a leaked TOTP secret, replace/re-enroll the affected 2FA credential at the s
 
 ## Threat-model boundary
 
-This project aims to prevent accidental disclosure and common loss/theft scenarios. It does not claim resistance to sophisticated physical extraction, BLE relay, compromised endpoint OSes, simultaneous smartphone/device compromise, or realtime TOTP phishing. See `PROJECT.md`.
+This project aims to prevent accidental disclosure, common powered-off/rebooted-device loss/theft scenarios, Flash copying/dumping from directly revealing credentials, release-interface secret export, and plaintext browser persistence.
+
+It does not claim resistance to sophisticated physical extraction, RAM probing while unlocked, compromised endpoint OS/browser code, malicious extensions/XSS, Evil-Maid firmware replacement, hardware-backed rollback attacks, BLE relay, simultaneous smartphone/device compromise, or realtime TOTP phishing. See `PROJECT.md` and `docs/SECRET_VAULT.md`.
