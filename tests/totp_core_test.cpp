@@ -41,16 +41,41 @@ bool rfc_provider(const std::uint8_t* key, std::size_t key_size, const std::uint
 
 void matches_vectors() {
     for (const auto& vector : kVectors) {
-        std::uint32_t code = 0;
-        assert(m5auth::totp::generate_with_provider(kRfcSecretBase32, vector.unix_seconds, &rfc_provider, &code) == m5auth::totp::CoreResult::kOk);
-        assert(code == vector.expected);
+        std::uint32_t base32_code = 0;
+        assert(m5auth::totp::generate_with_provider(
+            kRfcSecretBase32,
+            vector.unix_seconds,
+            &rfc_provider,
+            &base32_code
+        ) == m5auth::totp::CoreResult::kOk);
+        assert(base32_code == vector.expected);
+
+        std::uint32_t raw_code = 0;
+        assert(m5auth::totp::generate_raw_with_provider(
+            kRfcSecretBytes,
+            vector.unix_seconds,
+            &rfc_provider,
+            &raw_code
+        ) == m5auth::totp::CoreResult::kOk);
+        assert(raw_code == vector.expected);
     }
 }
 
-void rejects_invalid_base32() {
+void rejects_invalid_secret() {
     std::uint32_t code = 0;
-    assert(m5auth::totp::generate_with_provider("NOT-BASE32!", 59, &rfc_provider, &code) == m5auth::totp::CoreResult::kInvalidSecret);
+    assert(m5auth::totp::generate_with_provider(
+        "NOT-BASE32!",
+        59,
+        &rfc_provider,
+        &code
+    ) == m5auth::totp::CoreResult::kInvalidSecret);
+    assert(m5auth::totp::generate_raw_with_provider(
+        {},
+        59,
+        &rfc_provider,
+        &code
+    ) == m5auth::totp::CoreResult::kInvalidSecret);
 }
 }
 
-int main() { matches_vectors(); rejects_invalid_base32(); return 0; }
+int main() { matches_vectors(); rejects_invalid_secret(); return 0; }
