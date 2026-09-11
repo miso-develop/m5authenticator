@@ -53,21 +53,21 @@ The Passphrase does not directly encrypt the full Vault. Passphrase change norma
 
 A low-entropy PIN must not be accepted as the offline-decryptable protection secret for VMK recovery.
 
-## First registration / new Browser / recovery
+## First registration / untrusted Browser / recovery
 
-A Browser that has no valid Trusted Browser registration must require the Passphrase:
+A Browser that has no valid Trusted Browser registration must require the Passphrase. For a different Browser, the encrypted Recovery Package must first be imported so the Passphrase-wrapped VMK and Encrypted Vault are available.
 
 ```text
-Passphrase
+Encrypted canonical state available
+  -> Passphrase
   -> derive KEK
   -> unwrap VMK
-  -> open/update canonical encrypted Vault as needed
   -> establish a new Browser-local BUK
   -> create Trusted-Browser-wrapped VMK
   -> perform Device unlock/provisioning with explicit Device user presence
 ```
 
-The BUK is never exported as part of a Vault backup. Restoring on another Browser therefore requires the Passphrase and creates a new BUK.
+A Passphrase by itself cannot reconstruct a lost random VMK. If both the original browser state and the encrypted Recovery Package are unavailable, the existing Device Vault is not recoverable after the VMK has left RAM; the user must re-provision from the authoritative authenticator/source credentials.
 
 ## Trusted Browser quick unlock
 
@@ -88,6 +88,24 @@ Normal Trusted Browser unlock does **not** require Passphrase re-entry.
 
 Quick unlock is not fully automatic. The Web UI must show an explicit pending state and the Device must require physical user presence before accepting the VMK.
 
+## Encrypted Recovery Package
+
+V1 provides export/import of the Web canonical **encrypted** state for browser migration and recovery. This is not a Device stored-secret export.
+
+The package may contain:
+
+- Encrypted Vault
+- Passphrase-wrapped VMK
+- KDF/AEAD/Vault-format metadata
+- generation/version metadata
+- non-secret registration metadata needed for recovery
+
+It must not contain plaintext TOTP/Wi-Fi credentials, plaintext VMK, Passphrase/KEK, BUK, or browser-specific quick-unlock material that bypasses Passphrase recovery.
+
+On import into another Browser, the user must enter the Passphrase; the imported Passphrase-wrapped VMK is unwrapped locally and a new Browser-local BUK is created.
+
+Because possession of the package enables offline Passphrase guessing, export UI must clearly communicate that the encrypted file is security-sensitive even though it contains no plaintext secret. The strong password KDF parameters and package format are fixed and versioned by Task #41.
+
 ## Connection and compatibility
 
 A connection is opened only from a user-initiated Connect action. The app establishes Web Serial and performs `hello` before management is enabled.
@@ -103,7 +121,7 @@ Web is the canonical V1 Vault copy. Account import, rename, reorder, delete, and
 The externally visible update sequence is:
 
 1. unlock canonical VMK using Passphrase or Trusted Browser BUK
-2. decrypt only the required logical state in browser memory
+2. decrypt the bounded logical state required by the selected Vault format
 3. apply the requested mutation
 4. encrypt a new Vault generation under the same/current VMK
 5. persist the new canonical encrypted generation transactionally
@@ -130,6 +148,7 @@ The UI supports:
 - non-secret Device/lock/security/time/Vault-generation status display
 - explicit Lock
 - Trusted Browser registration/recovery state
+- encrypted Recovery Package export/import
 
 Because Wi-Fi credentials are inside the encrypted Vault, Device-side NTP is available only after the Device is unlocked. USB time sync can remain available independently.
 
@@ -154,6 +173,8 @@ Factory Reset remains available only over the Web/USB path and requires explicit
 It must wipe Device VMK/session material, remove the Device encrypted Vault/registration state, and return the Device to `UNPROVISIONED`. The paired Web flow must remove the matching canonical/Trusted-Browser registration state according to the finalized UX.
 
 Factory Reset performs no M5Authenticator-specific eFuse operation.
+
+An encrypted Recovery Package saved outside the browser/device is not erased by Factory Reset. The UI/documentation must not imply that Factory Reset destroys separately exported copies.
 
 ## Browser lifetime and zeroization limits
 
