@@ -33,6 +33,10 @@ def private_key_marker() -> str:
     return "-" * 5 + "BEGIN " + "PRIVATE KEY" + "-" * 5
 
 
+def quoted_property(name: str, value: str, quote: str = '"') -> str:
+    return "{" + quote + name + quote + ": " + quote + value + quote + "}"
+
+
 class SecurityScanTests(unittest.TestCase):
     def test_detects_totp_uri_with_secret(self) -> None:
         findings = security_scan.scan_content(
@@ -96,6 +100,51 @@ class SecurityScanTests(unittest.TestCase):
         ).encode("utf-8")
         findings = security_scan.scan_content("config.toml", content)
         self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_double_quoted_credential_property_in_json(self) -> None:
+        content = quoted_property("totp_secret", "synthetic-totp-material").encode("utf-8")
+        findings = security_scan.scan_content("fixture.json", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_single_quoted_credential_property(self) -> None:
+        content = quoted_property("vmk", "synthetic-vmk-material", quote="'").encode("utf-8")
+        findings = security_scan.scan_content("fixture.conf", content)
+        self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_detects_v1_key_names_in_quoted_json_properties(self) -> None:
+        names = [
+            "vmk",
+            "kek",
+            "buk",
+            "brk_private_key",
+            "browser_registration_private_key",
+            "session_key",
+        ]
+        for name in names:
+            with self.subTest(name=name):
+                content = quoted_property(name, "synthetic-key-material-only").encode("utf-8")
+                findings = security_scan.scan_content("fixture.jsonc", content)
+                self.assertEqual(["credential-literal"], [f.rule for f in findings])
+
+    def test_credential_finding_never_contains_matched_value(self) -> None:
+        synthetic_value = "synthetic-redaction-marker"
+        content = quoted_property("password", synthetic_value).encode("utf-8")
+        findings = security_scan.scan_content("fixture.json", content)
+        self.assertEqual(1, len(findings))
+        self.assertNotIn(synthetic_value, findings[0].message)
+
+    def test_documentation_quoted_assignment_example_is_not_a_finding(self) -> None:
+        content = (
+            "Documentation example only: "
+            + quoted_property("vmk", "synthetic-documentation-value")
+        ).encode("utf-8")
+        findings = security_scan.scan_content("docs/example.md", content)
+        self.assertEqual([], findings)
+
+    def test_quoted_sensitive_name_without_literal_assignment_is_not_a_finding(self) -> None:
+        content = ('{"' + "vmk" + '": null}').encode("utf-8")
+        findings = security_scan.scan_content("fixture.json", content)
+        self.assertEqual([], findings)
 
     def test_detects_dangerous_log_in_code(self) -> None:
         content = ("Serial." + "println(secret)").encode("utf-8")
