@@ -101,7 +101,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
 
     def test_wifi_driver_storage_is_ram_only_and_runtime_is_torn_down(self) -> None:
         self.assertIn("esp_wifi_set_storage(WIFI_STORAGE_RAM)", self.time_service)
-        self.assertIn("storage::secure_zero(&config, sizeof(config));", self.time_service)
+        self.assertIn("vault_runtime::secure_zero(&config, sizeof(config));", self.time_service)
         self.assertIn("esp_wifi_disconnect()", self.time_service)
         self.assertIn("esp_wifi_stop()", self.time_service)
         self.assertIn("esp_wifi_deinit()", self.time_service)
