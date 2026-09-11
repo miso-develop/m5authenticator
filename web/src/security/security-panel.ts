@@ -1,4 +1,5 @@
 import {
+  GenerationConflictError,
   IndexedDbBrowserVaultStore,
   RECOVERY_PASSPHRASE_CHANGE_NOTICE,
   changeRecoveryPassphrase,
@@ -75,10 +76,12 @@ const passphraseCancel = queryRequired<HTMLButtonElement>("#browser-passphrase-c
 const store = new IndexedDbBrowserVaultStore();
 let states: BrowserCanonicalState[] = [];
 let current: BrowserCanonicalState | null = null;
+let conflictMessage: string | null = null;
 let busy = false;
 
 vaultSelect.addEventListener("change", () => {
   current = states.find((state) => displayVaultId(state.vault.vaultId) === vaultSelect.value) ?? null;
+  conflictMessage = null;
   render();
 });
 
@@ -112,6 +115,7 @@ importButton.addEventListener("click", () => void run(async () => {
       throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
     }
     await store.put(imported);
+    conflictMessage = null;
     notice.textContent = "Recovery Package imported. Fresh local BUK/BRK keys were created, but this browser is replacement-pending and is not yet an active Device writer.";
     await refresh();
   } finally {
@@ -128,6 +132,7 @@ changePassphraseButton.addEventListener("click", () => void run(async () => {
   const expectedGeneration = current.vault.generation;
   const updated = await changeRecoveryPassphrase(current, currentPassphrase.value, newPassphrase.value);
   await store.put(updated, expectedGeneration);
+  conflictMessage = null;
   notice.textContent = RECOVERY_PASSPHRASE_CHANGE_NOTICE;
   clearPassphraseInputs();
   await refresh();
@@ -163,12 +168,13 @@ async function refresh(): Promise<void> {
 function render(): void {
   status.replaceChildren();
   const hasState = current !== null;
+  const conflict = conflictMessage !== null;
   vaultSelect.disabled = busy || states.length <= 1;
   exportButton.disabled = busy || !hasState;
-  currentPassphrase.disabled = busy || !hasState;
-  newPassphrase.disabled = busy || !hasState;
-  confirmPassphrase.disabled = busy || !hasState;
-  changePassphraseButton.disabled = busy || !hasState;
+  currentPassphrase.disabled = busy || !hasState || conflict;
+  newPassphrase.disabled = busy || !hasState || conflict;
+  confirmPassphrase.disabled = busy || !hasState || conflict;
+  changePassphraseButton.disabled = busy || !hasState || conflict;
   recoveryFile.disabled = busy;
   recoveryPassphrase.disabled = busy;
   importButton.disabled = busy;
@@ -180,12 +186,24 @@ function render(): void {
     return;
   }
 
-  trustState.textContent = current.trustedBrowser.status === "active" ? "Trusted Browser active" : "Replacement pending";
+  if (conflict) {
+    trustState.textContent = "Conflict / recovery required";
+  } else {
+    trustState.textContent = current.trustedBrowser.status === "active" ? "Trusted Browser active" : "Replacement pending";
+  }
   appendStatus("Vault ID", displayVaultId(current.vault.vaultId));
   appendStatus("Generation", current.vault.generation.toString(10));
   appendStatus("Registration ID", displayVaultId(current.trustedBrowser.registrationId));
   appendStatus("Registration epoch", String(current.trustedBrowser.epoch));
-  appendStatus("Browser ownership", current.trustedBrowser.status === "active" ? "Active writer" : "Pending explicit Device replacement");
+  appendStatus(
+    "Browser ownership",
+    conflict
+      ? "Writes blocked pending explicit recovery/reconciliation"
+      : current.trustedBrowser.status === "active"
+        ? "Active writer"
+        : "Pending explicit Device replacement",
+  );
+  if (conflictMessage) appendStatus("Conflict", conflictMessage);
   appendStatus("BUK", "Local non-extractable AES-256-GCM key");
   appendStatus("BRK", "Local non-extractable ECDSA P-256 private key; only public registration material is shareable");
 }
@@ -207,6 +225,7 @@ async function run(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error) {
+    if (error instanceof GenerationConflictError) conflictMessage = error.message;
     notice.textContent = userFacingError(error, "Security operation failed.");
     clearRecoveryInputs();
     clearPassphraseInputs();
