@@ -164,6 +164,17 @@ public:
         vault::VaultEnvelope envelope
     );
 
+    // VMK rotation after enter_vmk_rekey_boundary(). The new encrypted Vault
+    // must be exactly the next generation for the same logical vault_id and must
+    // authenticate with the supplied transient new VMK. The new VMK becomes
+    // resident RAM-only state only after the atomic persistence replacement is
+    // verified; all failure paths remain non-decrypting.
+    Status rekey_encrypted_vault(
+        std::uint64_t expected_generation,
+        vault::VaultEnvelope envelope,
+        Vmk vmk
+    );
+
     Status metadata(Metadata* metadata) const;
 
     // Consumers are synchronous and must not retain references beyond the call.
