@@ -47,6 +47,16 @@ bool current_brk_is_device_owned(
     return same_bytes(context.current_brk_public_key, snapshot.brk_public_key);
 }
 
+bool clean_unprovisioned_snapshot(const SessionV2DeviceSnapshot& snapshot) {
+    return !snapshot.vault_present &&
+        snapshot.generation == 0 &&
+        all_zero(snapshot.vault_id) &&
+        !snapshot.registration_present &&
+        snapshot.registration_epoch == 0 &&
+        all_zero(snapshot.registration_id) &&
+        all_zero(snapshot.brk_public_key);
+}
+
 }  // namespace
 
 bool session_v2_begin_matches_snapshot(
@@ -57,8 +67,7 @@ bool session_v2_begin_matches_snapshot(
 
     switch (context.operation) {
         case session::protocol_v2::Operation::kInitialProvisioning:
-            return !snapshot.vault_present &&
-                !snapshot.registration_present &&
+            return clean_unprovisioned_snapshot(snapshot) &&
                 context.expected_generation == 0 &&
                 all_zero(context.current_brk_public_key) &&
                 !all_zero(context.proposed_brk_public_key);
