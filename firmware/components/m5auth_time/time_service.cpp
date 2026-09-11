@@ -230,6 +230,9 @@ SyncResult TimeService::boot_sync() {
 SyncResult TimeService::sync_from_usb(std::uint64_t unix_seconds) {
     if (!acceptable_unix_seconds(unix_seconds)) return SyncResult::kInvalidTime;
     std::lock_guard<std::mutex> lock(sync_mutex_);
+    if (vault_runtime_ != nullptr && !vault_runtime_->unlocked()) {
+        return SyncResult::kLocked;
+    }
     struct timeval value {};
     value.tv_sec = static_cast<time_t>(unix_seconds);
     value.tv_usec = 0;
