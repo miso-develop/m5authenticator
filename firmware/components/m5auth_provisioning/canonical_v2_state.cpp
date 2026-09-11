@@ -41,6 +41,7 @@ bool envelope_matches_pending(
 }  // namespace
 
 bool CanonicalBindingSource::snapshot(SessionV2DeviceSnapshot* output) const {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     if (output == nullptr) return false;
 
     vault_runtime::Metadata runtime_metadata{};
@@ -82,8 +83,11 @@ bool CanonicalBindingSource::snapshot(SessionV2DeviceSnapshot* output) const {
 
 CanonicalVmkSink::CanonicalVmkSink(
     vault_runtime::Runtime& runtime,
-    registration::Store& registration
-) : runtime_(runtime), registration_(registration) {}
+    registration::Store& registration,
+    std::recursive_mutex& runtime_access_mutex
+) : runtime_(runtime),
+    registration_(registration),
+    runtime_access_mutex_(runtime_access_mutex) {}
 
 CanonicalVmkSink::~CanonicalVmkSink() {
     cancel_pending();
@@ -92,6 +96,7 @@ CanonicalVmkSink::~CanonicalVmkSink() {
 bool CanonicalVmkSink::prepare_attempt(
     const session::protocol_v2::BeginContext& context
 ) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     cancel_pending();
 
     vault_runtime::Metadata metadata{};
@@ -122,6 +127,7 @@ bool CanonicalVmkSink::install_vmk(
     const session::protocol_v2::BeginContext& context,
     const session::Vmk& vmk
 ) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     cancel_pending();
 
     switch (context.operation) {
@@ -159,6 +165,7 @@ bool CanonicalVmkSink::install_vmk(
 }
 
 void CanonicalVmkSink::arm_pending_deadline(std::uint64_t now_ms) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     if (!pending_) return;
     deadline_armed_ = true;
     pending_expires_at_ms_ = now_ms >
@@ -168,12 +175,14 @@ void CanonicalVmkSink::arm_pending_deadline(std::uint64_t now_ms) {
 }
 
 bool CanonicalVmkSink::expire_pending(std::uint64_t now_ms) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     if (!pending_ || !deadline_armed_ || now_ms < pending_expires_at_ms_) return false;
     cancel_pending();
     return true;
 }
 
 void CanonicalVmkSink::cancel_pending() {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     vault_runtime::secure_zero(pending_vmk_.data(), pending_vmk_.size());
     wipe_context(&pending_context_);
     pending_ = false;
@@ -185,6 +194,7 @@ bool CanonicalVmkSink::pending_valid(
     session::protocol_v2::Operation operation,
     std::uint64_t now_ms
 ) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     (void)expire_pending(now_ms);
     return pending_ && deadline_armed_ && pending_context_.operation == operation;
 }
@@ -193,6 +203,7 @@ bool CanonicalVmkSink::install_initial_vault(
     vault::VaultEnvelope envelope,
     std::uint64_t now_ms
 ) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     if (!pending_valid(session::protocol_v2::Operation::kInitialProvisioning, now_ms) ||
         pending_context_.expected_generation != 0 ||
         pending_context_.registration_epoch != 0 ||
@@ -239,6 +250,7 @@ bool CanonicalVmkSink::install_rekeyed_vault(
     vault::VaultEnvelope envelope,
     std::uint64_t now_ms
 ) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     if (!pending_valid(session::protocol_v2::Operation::kVmkRekey, now_ms) ||
         expected_generation != pending_context_.expected_generation ||
         expected_generation == std::numeric_limits<std::uint64_t>::max() ||
@@ -255,6 +267,16 @@ bool CanonicalVmkSink::install_rekeyed_vault(
     );
     cancel_pending();
     return status == vault_runtime::Status::kOk;
+}
+
+bool CanonicalVmkSink::has_pending_vmk() const {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+    return pending_;
+}
+
+session::protocol_v2::Operation CanonicalVmkSink::pending_operation() const {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+    return pending_context_.operation;
 }
 
 }  // namespace m5auth::provisioning
