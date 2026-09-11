@@ -204,7 +204,7 @@ SyncResult TimeService::sync_ntp_once() {
     if (vault_runtime_ != nullptr) {
         std::string ssid;
         std::string password;
-        vault_runtime::Status status = vault_runtime::Status::kInternalError;
+        vault_runtime::Status status = vault_runtime::Status::kIo;
         const auto copy_credentials = [&]() {
             return vault_runtime_->with_wifi(
                 [&](const vault::WifiRecord& wifi) {
