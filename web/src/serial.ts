@@ -1,10 +1,16 @@
 import {
   buildRequest,
   DeviceProtocolError,
-  parseHelloData,
   parseResponseData,
-  type HelloData,
 } from "./protocol";
+import {
+  buildCanonicalV2Request,
+  CanonicalProtocolV2Error,
+  parseCanonicalHelloData,
+  parseCanonicalV2Response,
+  type CanonicalHelloData,
+  type CanonicalWireOperation,
+} from "./canonical-protocol-v2";
 import {
   buildSessionV2Request,
   parseSessionV2Response,
@@ -30,6 +36,8 @@ interface SerialLike {
   requestPort(): Promise<SerialPortLike>;
 }
 
+// Legacy Protocol 1 transport is retained only for isolated compatibility tests.
+// Canonical application code must use CanonicalV2Transport / SessionV2Transport.
 export interface DeviceTransport {
   request(op: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   close(): Promise<void>;
@@ -40,11 +48,19 @@ export interface SessionV2Transport {
   close(): Promise<void>;
 }
 
+export interface CanonicalV2Transport extends SessionV2Transport {
+  requestCanonicalV2(
+    op: CanonicalWireOperation,
+    params?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+  close(): Promise<void>;
+}
+
 function browserSerial(): SerialLike | undefined {
   return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
 }
 
-export class SerialSession implements DeviceTransport, SessionV2Transport {
+export class SerialSession implements DeviceTransport, CanonicalV2Transport {
   private readonly port: SerialPortLike;
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -65,7 +81,7 @@ export class SerialSession implements DeviceTransport, SessionV2Transport {
     this.writer = writer;
   }
 
-  public static async connect(): Promise<{ session: SerialSession; hello: HelloData }> {
+  public static async connect(): Promise<{ session: SerialSession; hello: CanonicalHelloData }> {
     const serial = browserSerial();
     if (!serial) {
       throw new Error("Web Serial is unavailable. Use the latest stable Desktop Chrome.");
@@ -80,8 +96,8 @@ export class SerialSession implements DeviceTransport, SessionV2Transport {
 
     const session = new SerialSession(port, port.readable.getReader(), port.writable.getWriter());
     try {
-      const data = await session.request("hello");
-      return { session, hello: parseHelloData(data) };
+      const data = await session.requestCanonicalV2("hello");
+      return { session, hello: parseCanonicalHelloData(data) };
     } catch (error) {
       await session.closeSilently();
       throw error;
@@ -103,9 +119,6 @@ export class SerialSession implements DeviceTransport, SessionV2Transport {
     );
   }
 
-  // Staged only: callers must explicitly select the Protocol v2 session
-  // surface. connect()/hello and canonical management remain Protocol 1 until
-  // Task #55 activates the complete v2/Schema 2/Vault 1 application contract.
   public async requestV2(
     op: SessionWireOperation,
     params: Record<string, unknown> = {},
@@ -114,6 +127,17 @@ export class SerialSession implements DeviceTransport, SessionV2Transport {
       (id) => buildSessionV2Request(id, op, params),
       parseSessionV2Response,
       (error) => error instanceof SessionProtocolV2Error,
+    );
+  }
+
+  public async requestCanonicalV2(
+    op: CanonicalWireOperation,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    return this.exchange(
+      (id) => buildCanonicalV2Request(id, op, params),
+      parseCanonicalV2Response,
+      (error) => error instanceof CanonicalProtocolV2Error,
     );
   }
 
@@ -213,7 +237,7 @@ export class SerialSession implements DeviceTransport, SessionV2Transport {
   }
 }
 
-export async function requestHello(): Promise<HelloData> {
+export async function requestHello(): Promise<CanonicalHelloData> {
   const { session, hello } = await SerialSession.connect();
   await session.close();
   return hello;
