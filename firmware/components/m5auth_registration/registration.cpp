@@ -41,7 +41,7 @@ Status map_error(esp_err_t error) {
 }
 
 bool valid_public_key(const BrkPublicKey& key) {
-    return !all_zero(key) && key[0] == 0x04;
+    return session::valid_p256_public_key(key);
 }
 
 void write_u32(std::uint8_t* output, std::uint32_t value) {
