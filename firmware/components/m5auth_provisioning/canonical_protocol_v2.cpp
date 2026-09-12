@@ -571,11 +571,16 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 time_service_.with_secret_boundary([&]() {
                     {
                         std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                        vault_status = runtime_.factory_reset();
-                        if (vault_status == vault_runtime::Status::kOk) {
-                            clear_status = registration_status == registration::Status::kCorrupt
-                                ? registration_.clear_corrupt_registration_for_recovery()
-                                : registration_.clear_registration();
+                        // Commit the confirmed registration identity/cleanup first.
+                        // For a structurally corrupt Device ID this durably persists
+                        // the RAM recovery candidate before Vault destruction. If
+                        // power fails afterwards, reboot keeps the same Device ID and
+                        // lands in the bounded partial-ownership recovery surface.
+                        clear_status = registration_status == registration::Status::kCorrupt
+                            ? registration_.clear_corrupt_registration_for_recovery()
+                            : registration_.clear_registration();
+                        if (clear_status == registration::Status::kOk) {
+                            vault_status = runtime_.factory_reset();
                         }
                     }
                     if (vault_status == vault_runtime::Status::kOk &&
