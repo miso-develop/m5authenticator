@@ -2,11 +2,13 @@
 
 M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, credential identity metadata, TOTP/Wi-Fi secrets, VMK/KEK/BUK/BRK/session keys, user Recovery Packages, device dumps, or a universal production encryption key.
 
+For the durable V1 requirements and cross-component flow overview, see `docs/V1_REQUIREMENTS.md` and `docs/ARCHITECTURE.md`.
+
 ## Release gate
 
 `firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage/Vault constants, the canonical firmware bootstrap, the release component surface/core-dump policy, and `firmware/partitions.csv`.
 
-Current V1 runs the canonical Protocol 2 / Storage Schema 2 / Vault Format 1 application. Task #56 replaced the former development-synthetic release profile with the V1 security contract, and Task #15 completed the cross-surface security closeout before enabling the final publication eligibility switch.
+Current V1 runs the canonical Protocol 2 / Storage Schema 2 / Vault Format 1 application. Task #56 replaced the former development-synthetic release profile with the V1 security contract, Task #15 completed the cross-surface security closeout before enabling the final publication eligibility switch, and Task #16 promoted the settled current truth into durable repository documentation.
 
 Release-profile format 2 requires:
 
@@ -31,13 +33,13 @@ Task #15 closeout additionally pins that:
 - a synthetic full Vault ciphertext inspection verifies that TOTP secret material, issuer/account/display-name, SSID/password, and VMK do not appear verbatim in the credential-bearing persisted ciphertext;
 - project repository security scanning remains an independent blocking layer.
 
-The remaining release chain after security eligibility is:
+The V1 release/security/documentation closeout chain is complete:
 
 ```text
-#56 -> #15 completed -> #16
+#56 release contract -> #15 security closeout -> #16 durable documentation
 ```
 
-Task #16 owns the subsequent durable documentation closeout; it does not weaken or replace the production security gate established here.
+Future changes must preserve or explicitly supersede these contracts through a new Decision/Spec rather than silently editing around the release gate.
 
 ## Canonical firmware package
 
