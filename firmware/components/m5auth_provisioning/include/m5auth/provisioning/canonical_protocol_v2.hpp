@@ -8,6 +8,7 @@
 
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/provisioning/canonical_v2_state.hpp"
+#include "m5auth/provisioning/recovery_reset.hpp"
 #include "m5auth/provisioning/session_protocol_v2.hpp"
 #include "m5auth/registration/registration.hpp"
 #include "m5auth/time/time_service.hpp"
@@ -28,6 +29,7 @@ public:
         time::TimeService& time_service,
         StagedSessionV2Handler& session_handler,
         CanonicalVmkSink& vmk_sink,
+        session::protocol_v2::PresenceBinding& recovery_presence,
         std::recursive_mutex& runtime_access_mutex
     );
     ~CanonicalProtocolV2Handler();
@@ -39,13 +41,25 @@ public:
     void disconnect();
 
 private:
+    void cancel_recovery_reset();
+    RecoveryResetDecision recovery_reset_decision(
+        vault_runtime::Metadata* runtime_metadata,
+        registration::Snapshot* registration_snapshot,
+        registration::Status* registration_status
+    );
+
     const core::DeviceMetadata& metadata_;
     vault_runtime::Runtime& runtime_;
     registration::Store& registration_;
     time::TimeService& time_service_;
     StagedSessionV2Handler& session_handler_;
     CanonicalVmkSink& vmk_sink_;
+    session::protocol_v2::PresenceBinding& recovery_presence_;
     std::recursive_mutex& runtime_access_mutex_;
+
+    session::AttemptId recovery_reset_attempt_id_{};
+    std::uint64_t recovery_reset_deadline_ms_{0};
+    bool recovery_reset_active_{false};
 };
 
 std::string canonical_v2_message_too_large_response();
