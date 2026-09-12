@@ -104,12 +104,16 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIn("form-action 'none'", html)
         self.assertIn("object-src 'none'", html)
 
-    def test_qr_object_url_is_allowed_only_as_local_image_input(self) -> None:
+    def test_qr_file_decode_stays_local_without_object_urls(self) -> None:
         html = PROVISIONER_HTML.read_text(encoding="utf-8")
         decoder = QR_IMAGE_DECODER.read_text(encoding="utf-8")
-        self.assertIn("URL.createObjectURL(file)", decoder)
-        self.assertIn("URL.revokeObjectURL(objectUrl)", decoder)
-        self.assertIn("img-src 'self' data: blob:", html)
+        self.assertIn("createImageBitmap(file)", decoder)
+        self.assertIn("decodeFromCanvas(canvas)", decoder)
+        self.assertIn("bitmap?.close()", decoder)
+        self.assertNotIn("URL.createObjectURL", decoder)
+        self.assertNotIn("URL.revokeObjectURL", decoder)
+        self.assertIn("img-src 'self' data:", html)
+        self.assertNotIn("img-src 'self' data: blob:", html)
         self.assertIn("connect-src 'none'", html)
         self.assertIn("form-action 'none'", html)
         self.assertIn("object-src 'none'", html)
