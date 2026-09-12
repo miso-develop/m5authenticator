@@ -106,6 +106,27 @@ int main() {
     initial.proposed_brk_public_key = public_key(0xc0);
     assert(session_v2_begin_matches_snapshot(initial, empty));
 
+    BeginContext clean_recovery{};
+    clean_recovery.operation = Operation::kRecovery;
+    clean_recovery.device_id = empty.device_id;
+    clean_recovery.vault_id = sequence<kVaultIdBytes>(0xd0);
+    clean_recovery.expected_generation = 9;
+    clean_recovery.registration_id = sequence<kRegistrationIdBytes>(0xe0);
+    clean_recovery.registration_epoch = 1;
+    clean_recovery.current_brk_public_key.fill(0);
+    clean_recovery.proposed_brk_public_key = public_key(0x20);
+    assert(session_v2_begin_matches_snapshot(clean_recovery, empty));
+
+    BeginContext bad_clean_recovery = clean_recovery;
+    bad_clean_recovery.expected_generation = 0;
+    assert(!session_v2_begin_matches_snapshot(bad_clean_recovery, empty));
+    bad_clean_recovery = clean_recovery;
+    bad_clean_recovery.registration_epoch = 2;
+    assert(!session_v2_begin_matches_snapshot(bad_clean_recovery, empty));
+    bad_clean_recovery = clean_recovery;
+    bad_clean_recovery.current_brk_public_key = public_key(0x40);
+    assert(!session_v2_begin_matches_snapshot(bad_clean_recovery, empty));
+
     initial.registration_id.fill(0);
     assert(!session_v2_begin_matches_snapshot(initial, empty));
 
@@ -116,10 +137,12 @@ int main() {
     initial.expected_generation = 0;
     empty.registration_present = true;
     assert(!session_v2_begin_matches_snapshot(initial, empty));
+    assert(!session_v2_begin_matches_snapshot(clean_recovery, empty));
 
     empty.registration_present = false;
     empty.generation = 1;
     assert(!session_v2_begin_matches_snapshot(initial, empty));
+    assert(!session_v2_begin_matches_snapshot(clean_recovery, empty));
 
     empty.generation = 0;
     initial.device_id = "other-device";
