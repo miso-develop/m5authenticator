@@ -128,9 +128,7 @@ bool read_nonnegative_int(cJSON* item, int* value) {
 
 bool read_u64_decimal(cJSON* item, std::uint64_t* value) {
     if (value == nullptr || !cJSON_IsString(item) || item->valuestring == nullptr ||
-        item->valuestring[0] == '\0') {
-        return false;
-    }
+        item->valuestring[0] == '\0') return false;
     const char* text = item->valuestring;
     if (text[0] == '0' && text[1] != '\0') return false;
     std::uint64_t parsed = 0;
@@ -150,8 +148,7 @@ bool read_binary(cJSON* object, const char* key, std::array<std::uint8_t, N>* ou
     cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
     if (!cJSON_IsString(item) || item->valuestring == nullptr) return false;
     std::vector<std::uint8_t> decoded;
-    if (!session::protocol_v2::base64url_decode(item->valuestring, &decoded) ||
-        decoded.size() != N) {
+    if (!session::protocol_v2::base64url_decode(item->valuestring, &decoded) || decoded.size() != N) {
         if (!decoded.empty()) secure_zero(decoded.data(), decoded.size());
         return false;
     }
@@ -180,12 +177,8 @@ bool read_envelope(cJSON* params, vault::VaultEnvelope* envelope) {
     int ciphertext_length = 0;
     std::uint64_t generation = 0;
     vault::VaultEnvelope parsed{};
-    if (!read_nonnegative_int(
-            cJSON_GetObjectItemCaseSensitive(params, "vault_format_version"),
-            &vault_format) ||
-        !read_nonnegative_int(
-            cJSON_GetObjectItemCaseSensitive(params, "storage_schema_version"),
-            &storage_schema) ||
+    if (!read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(params, "vault_format_version"), &vault_format) ||
+        !read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(params, "storage_schema_version"), &storage_schema) ||
         vault_format != vault::kVaultFormatVersion ||
         storage_schema != vault::kTargetStorageSchemaVersion ||
         !read_binary(params, "vault_id", &parsed.vault_id) ||
@@ -194,9 +187,7 @@ bool read_envelope(cJSON* params, vault::VaultEnvelope* envelope) {
         !read_binary(params, "nonce", &parsed.nonce) ||
         !read_binary(params, "tag", &parsed.tag) ||
         !read_ciphertext(params, &parsed.ciphertext) ||
-        !read_nonnegative_int(
-            cJSON_GetObjectItemCaseSensitive(params, "ciphertext_length"),
-            &ciphertext_length) ||
+        !read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(params, "ciphertext_length"), &ciphertext_length) ||
         ciphertext_length <= 0 ||
         static_cast<std::size_t>(ciphertext_length) != parsed.ciphertext.size()) {
         if (!parsed.ciphertext.empty()) secure_zero(parsed.ciphertext.data(), parsed.ciphertext.size());
@@ -234,6 +225,12 @@ std::uint64_t recovery_deadline_from(std::uint64_t now_ms) {
     return now_ms > std::numeric_limits<std::uint64_t>::max() - session::kAttemptTtlMs
         ? std::numeric_limits<std::uint64_t>::max()
         : now_ms + session::kAttemptTtlMs;
+}
+
+bool destroys_runtime_vmk(session::protocol_v2::Operation operation) {
+    return operation == session::protocol_v2::Operation::kRecovery ||
+        operation == session::protocol_v2::Operation::kBrowserReplacement ||
+        operation == session::protocol_v2::Operation::kVmkRekey;
 }
 
 const char* runtime_state_name(vault_runtime::State state) {
@@ -285,10 +282,8 @@ std::string hello_success(
 
     cJSON_AddBoolToObject(data, "registration_present", registration_snapshot.registration_present);
     if (registration_snapshot.registration_present) {
-        const std::string registration_id =
-            session::protocol_v2::base64url_encode(registration_snapshot.registration_id);
-        const std::string brk =
-            session::protocol_v2::base64url_encode(registration_snapshot.brk_public_key);
+        const std::string registration_id = session::protocol_v2::base64url_encode(registration_snapshot.registration_id);
+        const std::string brk = session::protocol_v2::base64url_encode(registration_snapshot.brk_public_key);
         cJSON_AddStringToObject(data, "registration_id", registration_id.c_str());
         cJSON_AddNumberToObject(data, "registration_epoch", registration_snapshot.epoch);
         cJSON_AddStringToObject(data, "brk_public_key", brk.c_str());
@@ -310,11 +305,7 @@ std::string time_status_success(int id, const time::Snapshot& snapshot) {
     }
     cJSON_AddStringToObject(data, "readiness", time::readiness_name(snapshot.readiness));
     cJSON_AddStringToObject(data, "source", time::source_name(snapshot.source));
-    cJSON_AddStringToObject(
-        data,
-        "last_sync_unix_seconds",
-        std::to_string(snapshot.last_sync_unix_seconds).c_str()
-    );
+    cJSON_AddStringToObject(data, "last_sync_unix_seconds", std::to_string(snapshot.last_sync_unix_seconds).c_str());
     cJSON_AddNumberToObject(data, "age_seconds", static_cast<double>(snapshot.age_seconds));
     cJSON_AddBoolToObject(data, "resync_due", snapshot.resync_due);
     return serialize(root);
@@ -383,7 +374,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
     std::string_view line,
     std::uint64_t now_ms
 ) {
-    (void)vmk_sink_.expire_pending(now_ms);
+    housekeeping(now_ms);
     if (line.empty()) return error_response(0, "invalid_request");
     if (line.size() > kMaxCanonicalV2MessageBytes) {
         disconnect();
@@ -428,8 +419,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
             return session_v2_message_too_large_response();
         }
 
-        session::protocol_v2::Operation session_operation =
-            session::protocol_v2::Operation::kTrustedBrowserUnlock;
+        session::protocol_v2::Operation session_operation = session::protocol_v2::Operation::kTrustedBrowserUnlock;
         const bool begin = operation == "session.begin";
         if (begin && !parse_session_operation(params, &session_operation)) {
             delete_request(root);
@@ -441,7 +431,11 @@ std::string CanonicalProtocolV2Handler::handle_line(
         if (begin && response_ok(response)) {
             session::protocol_v2::BeginContext boundary{};
             boundary.operation = session_operation;
-            if (!vmk_sink_.prepare_attempt(boundary)) {
+            const auto prepare = [&]() { return vmk_sink_.prepare_attempt(boundary); };
+            const bool prepared = destroys_runtime_vmk(session_operation)
+                ? time_service_.with_secret_boundary(prepare)
+                : prepare();
+            if (!prepared) {
                 session_handler_.disconnect();
                 vmk_sink_.cancel_pending();
                 response = error_response(id, "invalid_state");
@@ -461,9 +455,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
         registration::Snapshot registration_snapshot{};
         registration::Status registration_status = registration::Status::kIo;
         const RecoveryResetDecision decision = recovery_reset_decision(
-            &runtime_metadata,
-            &registration_snapshot,
-            &registration_status
+            &runtime_metadata, &registration_snapshot, &registration_status
         );
         if (decision == RecoveryResetDecision::kUnavailable) {
             response = error_response(id, "invalid_state");
@@ -481,9 +473,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
         registration::Snapshot registration_snapshot{};
         registration::Status registration_status = registration::Status::kIo;
         if (recovery_reset_decision(
-                &runtime_metadata,
-                &registration_snapshot,
-                &registration_status
+                &runtime_metadata, &registration_snapshot, &registration_status
             ) != RecoveryResetDecision::kRequired) {
             response = error_response(id, "invalid_state");
         } else {
@@ -491,19 +481,20 @@ std::string CanonicalProtocolV2Handler::handle_line(
             vmk_sink_.cancel_pending();
             cancel_recovery_reset();
 
-            vault_runtime::Status boundary_status = vault_runtime::Status::kIo;
-            {
+            const vault_runtime::Status boundary_status = time_service_.with_secret_boundary([&]() {
                 std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                boundary_status = runtime_.enter_recovery_boundary();
-            }
+                if (runtime_metadata.state == vault_runtime::State::kError) {
+                    return runtime_metadata.recovery_reset_allowed
+                        ? vault_runtime::Status::kOk
+                        : vault_runtime::Status::kInvalidState;
+                }
+                return runtime_.enter_recovery_boundary();
+            });
             if (boundary_status != vault_runtime::Status::kOk) {
                 response = error_response(id, "invalid_state");
             } else {
                 do {
-                    esp_fill_random(
-                        recovery_reset_attempt_id_.data(),
-                        recovery_reset_attempt_id_.size()
-                    );
+                    esp_fill_random(recovery_reset_attempt_id_.data(), recovery_reset_attempt_id_.size());
                 } while (all_zero_attempt(recovery_reset_attempt_id_));
                 recovery_reset_deadline_ms_ = recovery_deadline_from(now_ms);
                 recovery_reset_active_ = recovery_presence_.begin_presence(
@@ -523,25 +514,20 @@ std::string CanonicalProtocolV2Handler::handle_line(
         session::AttemptId attempt_id{};
         if (!read_binary(params, "attempt_id", &attempt_id)) {
             response = error_response(id, "invalid_request");
-        } else if (!recovery_reset_active_ ||
-                   !same_attempt_id(attempt_id, recovery_reset_attempt_id_)) {
+        } else if (!recovery_reset_active_ || !same_attempt_id(attempt_id, recovery_reset_attempt_id_)) {
             response = error_response(id, "invalid_state");
         } else if (now_ms >= recovery_reset_deadline_ms_) {
             cancel_recovery_reset();
             response = error_response(id, "expired");
         } else {
-            response = recovery_reset_status_success(
-                id,
-                recovery_presence_.presence_confirmed()
-            );
+            response = recovery_reset_status_success(id, recovery_presence_.presence_confirmed());
         }
         attempt_id.fill(0);
     } else if (operation == "factory_reset.recovery_complete") {
         session::AttemptId attempt_id{};
         if (!read_binary(params, "attempt_id", &attempt_id)) {
             response = error_response(id, "invalid_request");
-        } else if (!recovery_reset_active_ ||
-                   !same_attempt_id(attempt_id, recovery_reset_attempt_id_)) {
+        } else if (!recovery_reset_active_ || !same_attempt_id(attempt_id, recovery_reset_attempt_id_)) {
             response = error_response(id, "invalid_state");
         } else if (now_ms >= recovery_reset_deadline_ms_) {
             cancel_recovery_reset();
@@ -557,16 +543,13 @@ std::string CanonicalProtocolV2Handler::handle_line(
             registration::Snapshot registration_snapshot{};
             registration::Status registration_status = registration::Status::kIo;
             if (recovery_reset_decision(
-                    &runtime_metadata,
-                    &registration_snapshot,
-                    &registration_status
+                    &runtime_metadata, &registration_snapshot, &registration_status
                 ) != RecoveryResetDecision::kRequired) {
                 response = error_response(id, "invalid_state");
             } else {
-                time_service_.prepare_factory_reset();
                 vault_runtime::Status vault_status = vault_runtime::Status::kIo;
                 registration::Status clear_status = registration::Status::kIo;
-                {
+                time_service_.with_secret_boundary([&]() {
                     std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
                     vault_status = runtime_.factory_reset();
                     if (vault_status == vault_runtime::Status::kOk) {
@@ -574,9 +557,8 @@ std::string CanonicalProtocolV2Handler::handle_line(
                             ? registration_.clear_corrupt_registration_for_recovery()
                             : registration_.clear_registration();
                     }
-                }
-                response = vault_status == vault_runtime::Status::kOk &&
-                        clear_status == registration::Status::kOk
+                });
+                response = vault_status == vault_runtime::Status::kOk && clear_status == registration::Status::kOk
                     ? empty_success(id)
                     : error_response(id, "reset_failed");
             }
@@ -596,18 +578,13 @@ std::string CanonicalProtocolV2Handler::handle_line(
         vault::VaultEnvelope envelope{};
         std::uint64_t expected_generation = 0;
         if (!read_envelope(params, &envelope) ||
-            !read_u64_decimal(
-                cJSON_GetObjectItemCaseSensitive(params, "expected_generation"),
-                &expected_generation)) {
+            !read_u64_decimal(cJSON_GetObjectItemCaseSensitive(params, "expected_generation"), &expected_generation)) {
             response = error_response(id, "invalid_request");
         } else {
             vault_runtime::Status status = vault_runtime::Status::kIo;
             {
                 std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                status = runtime_.update_encrypted_vault(
-                    expected_generation,
-                    std::move(envelope)
-                );
+                status = runtime_.update_encrypted_vault(expected_generation, std::move(envelope));
             }
             response = status == vault_runtime::Status::kOk
                 ? empty_success(id)
@@ -617,25 +594,19 @@ std::string CanonicalProtocolV2Handler::handle_line(
         vault::VaultEnvelope envelope{};
         std::uint64_t expected_generation = 0;
         if (!read_envelope(params, &envelope) ||
-            !read_u64_decimal(
-                cJSON_GetObjectItemCaseSensitive(params, "expected_generation"),
-                &expected_generation)) {
+            !read_u64_decimal(cJSON_GetObjectItemCaseSensitive(params, "expected_generation"), &expected_generation)) {
             vmk_sink_.cancel_pending();
             response = error_response(id, "invalid_request");
         } else {
-            response = vmk_sink_.install_rekeyed_vault(
-                expected_generation,
-                std::move(envelope),
-                now_ms
-            ) ? empty_success(id) : error_response(id, "invalid_state");
+            response = vmk_sink_.install_rekeyed_vault(expected_generation, std::move(envelope), now_ms)
+                ? empty_success(id)
+                : error_response(id, "invalid_state");
         }
     } else if (operation == "time.status") {
         response = time_status_success(id, time_service_.status());
     } else if (operation == "time.sync") {
         std::uint64_t unix_seconds = 0;
-        if (!read_u64_decimal(
-                cJSON_GetObjectItemCaseSensitive(params, "unix_seconds"),
-                &unix_seconds)) {
+        if (!read_u64_decimal(cJSON_GetObjectItemCaseSensitive(params, "unix_seconds"), &unix_seconds)) {
             response = error_response(id, "invalid_request");
         } else {
             const time::SyncResult status = time_service_.sync_from_usb(unix_seconds);
@@ -647,11 +618,10 @@ std::string CanonicalProtocolV2Handler::handle_line(
         session_handler_.disconnect();
         vmk_sink_.cancel_pending();
         cancel_recovery_reset();
-        vault_runtime::Status status = vault_runtime::Status::kIo;
-        {
+        const vault_runtime::Status status = time_service_.with_secret_boundary([&]() {
             std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-            status = runtime_.lock();
-        }
+            return runtime_.lock();
+        });
         response = status == vault_runtime::Status::kOk
             ? empty_success(id)
             : error_response(id, vault_runtime::status_code(status));
@@ -660,29 +630,26 @@ std::string CanonicalProtocolV2Handler::handle_line(
         registration::Snapshot registration_snapshot{};
         registration::Status registration_status = registration::Status::kIo;
         const RecoveryResetDecision decision = recovery_reset_decision(
-            &runtime_metadata,
-            &registration_snapshot,
-            &registration_status
+            &runtime_metadata, &registration_snapshot, &registration_status
         );
         const bool reset_allowed = decision == RecoveryResetDecision::kNotRequired &&
-            runtime_.unlocked();
+            runtime_metadata.state == vault_runtime::State::kUnlocked;
         if (!reset_allowed) {
             response = error_response(id, "invalid_state");
         } else {
             session_handler_.disconnect();
             vmk_sink_.cancel_pending();
             cancel_recovery_reset();
-            time_service_.prepare_factory_reset();
 
             vault_runtime::Status vault_status = vault_runtime::Status::kIo;
             registration::Status registration_clear_status = registration::Status::kIo;
-            {
+            time_service_.with_secret_boundary([&]() {
                 std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
                 vault_status = runtime_.factory_reset();
                 registration_clear_status = vault_status == vault_runtime::Status::kOk
                     ? registration_.clear_registration()
                     : registration::Status::kIo;
-            }
+            });
             response = vault_status == vault_runtime::Status::kOk &&
                     registration_clear_status == registration::Status::kOk
                 ? empty_success(id)
