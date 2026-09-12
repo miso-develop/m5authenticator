@@ -64,6 +64,11 @@ public:
 
     bool start();
 
+    // Called synchronously after a VMK-destruction boundary has changed the
+    // Runtime state. It wipes decrypted account labels/IDs and OTP reveal state
+    // and redraws before the security operation is allowed to return.
+    void security_boundary_clear();
+
 private:
     struct CredentialView {
         vault_runtime::CredentialId credential_id{};
@@ -92,6 +97,9 @@ private:
     std::recursive_mutex& runtime_access_mutex_;
     CanonicalPresence& presence_;
 
+    // UI-private decrypted state is accessed by the UI task and by synchronous
+    // security-boundary invalidation from the protocol task.
+    mutable std::mutex view_mutex_;
     std::vector<CredentialView> credentials_;
     std::size_t selected_index_{0};
     std::uint64_t visible_generation_{0};
