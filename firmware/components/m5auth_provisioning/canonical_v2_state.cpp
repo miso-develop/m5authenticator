@@ -11,6 +11,18 @@ bool all_zero(const Container& value) {
     return std::all_of(value.begin(), value.end(), [](std::uint8_t byte) { return byte == 0; });
 }
 
+class ScopedVmkWipe final {
+public:
+    explicit ScopedVmkWipe(session::Vmk& vmk) : vmk_(vmk) {}
+    ~ScopedVmkWipe() { vault_runtime::secure_zero(vmk_.data(), vmk_.size()); }
+
+    ScopedVmkWipe(const ScopedVmkWipe&) = delete;
+    ScopedVmkWipe& operator=(const ScopedVmkWipe&) = delete;
+
+private:
+    session::Vmk& vmk_;
+};
+
 void wipe_context(session::protocol_v2::BeginContext* context) {
     if (context == nullptr) return;
     if (!context->device_id.empty()) {
@@ -51,9 +63,6 @@ bool CanonicalBindingSource::snapshot(SessionV2DeviceSnapshot* output) const {
         return false;
     }
 
-    // A canonical encrypted Vault and active Trusted Browser registration are a
-    // single security ownership unit. Partial persistence fails closed instead
-    // of treating either side as an independently provisioned Device.
     if (runtime_metadata.has_vault != registration_snapshot.registration_present) {
         return false;
     }
@@ -243,9 +252,6 @@ bool CanonicalVmkSink::install_initial_vault(
     std::uint64_t now_ms
 ) {
     std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-    if (pending_ && pending_context_.operation == session::protocol_v2::Operation::kRecovery) {
-        return install_recovered_vault(std::move(envelope), now_ms);
-    }
     if (!pending_valid(session::protocol_v2::Operation::kInitialProvisioning, now_ms) ||
         pending_context_.expected_generation != 0 ||
         pending_context_.registration_epoch != 0 ||
@@ -256,7 +262,8 @@ bool CanonicalVmkSink::install_initial_vault(
     }
 
     const auto context = pending_context_;
-    const session::Vmk vmk = pending_vmk_;
+    session::Vmk vmk = pending_vmk_;
+    ScopedVmkWipe wipe_vmk(vmk);
 
     vault_runtime::Status status = runtime_.format_for_schema2();
     if (status == vault_runtime::Status::kOk) {
@@ -307,7 +314,8 @@ bool CanonicalVmkSink::install_recovered_vault(
     }
 
     const auto context = pending_context_;
-    const session::Vmk vmk = pending_vmk_;
+    session::Vmk vmk = pending_vmk_;
+    ScopedVmkWipe wipe_vmk(vmk);
 
     vault_runtime::Status status = runtime_.format_for_schema2();
     if (status == vault_runtime::Status::kOk) {
@@ -352,7 +360,8 @@ bool CanonicalVmkSink::install_rekeyed_vault(
         return false;
     }
 
-    const session::Vmk vmk = pending_vmk_;
+    session::Vmk vmk = pending_vmk_;
+    ScopedVmkWipe wipe_vmk(vmk);
     const vault_runtime::Status status = runtime_.rekey_encrypted_vault(
         expected_generation,
         std::move(envelope),
