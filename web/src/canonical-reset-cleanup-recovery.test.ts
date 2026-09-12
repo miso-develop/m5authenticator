@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CanonicalDeviceManagement } from "./canonical-management";
+import { CanonicalRecoveryResetController } from "./canonical-recovery-reset";
 import type { CanonicalHelloData, CanonicalWireOperation } from "./canonical-protocol-v2";
 import {
   IndexedDbBrowserVaultStore,
@@ -179,6 +180,40 @@ class ResetDevice implements CanonicalV2Transport {
   async close(): Promise<void> {}
 }
 
+class RecoveryResetDevice implements CanonicalV2Transport {
+  resetCommitted = false;
+  private readonly attemptId = bytes(16, 0xc1);
+
+  constructor(private readonly state: BrowserCanonicalState) {}
+
+  async requestCanonicalV2(
+    op: CanonicalWireOperation,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    if (op === "hello") return this.resetCommitted ? cleanHello() : recoveryHello(this.state);
+    if (op === "factory_reset.recovery_begin") {
+      return { attempt_id: encodeBase64UrlCanonical(this.attemptId), expires_in_ms: 30_000 };
+    }
+    if (op === "factory_reset.recovery_status") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      return { state: "confirmed" };
+    }
+    if (op === "factory_reset.recovery_complete") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      this.resetCommitted = true;
+      return {};
+    }
+    if (op === "time.status") return readyTime();
+    throw new Error(`unexpected canonical operation ${op}`);
+  }
+
+  async requestV2(op: SessionWireOperation): Promise<Record<string, unknown>> {
+    throw new Error(`unexpected session operation ${op}`);
+  }
+
+  async close(): Promise<void> {}
+}
+
 function typedProvisionedHello(state: BrowserCanonicalState): CanonicalHelloData {
   return {
     device: "M5StickS3",
@@ -201,6 +236,28 @@ function typedProvisionedHello(state: BrowserCanonicalState): CanonicalHelloData
   };
 }
 
+function typedRecoveryHello(state: BrowserCanonicalState): CanonicalHelloData {
+  return {
+    device: "M5StickS3",
+    deviceId,
+    firmware: "0.1.0",
+    protocol: 2,
+    storageSchema: 2,
+    vaultFormat: 1,
+    buildCommit: "synthetic",
+    state: "locked",
+    storageReady: true,
+    recoveryResetRequired: true,
+    vaultPresent: true,
+    vaultId: state.vault.vaultId.slice(),
+    generation: state.vault.generation,
+    registrationPresent: false,
+    registrationId: null,
+    registrationEpoch: 0,
+    brkPublicKey: null,
+  };
+}
+
 function provisionedHello(state: BrowserCanonicalState): Record<string, unknown> {
   return {
     device: "M5StickS3",
@@ -220,6 +277,28 @@ function provisionedHello(state: BrowserCanonicalState): Record<string, unknown>
     registration_id: encodeBase64UrlCanonical(state.trustedBrowser.registrationId),
     registration_epoch: state.trustedBrowser.epoch,
     brk_public_key: encodeBase64UrlCanonical(state.trustedBrowser.brkPublicKeyRaw),
+  };
+}
+
+function recoveryHello(state: BrowserCanonicalState): Record<string, unknown> {
+  return {
+    device: "M5StickS3",
+    device_id: deviceId,
+    firmware: "0.1.0",
+    protocol: 2,
+    storage_schema: 2,
+    vault_format: 1,
+    build_commit: "synthetic",
+    state: "locked",
+    storage_ready: true,
+    recovery_reset_required: true,
+    vault_present: true,
+    vault_id: encodeBase64UrlCanonical(state.vault.vaultId),
+    generation: state.vault.generation.toString(10),
+    registration_present: false,
+    registration_id: null,
+    registration_epoch: 0,
+    brk_public_key: null,
   };
 }
 
@@ -336,6 +415,43 @@ describe("Factory Reset browser cleanup reconciliation", () => {
       expect(device.resetCommitted).toBe(true);
       expect(store.current()).not.toBeNull();
       expect(journal.current()?.kind).toBe("factory-reset");
+      expect(resetIntents.current()?.deviceId).toBe(deviceId);
+
+      const reconnect = new CanonicalDeviceManagement(
+        device,
+        typedCleanHello(),
+        store.asIndexedDb(),
+        journal.asIndexedDb(),
+        resetIntents.asIndexedDb(),
+      );
+      await reconnect.initialize();
+      expect(store.current()).toBeNull();
+      expect(journal.current()).toBeNull();
+      expect(resetIntents.current()).toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("reconciles Recovery Factory Reset after Device commit and one browser cleanup failure", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const journal = new MemoryJournal();
+      const resetIntents = new MemoryResetIntents();
+      const device = new RecoveryResetDevice(state);
+      const recovery = new CanonicalRecoveryResetController(
+        device,
+        typedRecoveryHello(state),
+        store,
+        journal,
+        resetIntents,
+      );
+
+      store.failNextDelete = true;
+      await expect(recovery.perform(undefined, 0)).rejects.toThrow(/synthetic IndexedDB cleanup failure/);
+      expect(device.resetCommitted).toBe(true);
+      expect(store.current()).not.toBeNull();
       expect(resetIntents.current()?.deviceId).toBe(deviceId);
 
       const reconnect = new CanonicalDeviceManagement(
