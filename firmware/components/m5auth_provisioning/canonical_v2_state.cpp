@@ -112,6 +112,12 @@ bool CanonicalVmkSink::prepare_attempt(
             return metadata.has_vault && metadata.state == vault_runtime::State::kLocked;
 
         case session::protocol_v2::Operation::kRecovery:
+            if (!metadata.has_vault) {
+                return metadata.state == vault_runtime::State::kUnprovisioned ||
+                    metadata.state == vault_runtime::State::kReprovisionRequired;
+            }
+            return runtime_.enter_registration_replacement_boundary() == vault_runtime::Status::kOk;
+
         case session::protocol_v2::Operation::kBrowserReplacement:
             return metadata.has_vault &&
                 runtime_.enter_registration_replacement_boundary() == vault_runtime::Status::kOk;
@@ -134,7 +140,40 @@ bool CanonicalVmkSink::install_vmk(
         case session::protocol_v2::Operation::kTrustedBrowserUnlock:
             return runtime_.unlock(vmk) == vault_runtime::Status::kOk;
 
-        case session::protocol_v2::Operation::kRecovery:
+        case session::protocol_v2::Operation::kRecovery: {
+            vault_runtime::Metadata metadata{};
+            if (runtime_.metadata(&metadata) != vault_runtime::Status::kOk) return false;
+            if (!metadata.has_vault) {
+                if ((metadata.state != vault_runtime::State::kUnprovisioned &&
+                     metadata.state != vault_runtime::State::kReprovisionRequired) ||
+                    context.expected_generation == 0 ||
+                    context.registration_epoch != 1 ||
+                    !all_zero(context.current_brk_public_key)) {
+                    return false;
+                }
+                pending_vmk_ = vmk;
+                pending_context_ = context;
+                pending_ = true;
+                deadline_armed_ = false;
+                pending_expires_at_ms_ = 0;
+                return true;
+            }
+            if (context.registration_epoch == 0) return false;
+            if (runtime_.unlock(vmk) != vault_runtime::Status::kOk) return false;
+            const registration::Status registration_status = registration_.replace(
+                context.vault_id,
+                context.registration_epoch - 1,
+                context.registration_id,
+                context.registration_epoch,
+                context.proposed_brk_public_key
+            );
+            if (registration_status != registration::Status::kOk) {
+                (void)runtime_.lock();
+                return false;
+            }
+            return true;
+        }
+
         case session::protocol_v2::Operation::kBrowserReplacement: {
             if (context.registration_epoch == 0) return false;
             if (runtime_.unlock(vmk) != vault_runtime::Status::kOk) return false;
@@ -209,6 +248,57 @@ bool CanonicalVmkSink::install_initial_vault(
         pending_context_.registration_epoch != 0 ||
         all_zero(pending_context_.registration_id) ||
         !envelope_matches_pending(envelope, pending_context_, 1)) {
+        cancel_pending();
+        return false;
+    }
+
+    const auto context = pending_context_;
+    const session::Vmk vmk = pending_vmk_;
+
+    vault_runtime::Status status = runtime_.format_for_schema2();
+    if (status == vault_runtime::Status::kOk) {
+        status = runtime_.install_encrypted_vault(envelope, vmk);
+    }
+    if (status == vault_runtime::Status::kOk) {
+        status = runtime_.unlock(vmk);
+    }
+    if (status != vault_runtime::Status::kOk) {
+        (void)runtime_.factory_reset();
+        cancel_pending();
+        return false;
+    }
+
+    const registration::Status registration_status = registration_.install_initial(
+        context.vault_id,
+        context.registration_id,
+        1,
+        context.proposed_brk_public_key
+    );
+    if (registration_status != registration::Status::kOk) {
+        (void)runtime_.factory_reset();
+        cancel_pending();
+        return false;
+    }
+
+    cancel_pending();
+    return true;
+}
+
+bool CanonicalVmkSink::install_recovered_vault(
+    vault::VaultEnvelope envelope,
+    std::uint64_t now_ms
+) {
+    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+    if (!pending_valid(session::protocol_v2::Operation::kRecovery, now_ms) ||
+        pending_context_.expected_generation == 0 ||
+        pending_context_.registration_epoch != 1 ||
+        !all_zero(pending_context_.current_brk_public_key) ||
+        all_zero(pending_context_.registration_id) ||
+        !envelope_matches_pending(
+            envelope,
+            pending_context_,
+            pending_context_.expected_generation
+        )) {
         cancel_pending();
         return false;
     }
