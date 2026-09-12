@@ -97,6 +97,7 @@ std::string device_id_text(const DeviceId& device_id) {
 
 Status Store::initialize() {
     ready_ = false;
+    recovery_reset_available_ = false;
     snapshot_ = Snapshot{};
 
     // Never erase NVS implicitly here. Corrupt/newer NVS is a fail-closed state;
@@ -106,7 +107,18 @@ Status Store::initialize() {
 
     Status status = load_or_create_device_id();
     if (status != Status::kOk) return status;
+
+    // Preserve the valid stable Device ID even when the active registration is
+    // structurally corrupt. This is the only initialization failure that can
+    // later enable the explicit destructive recovery path.
+    const DeviceId stable_device_id = snapshot_.device_id;
     status = load_registration();
+    if (status == Status::kCorrupt) {
+        snapshot_ = Snapshot{};
+        snapshot_.device_id = stable_device_id;
+        recovery_reset_available_ = true;
+        return status;
+    }
     if (status != Status::kOk && status != Status::kNotFound) {
         snapshot_ = Snapshot{};
         return status;
@@ -240,7 +252,13 @@ Status Store::persist_registration(
 
 Status Store::snapshot(Snapshot* output) const {
     if (output == nullptr) return Status::kInvalidArgument;
-    if (!ready_) return Status::kIo;
+    if (!ready_) {
+        if (recovery_reset_available_) {
+            *output = snapshot_;
+            return Status::kCorrupt;
+        }
+        return Status::kIo;
+    }
     *output = snapshot_;
     return Status::kOk;
 }
@@ -295,11 +313,35 @@ Status Store::clear_registration() {
     const DeviceId device_id = snapshot_.device_id;
     snapshot_ = Snapshot{};
     snapshot_.device_id = device_id;
+    recovery_reset_available_ = false;
+    return Status::kOk;
+}
+
+Status Store::clear_corrupt_registration_for_recovery() {
+    if (ready_) return clear_registration();
+    if (!recovery_reset_available_ || all_zero(snapshot_.device_id)) return Status::kIo;
+
+    nvs_handle_t handle = 0;
+    Status status = open_namespace(NVS_READWRITE, &handle);
+    if (status != Status::kOk) return status;
+
+    esp_err_t result = nvs_erase_key(handle, kRegistrationKey);
+    if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    if (result != ESP_OK) return map_error(result);
+
+    const DeviceId device_id = snapshot_.device_id;
+    snapshot_ = Snapshot{};
+    snapshot_.device_id = device_id;
+    recovery_reset_available_ = false;
+    ready_ = true;
     return Status::kOk;
 }
 
 Status Store::reinitialize_after_partition_reset() {
     ready_ = false;
+    recovery_reset_available_ = false;
     snapshot_ = Snapshot{};
     return initialize();
 }
