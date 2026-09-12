@@ -61,6 +61,25 @@ class RegistrationRecoveryContractTests(unittest.TestCase):
         self.assertIn("all_zero(snapshot_.device_id)", body)
         self.assertIn("return map_error(result);", body)
 
+    def test_registration_length_is_queried_before_fixed_buffer_read(self) -> None:
+        text = REGISTRATION_CPP.read_text(encoding="utf-8")
+        loader = re.search(
+            r"Status Store::load_registration\(\) \{([\s\S]+?)\n\}\n\nStatus Store::persist_registration",
+            text,
+        )
+        self.assertIsNotNone(loader)
+        body = loader.group(1)
+        query = body.index("nvs_get_blob(handle, kRegistrationKey, nullptr, &size)")
+        size_check = body.index("if (size != kEncodedRegistrationBytes)", query)
+        fixed_read = body.index(
+            "nvs_get_blob(handle, kRegistrationKey, encoded.data(), &size)",
+            size_check,
+        )
+        self.assertLess(query, size_check)
+        self.assertLess(size_check, fixed_read)
+        self.assertIn("return Status::kCorrupt;", body[size_check:fixed_read])
+        self.assertIn("return map_error(result);", body)
+
     def test_confirmed_device_id_recovery_is_the_only_namespace_erase_site(self) -> None:
         text = REGISTRATION_CPP.read_text(encoding="utf-8")
         self.assertEqual(text.count("nvs_erase_all(handle)"), 1)
