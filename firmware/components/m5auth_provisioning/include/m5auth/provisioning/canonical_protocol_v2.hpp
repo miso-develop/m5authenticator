@@ -16,8 +16,6 @@
 
 namespace m5auth::provisioning {
 
-// 64 KiB authenticated Vault ciphertext expands to about 87 KiB base64url;
-// keep a fixed, auditable upper bound for the complete NDJSON request.
 inline constexpr std::size_t kMaxCanonicalV2MessageBytes = 96 * 1024;
 
 class CanonicalProtocolV2Handler final {
@@ -39,6 +37,18 @@ public:
 
     std::string handle_line(std::string_view line, std::uint64_t now_ms);
     void disconnect();
+
+    // Called by the production app loop even when stdin is idle. This makes the
+    // 30-second Protocol-v2 lifetime proactive: coordinator crypto/context,
+    // pending VMK delivery and recovery-reset presence state are wiped without
+    // waiting for a later Web request.
+    void housekeeping(std::uint64_t now_ms) {
+        (void)session_handler_.expire(now_ms);
+        (void)vmk_sink_.expire_pending(now_ms);
+        if (recovery_reset_active_ && now_ms >= recovery_reset_deadline_ms_) {
+            cancel_recovery_reset();
+        }
+    }
 
 private:
     void cancel_recovery_reset();
