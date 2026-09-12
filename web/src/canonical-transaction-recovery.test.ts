@@ -21,6 +21,7 @@ import type { CanonicalV2Transport } from "./serial";
 
 const passphrase = ["synthetic", "transaction", "recovery", "phrase"].join(" ");
 const deviceId = "11223344556677889900aabbccddeeff";
+const replacementDeviceId = "ffeeddccbbaa00998877665544332211";
 
 function bytes(length: number, start: number): Uint8Array {
   return Uint8Array.from({ length }, (_, index) => (start + index) & 0xff);
@@ -140,15 +141,7 @@ class GenerationDevice implements CanonicalV2Transport {
   ): Promise<Record<string, unknown>> {
     if (!this.connected) throw new Error("synthetic transport disconnected");
     if (op === "hello") return this.hello();
-    if (op === "time.status") {
-      return {
-        readiness: "ready",
-        source: "usb",
-        last_sync_unix_seconds: "1789156800",
-        age_seconds: 0,
-        resync_due: false,
-      };
-    }
+    if (op === "time.status") return readyTime();
     if (op === "vault.update") {
       if (BigInt(String(params.expected_generation)) !== this.generation) {
         throw new Error("generation mismatch");
@@ -182,29 +175,164 @@ class GenerationDevice implements CanonicalV2Transport {
   }
 
   hello(): Record<string, unknown> {
-    return {
-      device: "M5StickS3",
-      device_id: deviceId,
-      firmware: "0.1.0",
-      protocol: 2,
-      storage_schema: 2,
-      vault_format: 1,
-      build_commit: "synthetic",
-      state: "unlocked",
-      storage_ready: true,
-      vault_present: true,
-      vault_id: encodeBase64UrlCanonical(this.vaultId),
-      generation: this.generation.toString(10),
-      registration_present: true,
-      registration_id: encodeBase64UrlCanonical(this.registrationId),
-      registration_epoch: this.registrationEpoch,
-      brk_public_key: encodeBase64UrlCanonical(this.brkPublicKey),
-    };
+    return provisionedHello({
+      state: {
+        vault: { vaultId: this.vaultId, generation: this.generation },
+        registrationId: this.registrationId,
+        registrationEpoch: this.registrationEpoch,
+        brkPublicKey: this.brkPublicKey,
+      },
+      targetDeviceId: deviceId,
+    });
   }
+}
+
+class CleanDevice implements CanonicalV2Transport {
+  connected = true;
+
+  constructor(readonly targetDeviceId: string) {}
+
+  async requestCanonicalV2(op: CanonicalWireOperation): Promise<Record<string, unknown>> {
+    if (!this.connected) throw new Error("synthetic transport disconnected");
+    if (op === "hello") return cleanHello(this.targetDeviceId);
+    if (op === "time.status") return readyTime();
+    throw new Error(`unexpected canonical operation ${op}`);
+  }
+
+  async requestV2(op: SessionWireOperation): Promise<Record<string, unknown>> {
+    throw new Error(`unexpected session operation ${op}`);
+  }
+
+  async close(): Promise<void> {
+    this.connected = false;
+  }
+}
+
+class ResettingDevice implements CanonicalV2Transport {
+  connected = true;
+  resetCommitted = false;
+
+  constructor(private readonly state: BrowserCanonicalState) {}
+
+  async requestCanonicalV2(op: CanonicalWireOperation): Promise<Record<string, unknown>> {
+    if (!this.connected) throw new Error("synthetic transport disconnected");
+    if (op === "hello") {
+      return this.resetCommitted ? cleanHello(deviceId) : provisionedHello({ state: browserBinding(this.state), targetDeviceId: deviceId });
+    }
+    if (op === "time.status") return readyTime();
+    if (op === "factory_reset") {
+      this.resetCommitted = true;
+      this.connected = false;
+      throw new Error("synthetic reset response lost");
+    }
+    throw new Error(`unexpected canonical operation ${op}`);
+  }
+
+  async requestV2(op: SessionWireOperation): Promise<Record<string, unknown>> {
+    throw new Error(`unexpected session operation ${op}`);
+  }
+
+  async close(): Promise<void> {
+    this.connected = false;
+  }
+}
+
+class ProvisionedReplacementDevice implements CanonicalV2Transport {
+  constructor(
+    private readonly state: BrowserCanonicalState,
+    private readonly targetDeviceId: string,
+  ) {}
+
+  async requestCanonicalV2(op: CanonicalWireOperation): Promise<Record<string, unknown>> {
+    if (op === "hello") return provisionedHello({ state: browserBinding(this.state), targetDeviceId: this.targetDeviceId });
+    if (op === "time.status") return readyTime();
+    throw new Error(`unexpected canonical operation ${op}`);
+  }
+
+  async requestV2(op: SessionWireOperation): Promise<Record<string, unknown>> {
+    throw new Error(`unexpected session operation ${op}`);
+  }
+
+  async close(): Promise<void> {}
+}
+
+function browserBinding(state: BrowserCanonicalState) {
+  return {
+    vault: { vaultId: state.vault.vaultId, generation: state.vault.generation },
+    registrationId: state.trustedBrowser.registrationId,
+    registrationEpoch: state.trustedBrowser.epoch,
+    brkPublicKey: state.trustedBrowser.brkPublicKeyRaw,
+  };
+}
+
+function provisionedHello(input: {
+  state: {
+    vault: { vaultId: Uint8Array; generation: bigint };
+    registrationId: Uint8Array;
+    registrationEpoch: number;
+    brkPublicKey: Uint8Array;
+  };
+  targetDeviceId: string;
+}): Record<string, unknown> {
+  return {
+    device: "M5StickS3",
+    device_id: input.targetDeviceId,
+    firmware: "0.1.0",
+    protocol: 2,
+    storage_schema: 2,
+    vault_format: 1,
+    build_commit: "synthetic",
+    state: "unlocked",
+    storage_ready: true,
+    recovery_reset_required: false,
+    vault_present: true,
+    vault_id: encodeBase64UrlCanonical(input.state.vault.vaultId),
+    generation: input.state.vault.generation.toString(10),
+    registration_present: true,
+    registration_id: encodeBase64UrlCanonical(input.state.registrationId),
+    registration_epoch: input.state.registrationEpoch,
+    brk_public_key: encodeBase64UrlCanonical(input.state.brkPublicKey),
+  };
+}
+
+function cleanHello(targetDeviceId: string): Record<string, unknown> {
+  return {
+    device: "M5StickS3",
+    device_id: targetDeviceId,
+    firmware: "0.1.0",
+    protocol: 2,
+    storage_schema: 2,
+    vault_format: 1,
+    build_commit: "synthetic",
+    state: "unprovisioned",
+    storage_ready: false,
+    recovery_reset_required: false,
+    vault_present: false,
+    vault_id: null,
+    generation: "0",
+    registration_present: false,
+    registration_id: null,
+    registration_epoch: 0,
+    brk_public_key: null,
+  };
+}
+
+function readyTime(): Record<string, unknown> {
+  return {
+    readiness: "ready",
+    source: "usb",
+    last_sync_unix_seconds: "1789156800",
+    age_seconds: 0,
+    resync_due: false,
+  };
 }
 
 function helloFor(device: GenerationDevice) {
   const raw = device.hello();
+  return typedProvisionedHello(raw);
+}
+
+function typedProvisionedHello(raw: Record<string, unknown>) {
   return {
     device: String(raw.device),
     deviceId: String(raw.device_id),
@@ -215,6 +343,7 @@ function helloFor(device: GenerationDevice) {
     buildCommit: String(raw.build_commit),
     state: "unlocked" as const,
     storageReady: true,
+    recoveryResetRequired: false,
     vaultPresent: true,
     vaultId: decodeBase64UrlCanonical(String(raw.vault_id), 16),
     generation: BigInt(String(raw.generation)),
@@ -222,6 +351,28 @@ function helloFor(device: GenerationDevice) {
     registrationId: decodeBase64UrlCanonical(String(raw.registration_id), 16),
     registrationEpoch: Number(raw.registration_epoch),
     brkPublicKey: decodeBase64UrlCanonical(String(raw.brk_public_key), 65),
+  };
+}
+
+function typedCleanHello(targetDeviceId: string) {
+  return {
+    device: "M5StickS3",
+    deviceId: targetDeviceId,
+    firmware: "0.1.0",
+    protocol: 2 as const,
+    storageSchema: 2 as const,
+    vaultFormat: 1 as const,
+    buildCommit: "synthetic",
+    state: "unprovisioned" as const,
+    storageReady: false,
+    recoveryResetRequired: false,
+    vaultPresent: false,
+    vaultId: null,
+    generation: 0n,
+    registrationPresent: false,
+    registrationId: null,
+    registrationEpoch: 0,
+    brkPublicKey: null,
   };
 }
 
@@ -356,6 +507,131 @@ describe("canonical browser transaction recovery", () => {
     const reconnect = new CanonicalDeviceManagement(device, helloFor(device), store.asIndexedDb(), journal.asIndexedDb());
     await reconnect.initialize();
     expect(store.current()?.trustedBrowser.status).toBe("active");
+    vmk.fill(0);
+  });
+
+  it("keeps a Factory Reset tombstone across response loss and deletes local state when clean Device state is proven", async () => {
+    const { state, vmk } = await activeFixture();
+    const store = new MemoryBrowserStore(state);
+    const journal = new MemoryJournal();
+    const device = new ResettingDevice(state);
+    const manager = new CanonicalDeviceManagement(
+      device,
+      typedProvisionedHello(provisionedHello({ state: browserBinding(state), targetDeviceId: deviceId })),
+      store.asIndexedDb(),
+      journal.asIndexedDb(),
+    );
+    await manager.initialize();
+
+    await expect(manager.factoryReset()).rejects.toThrow(PendingBrowserTransactionError);
+    expect(journal.current()?.kind).toBe("factory-reset");
+    expect(store.current()).not.toBeNull();
+
+    const clean = new CleanDevice(deviceId);
+    const reconnect = new CanonicalDeviceManagement(
+      clean,
+      typedCleanHello(deviceId),
+      store.asIndexedDb(),
+      journal.asIndexedDb(),
+    );
+    await reconnect.initialize();
+    expect(store.current()).toBeNull();
+    expect(journal.current()).toBeNull();
+    vmk.fill(0);
+  });
+
+  it("clears a Factory Reset tombstone without deleting state when reconnect proves reset did not commit", async () => {
+    const { state, vmk } = await activeFixture();
+    const store = new MemoryBrowserStore(state);
+    const journal = new MemoryJournal();
+    await journal.stage({ kind: "factory-reset", expectedGeneration: state.vault.generation, candidate: state });
+    const device = new GenerationDevice(state);
+
+    const reconnect = new CanonicalDeviceManagement(device, helloFor(device), store.asIndexedDb(), journal.asIndexedDb());
+    await reconnect.initialize();
+    expect(store.current()?.vault.generation).toBe(state.vault.generation);
+    expect(journal.current()).toBeNull();
+    vmk.fill(0);
+  });
+
+  it("reports one imported Recovery Vault as explicitly restorable on a clean replacement Device", async () => {
+    const { state, vmk } = await activeFixture();
+    const imported = sanitizeBrowserCanonicalState({
+      ...state,
+      trustedBrowser: { ...state.trustedBrowser, status: "replacement-pending" },
+    });
+    const store = new MemoryBrowserStore(imported);
+    const journal = new MemoryJournal();
+    const clean = new CleanDevice(replacementDeviceId);
+    const manager = new CanonicalDeviceManagement(
+      clean,
+      typedCleanHello(replacementDeviceId),
+      store.asIndexedDb(),
+      journal.asIndexedDb(),
+    );
+    await manager.initialize();
+    const snapshot = await manager.refresh();
+    expect(snapshot.recoveryProvisioningAvailable).toBe(true);
+    expect(snapshot.recoveryProvisioningCandidates).toBe(1);
+    expect(snapshot.accounts).toEqual([]);
+    vmk.fill(0);
+  });
+
+  it("clears an interrupted recovery-provisioning intent when reconnect proves the replacement Device is still clean", async () => {
+    const { state, vmk } = await activeFixture();
+    const imported = sanitizeBrowserCanonicalState({
+      ...state,
+      trustedBrowser: { ...state.trustedBrowser, status: "replacement-pending" },
+    });
+    const candidate = sanitizeBrowserCanonicalState({
+      ...imported,
+      trustedBrowser: { ...imported.trustedBrowser, epoch: 1, status: "active" },
+      deviceMetadata: { deviceId: replacementDeviceId },
+    });
+    const store = new MemoryBrowserStore(imported);
+    const journal = new MemoryJournal();
+    await journal.stage({ kind: "recovery-provisioning", expectedGeneration: state.vault.generation, candidate });
+    const clean = new CleanDevice(replacementDeviceId);
+
+    const reconnect = new CanonicalDeviceManagement(
+      clean,
+      typedCleanHello(replacementDeviceId),
+      store.asIndexedDb(),
+      journal.asIndexedDb(),
+    );
+    await reconnect.initialize();
+    expect(journal.current()).toBeNull();
+    expect(store.current()?.trustedBrowser.status).toBe("replacement-pending");
+    vmk.fill(0);
+  });
+
+  it("promotes a committed clean-Device recovery candidate only on exact Device binding", async () => {
+    const { state, vmk } = await activeFixture();
+    const imported = sanitizeBrowserCanonicalState({
+      ...state,
+      trustedBrowser: { ...state.trustedBrowser, status: "replacement-pending" },
+    });
+    const candidate = sanitizeBrowserCanonicalState({
+      ...imported,
+      trustedBrowser: { ...imported.trustedBrowser, epoch: 1, status: "active" },
+      deviceMetadata: { deviceId: replacementDeviceId },
+    });
+    const store = new MemoryBrowserStore(imported);
+    const journal = new MemoryJournal();
+    await journal.stage({ kind: "recovery-provisioning", expectedGeneration: state.vault.generation, candidate });
+    const device = new ProvisionedReplacementDevice(candidate, replacementDeviceId);
+
+    const reconnect = new CanonicalDeviceManagement(
+      device,
+      typedProvisionedHello(provisionedHello({ state: browserBinding(candidate), targetDeviceId: replacementDeviceId })),
+      store.asIndexedDb(),
+      journal.asIndexedDb(),
+    );
+    await reconnect.initialize();
+    expect(store.current()?.trustedBrowser.status).toBe("active");
+    expect(store.current()?.trustedBrowser.epoch).toBe(1);
+    expect(store.current()?.deviceMetadata?.deviceId).toBe(replacementDeviceId);
+    expect(journal.current()).toBeNull();
     vmk.fill(0);
   });
 });
