@@ -14,6 +14,14 @@ DEVICE_CPP = (
     / "m5auth_device_sticks3"
     / "device.cpp"
 )
+APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
+CANONICAL_PROTOCOL = (
+    ROOT
+    / "firmware"
+    / "components"
+    / "m5auth_provisioning"
+    / "canonical_protocol_v2.cpp"
+)
 
 
 class StickS3RuntimeContractTests(unittest.TestCase):
@@ -40,6 +48,23 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.setTextWrap(false);", text)
         self.assertIn("M5.Display.setTextSize(kOtpTextSize);", text)
         self.assertIn("M5.Display.setTextSize(kReadableTextSize);", text)
+
+    def test_transport_teardown_preserves_active_runtime_but_explicit_lock_wipes_it(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
+
+        teardown = re.search(
+            r"void teardown_transport_session\([^}]+\}\n",
+            app,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(teardown)
+        self.assertIn("protocol.disconnect();", teardown.group(0))
+        self.assertNotIn("runtime.lock", teardown.group(0))
+        self.assertNotIn("runtime_.lock", teardown.group(0))
+
+        self.assertIn('operation == "device.lock"', protocol)
+        self.assertIn("status = runtime_.lock();", protocol)
 
 
 if __name__ == "__main__":
