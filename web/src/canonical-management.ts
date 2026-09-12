@@ -14,6 +14,7 @@ import {
   unwrapVmkForTrustedBrowser,
   type BrowserCanonicalState,
 } from "./security/browser-vault";
+import { rekeyTrustedBrowserState } from "./security/browser-vmk-rekey";
 import { deliverVmkOverSessionV2, absentBrkIdentity, registrationMatches } from "./security/session-flow-v2";
 import {
   CREDENTIAL_ID_BYTES,
@@ -25,6 +26,7 @@ import {
 import {
   decryptVault,
   encryptVault,
+  unwrapVmkWithPassphrase,
   wrapVmkWithPassphrase,
 } from "./security/vault-crypto";
 import {
@@ -172,6 +174,14 @@ export class CanonicalDeviceManagement {
   public async refresh(): Promise<CanonicalDeviceSnapshot> {
     this.hello = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
     await this.reloadBrowserState();
+    if (this.state?.trustedBrowser.status === "active" && this.hello.vaultPresent) {
+      try {
+        assertActiveDeviceBinding(this.state, this.hello);
+        this.ownership = "active";
+      } catch {
+        this.ownership = "conflict";
+      }
+    }
 
     let accounts: CanonicalAccountView[] = [];
     let wifi = { configured: false, ssid: "" };
@@ -277,6 +287,102 @@ export class CanonicalDeviceManagement {
       }
       plaintext.wifi = null;
     });
+  }
+
+  public async rotateVmk(recoveryPassphrase: string): Promise<void> {
+    this.requireActiveWriter();
+    if (recoveryPassphrase.length === 0) throw new Error("VMK re-key requires the Recovery Passphrase");
+    const state = this.state!;
+    const currentVmk = await unwrapVmkForTrustedBrowser(state);
+    const nextVmk = randomBytes(32);
+    let verifiedRecoveryVmk: Uint8Array | null = null;
+    let decrypted: Uint8Array | null = null;
+    let nextState: BrowserCanonicalState | null = null;
+    let browserStaged = false;
+    const nextGeneration = state.vault.generation + 1n;
+    if (nextGeneration > 0xffff_ffff_ffff_ffffn) {
+      currentVmk.fill(0);
+      nextVmk.fill(0);
+      throw new Error("Canonical Vault generation overflow");
+    }
+
+    try {
+      verifiedRecoveryVmk = await unwrapVmkWithPassphrase(state.recoveryWrappedVmk, recoveryPassphrase);
+      if (!sameBytes(currentVmk, verifiedRecoveryVmk)) {
+        throw new Error("Recovery Passphrase does not match the current canonical Vault");
+      }
+      decrypted = await decryptVault(state.vault, currentVmk);
+      const nextVault = await encryptVault(
+        decrypted,
+        nextVmk,
+        state.vault.vaultId,
+        nextGeneration,
+      );
+      const nextRecoveryWrappedVmk = await wrapVmkWithPassphrase(
+        nextVmk,
+        state.vault.vaultId,
+        recoveryPassphrase,
+      );
+      nextState = await rekeyTrustedBrowserState({
+        current: state,
+        nextVault,
+        nextRecoveryWrappedVmk,
+        nextVmk,
+      });
+
+      // Stage the only durable copy of the new VMK before the Device commits the
+      // re-key. A crash here leaves Browser ahead by one generation, which is
+      // detected as a conflict on reconnect and is recoverable with the prior
+      // external Recovery Package. The inverse order could leave Device data
+      // encrypted under a VMK that was never persisted anywhere.
+      await this.store.put(nextState, state.vault.generation);
+      browserStaged = true;
+
+      try {
+        await deliverVmkOverSessionV2({
+          transport: this.transport,
+          operation: "vmk_rekey",
+          deviceId: this.hello.deviceId,
+          vaultId: state.vault.vaultId,
+          expectedGeneration: state.vault.generation,
+          registrationId: state.trustedBrowser.registrationId,
+          registrationEpoch: state.trustedBrowser.epoch,
+          currentBrkPublicKey: state.trustedBrowser.brkPublicKeyRaw,
+          proposedBrkPublicKey: absentBrkIdentity(),
+          brkPrivateKey: state.trustedBrowser.brkPrivateKey,
+          vmk: nextVmk,
+        });
+        await this.transport.requestCanonicalV2("vault.rekey", {
+          expected_generation: state.vault.generation.toString(10),
+          ...encryptedVaultParams(nextVault),
+        });
+      } catch (error) {
+        try {
+          await this.store.put(state, nextGeneration);
+          browserStaged = false;
+        } catch {
+          this.state = null;
+          this.ownership = "conflict";
+          try { await this.transport.requestCanonicalV2("device.lock"); } catch { /* fail closed */ }
+          throw new Error("VMK re-key failed and browser rollback could not be persisted; explicit recovery is required");
+        }
+        throw error;
+      }
+
+      this.state = nextState;
+      this.hello = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
+      assertActiveDeviceBinding(nextState, this.hello);
+      if (this.hello.state !== "unlocked") throw new Error("Device did not return to UNLOCKED after VMK re-key");
+      this.ownership = "active";
+      browserStaged = false;
+    } finally {
+      verifiedRecoveryVmk?.fill(0);
+      decrypted?.fill(0);
+      currentVmk.fill(0);
+      nextVmk.fill(0);
+      nextState = null;
+      void browserStaged;
+    }
   }
 
   public async syncTime(unixSeconds = Math.floor(Date.now() / 1000)): Promise<CanonicalTimeStatus> {
