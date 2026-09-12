@@ -522,6 +522,17 @@ export class CanonicalDeviceManagement {
         deviceId: this.hello.deviceId,
         affectedVaults: [{ vaultId: state.vault.vaultId.slice(), generation: state.vault.generation }],
       });
+      const legacyPending: BrowserPendingTransaction = {
+        kind: "factory-reset",
+        expectedGeneration: state.vault.generation,
+        candidate: state,
+      };
+      try {
+        await this.journal.stage(legacyPending);
+      } catch (error) {
+        await this.resetIntents.delete(this.hello.deviceId);
+        throw error;
+      }
 
       let operationError: unknown = null;
       try {
