@@ -13,6 +13,7 @@ import validate_release
 CANONICAL_PROTOCOL = ROOT / "firmware/components/m5auth_provisioning/canonical_protocol_v2.cpp"
 BROWSER_VAULT = ROOT / "web/src/security/browser-vault.ts"
 PROVISIONER_HTML = ROOT / "web/index.html"
+SECRET_VAULT_DOC = ROOT / "docs/SECRET_VAULT.md"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
 SECURITY_WORKFLOW = ROOT / ".github/workflows/security.yml"
@@ -130,6 +131,15 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertNotIn("safe.trustedBrowser.wrappedVmk", export_body)
         self.assertIn("extractable === false", source)
         self.assertIn('namedCurve: "P-256"', source)
+
+    def test_architecture_doc_describes_activated_version_boundary(self) -> None:
+        source = SECRET_VAULT_DOC.read_text(encoding="utf-8")
+        self.assertIn("Canonical V1 is now active end to end", source)
+        self.assertIn("`PROTOCOL_VERSION = 2`", source)
+        self.assertIn("`STORAGE_SCHEMA_VERSION = 2`", source)
+        self.assertIn("`VAULT_FORMAT_VERSION = 1`", source)
+        self.assertNotIn("Current development main may still implement Protocol 1", source)
+        self.assertIn("Legacy Protocol 1 / Storage Schema 1 source may remain only as non-release historical/test material", source)
 
     def test_release_distribution_paths_share_fail_closed_production_validation(self) -> None:
         release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
