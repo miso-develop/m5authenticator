@@ -17,7 +17,8 @@ app.innerHTML = `
       <div class="panel-heading"><h2 id="device-heading">Device</h2><span id="connection-state" class="badge">Disconnected</span></div>
       <div class="actions">
         <button id="connect" type="button">Connect M5StickS3</button>
-        <button id="disconnect" class="secondary" type="button" disabled>Disconnect</button>
+        <button id="unlock-device" type="button" disabled>Unlock</button>
+        <button id="disconnect" class="secondary" type="button" disabled>Lock &amp; Disconnect</button>
         <button id="refresh-device" class="secondary" type="button" disabled>Refresh status</button>
         <button id="sync-time" class="secondary" type="button" disabled>Sync PC time</button>
       </div>
@@ -47,7 +48,7 @@ app.innerHTML = `
 
     <section class="panel" aria-labelledby="accounts-heading">
       <h2 id="accounts-heading">Canonical accounts</h2>
-      <p class="hint">Account metadata is decrypted from this Trusted Browser's canonical Vault. TOTP secrets remain inside transient Vault plaintext and are never returned by Device status.</p>
+      <p class="hint">Account metadata is decrypted from this Trusted Browser's canonical Vault only while the Device is UNLOCKED. TOTP secrets remain inside transient Vault plaintext and are never returned by Device status.</p>
       <ol id="stored-account-list" class="account-list"></ol>
       <p id="accounts-empty" class="notice">Connect a device to load canonical Vault state.</p>
     </section>
@@ -88,6 +89,7 @@ app.innerHTML = `
 `;
 
 const connectButton = queryRequired<HTMLButtonElement>("#connect", "Connect button is missing");
+const unlockButton = queryRequired<HTMLButtonElement>("#unlock-device", "Unlock button is missing");
 const disconnectButton = queryRequired<HTMLButtonElement>("#disconnect", "Disconnect button is missing");
 const refreshButton = queryRequired<HTMLButtonElement>("#refresh-device", "Refresh button is missing");
 const syncTimeButton = queryRequired<HTMLButtonElement>("#sync-time", "Time sync button is missing");
@@ -162,23 +164,33 @@ connectButton.addEventListener("click", async () => {
     await management.initialize();
     await refreshDevice();
     if (snapshot?.browserOwnership === "conflict") {
-      deviceNotice.textContent = "This browser is not the active Device writer. Import a Recovery Package for explicit Browser replacement, then reconnect.";
+      deviceNotice.textContent = "This browser is not the active Device writer. Use the explicit recovery/reconciliation path.";
+    } else if (snapshot?.unlockRequired) {
+      deviceNotice.textContent = "Trusted Browser registration is valid, but the Device remains LOCKED. Press Unlock and confirm the dedicated UNLOCK REQUEST on M5StickS3.";
     } else if (snapshot?.hello.state === "unlocked") {
-      deviceNotice.textContent = "Trusted Browser active; Device is UNLOCKED for this USB session.";
+      deviceNotice.textContent = "Trusted Browser active; Device is UNLOCKED.";
     }
   } catch (error) {
     const message = userFacingError(error, "Connection failed.");
-    await disconnectDevice();
+    await disconnectDevice(false);
     deviceNotice.textContent = message;
   } finally {
     setDeviceBusy(false);
   }
 });
 
+unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST — confirm on M5StickS3…", async () => {
+  await requireManagement().requestUnlock();
+  await refreshDevice();
+  deviceNotice.textContent = snapshot?.hello.state === "unlocked"
+    ? "Trusted Browser active; Device is UNLOCKED."
+    : "Unlock was not confirmed. Registration remains valid; retry when ready.";
+}));
+
 disconnectButton.addEventListener("click", async () => {
   setDeviceBusy(true, "Locking and disconnecting…");
-  await disconnectDevice();
-  deviceNotice.textContent = "Device locked and disconnected.";
+  await disconnectDevice(true);
+  deviceNotice.textContent = "Device explicitly locked and disconnected.";
   setDeviceBusy(false);
 });
 
@@ -264,7 +276,7 @@ window.addEventListener("pagehide", () => {
   wifiPassword.value = "";
   rekeyPassphrase.value = "";
   clearInitialPassphrase();
-  if (management) void management.close();
+  if (management) void management.disconnectTransport();
 });
 
 async function refreshDevice(): Promise<void> {
@@ -272,7 +284,7 @@ async function refreshDevice(): Promise<void> {
   renderDevice();
 }
 
-async function disconnectDevice(): Promise<void> {
+async function disconnectDevice(lockDevice = true): Promise<void> {
   const current = management;
   management = null;
   serialSession = null;
@@ -282,10 +294,11 @@ async function disconnectDevice(): Promise<void> {
   clearInitialPassphrase();
   if (current) {
     try {
-      await current.close();
+      if (lockDevice) await current.close();
+      else await current.disconnectTransport();
     } catch {
-      // Physical transport close is a Device-side lock boundary. Do not expose
-      // transport internals or retain sensitive browser inputs on failure.
+      // Do not reinterpret transport lifecycle as an implicit Device Lock.
+      // Explicit Lock is attempted only for the Lock & Disconnect action.
     }
   }
   renderDevice();
@@ -298,7 +311,7 @@ async function runDeviceAction(message: string, action: () => Promise<void>): Pr
     await action();
   } catch (error) {
     const errorMessage = userFacingError(error, "Device operation failed.");
-    if (serialSession?.isClosed()) await disconnectDevice();
+    if (serialSession?.isClosed()) await disconnectDevice(false);
     deviceNotice.textContent = errorMessage;
   } finally {
     setDeviceBusy(false);
@@ -319,7 +332,9 @@ function updateControls(): void {
   const connected = management !== null;
   const writable = connected && canWriteCanonical();
   const initial = connected && snapshot !== null && !snapshot.hello.vaultPresent;
+  const unlockable = connected && snapshot?.browserOwnership === "active" && snapshot.hello.state === "locked";
   connectButton.disabled = deviceActionInProgress || connected;
+  unlockButton.disabled = deviceActionInProgress || !unlockable;
   disconnectButton.disabled = deviceActionInProgress || !connected;
   refreshButton.disabled = deviceActionInProgress || !connected;
   syncTimeButton.disabled = deviceActionInProgress || !writable;
@@ -362,13 +377,20 @@ function renderDevice(): void {
   appendStatus("Build", hello.buildCommit);
   appendStatus("Runtime", hello.state);
   appendStatus("Browser ownership", snapshot.browserOwnership);
+  appendStatus("Unlock", snapshot.unlockRequired ? "Fresh Device confirmation required" : "Not required");
   appendStatus("Generation", hello.generation.toString(10));
   appendStatus("Time", `${snapshot.time.readiness} (${snapshot.time.source})`);
   appendStatus("Accounts", String(snapshot.accounts.length));
 
   renderStoredAccounts(snapshot.accounts);
-  wifiStatus.textContent = snapshot.wifi.configured ? `Configured SSID: ${snapshot.wifi.ssid}` : "Wi-Fi is not configured in the canonical Vault.";
-  wifiSsid.value = snapshot.wifi.ssid;
+  if (hello.state === "locked" && snapshot.browserOwnership === "active") {
+    accountsEmpty.textContent = "Vault-private account metadata is hidden while Device is LOCKED.";
+    wifiStatus.textContent = "Vault-private Wi-Fi metadata is hidden while Device is LOCKED.";
+    wifiSsid.value = "";
+  } else {
+    wifiStatus.textContent = snapshot.wifi.configured ? `Configured SSID: ${snapshot.wifi.ssid}` : "Wi-Fi is not configured in the canonical Vault.";
+    wifiSsid.value = snapshot.wifi.ssid;
+  }
   updateControls();
 }
 
