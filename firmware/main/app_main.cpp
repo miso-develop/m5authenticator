@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "driver/usb_serial_jtag.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -64,10 +65,6 @@ extern "C" void app_main(void) {
         M5AUTH_BUILD_COMMIT
     );
 
-    // One application-level recursive mutex serializes every access to Runtime
-    // and registration persistence across the USB router, UI task, and periodic
-    // trusted-time task. Protocol/session crypto and the physical presence gate
-    // have separate synchronization and never rely on this mutex for approval.
     std::recursive_mutex runtime_access_mutex;
 
     m5auth::registration::Store registration;
@@ -124,21 +121,25 @@ extern "C" void app_main(void) {
         runtime_access_mutex
     );
 
-    // A maximum-size 64 KiB encrypted Vault expands beyond 80 KiB base64url.
-    // Keep the NDJSON receive buffer off the app_main task stack and wipe it
-    // after every request before reading the next line.
     std::vector<char> input(
         m5auth::provisioning::kMaxCanonicalV2MessageBytes + 2,
         '\0'
     );
 
     while (true) {
+        // The USB Serial/JTAG console uses non-blocking reads by default. Keep
+        // Protocol-v2 expiry active while the host is silent, and distinguish
+        // an empty FIFO from actual USB host loss before cancelling sessions.
+        protocol.housekeeping(monotonic_ms());
+
         if (std::fgets(
                 input.data(),
                 static_cast<int>(input.size()),
                 stdin
             ) == nullptr) {
-            teardown_transport_session(protocol);
+            if (!usb_serial_jtag_is_connected()) {
+                teardown_transport_session(protocol);
+            }
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             std::clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
