@@ -120,6 +120,7 @@ extern "C" void app_main(void) {
         time_service,
         session_handler,
         vmk_sink,
+        presence,
         runtime_access_mutex
     );
 
