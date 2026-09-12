@@ -23,7 +23,8 @@ constexpr char kRegistrationKey[] = "active";
 constexpr std::array<std::uint8_t, 8> kRegistrationMagic{
     'M', '5', 'A', 'R', 'E', 'G', '1', 0};
 constexpr std::size_t kEncodedRegistrationBytes =
-    kRegistrationMagic.size() + vault::kVaultIdBytes + kRegistrationIdBytes + 4 + kP256PublicKeyBytes;
+    kRegistrationMagic.size() + vault::kVaultIdBytes + kRegistrationIdBytes + 4 +
+    session::kP256PublicKeyBytes;
 
 bool all_zero(const auto& value) {
     return std::all_of(value.begin(), value.end(), [](std::uint8_t byte) { return byte == 0; });
