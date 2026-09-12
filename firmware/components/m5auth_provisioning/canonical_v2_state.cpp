@@ -243,6 +243,9 @@ bool CanonicalVmkSink::install_initial_vault(
     std::uint64_t now_ms
 ) {
     std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+    if (pending_ && pending_context_.operation == session::protocol_v2::Operation::kRecovery) {
+        return install_recovered_vault(std::move(envelope), now_ms);
+    }
     if (!pending_valid(session::protocol_v2::Operation::kInitialProvisioning, now_ms) ||
         pending_context_.expected_generation != 0 ||
         pending_context_.registration_epoch != 0 ||
