@@ -16,13 +16,13 @@ export async function withCanonicalBrowserStateLock<T>(action: () => Promise<T>)
   }
 
   const previous = fallbackTail;
-  let release: (() => void) | null = null;
+  let release!: () => void;
   fallbackTail = new Promise<void>((resolve) => { release = resolve; });
   await previous;
   try {
     return await action();
   } finally {
-    release?.();
+    release();
   }
 }
 
