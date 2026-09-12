@@ -203,13 +203,35 @@ Status Store::load_registration() {
     Status status = open_namespace(NVS_READONLY, &handle);
     if (status != Status::kOk) return status;
 
+    // Query the M5Authenticator-owned registration blob length before reading
+    // into the fixed framing buffer. Both undersized and oversized blobs are
+    // structural corruption; type mismatch and genuine NVS failures remain I/O.
+    std::size_t size = 0;
+    esp_err_t result = nvs_get_blob(handle, kRegistrationKey, nullptr, &size);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        return Status::kNotFound;
+    }
+    if (result != ESP_OK) {
+        nvs_close(handle);
+        return map_error(result);
+    }
+    if (size != kEncodedRegistrationBytes) {
+        nvs_close(handle);
+        return Status::kCorrupt;
+    }
+
     std::array<std::uint8_t, kEncodedRegistrationBytes> encoded{};
-    std::size_t size = encoded.size();
-    const esp_err_t result = nvs_get_blob(handle, kRegistrationKey, encoded.data(), &size);
+    result = nvs_get_blob(handle, kRegistrationKey, encoded.data(), &size);
     nvs_close(handle);
-    if (result == ESP_ERR_NVS_NOT_FOUND) return Status::kNotFound;
-    if (result != ESP_OK) return map_error(result);
-    if (size != encoded.size()) return Status::kCorrupt;
+    if (result != ESP_OK) {
+        secure_zero(encoded.data(), encoded.size());
+        return map_error(result);
+    }
+    if (size != encoded.size()) {
+        secure_zero(encoded.data(), encoded.size());
+        return Status::kCorrupt;
+    }
 
     std::size_t offset = 0;
     if (!std::equal(kRegistrationMagic.begin(), kRegistrationMagic.end(), encoded.begin())) {
