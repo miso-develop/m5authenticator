@@ -114,6 +114,11 @@ button:disabled, input:disabled {
   overflow-wrap: anywhere;
 }
 
+.notice.error {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 .account-list {
   margin: 12px 0 0;
   padding-left: 24px;
