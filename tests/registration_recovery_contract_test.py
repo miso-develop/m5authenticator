@@ -23,6 +23,13 @@ REGISTRATION_HPP = (
     / "registration"
     / "registration.hpp"
 )
+CANONICAL_PROTOCOL_CPP = (
+    ROOT
+    / "firmware"
+    / "components"
+    / "m5auth_provisioning"
+    / "canonical_protocol_v2.cpp"
+)
 
 
 class RegistrationRecoveryContractTests(unittest.TestCase):
@@ -133,6 +140,31 @@ class RegistrationRecoveryContractTests(unittest.TestCase):
         self.assertNotIn("return !all_zero(key) && key[0] == 0x04;", text)
         self.assertIn("!valid_public_key(snapshot_.brk_public_key)", text)
         self.assertIn("!valid_public_key(brk_public_key)", text)
+
+    def test_recovery_reset_persists_registration_identity_before_vault_erase(self) -> None:
+        text = CANONICAL_PROTOCOL_CPP.read_text(encoding="utf-8")
+        start = text.index('operation == "factory_reset.recovery_complete"')
+        end = text.index('operation == "vault.install"', start)
+        body = text[start:end]
+        clear_corrupt = body.index("registration_.clear_corrupt_registration_for_recovery()")
+        clear_normal = body.index("registration_.clear_registration()")
+        vault_erase = body.index("runtime_.factory_reset()")
+        self.assertLess(clear_corrupt, vault_erase)
+        self.assertLess(clear_normal, vault_erase)
+        self.assertIn("if (clear_status == registration::Status::kOk)", body)
+
+    def test_vault_install_routes_by_device_owned_pending_operation(self) -> None:
+        text = CANONICAL_PROTOCOL_CPP.read_text(encoding="utf-8")
+        start = text.index('operation == "vault.install"')
+        end = text.index('operation == "vault.update"', start)
+        body = text[start:end]
+        self.assertIn("switch (vmk_sink_.pending_operation())", body)
+        self.assertIn("Operation::kInitialProvisioning", body)
+        self.assertIn("install_initial_vault", body)
+        self.assertIn("Operation::kRecovery", body)
+        self.assertIn("install_recovered_vault", body)
+        self.assertIn("default:", body)
+        self.assertIn("vmk_sink_.cancel_pending();", body)
 
     def test_header_exposes_no_unconfirmed_device_id_reset_api(self) -> None:
         text = REGISTRATION_HPP.read_text(encoding="utf-8")
