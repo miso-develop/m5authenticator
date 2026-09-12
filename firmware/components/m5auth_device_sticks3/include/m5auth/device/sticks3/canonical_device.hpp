@@ -35,7 +35,10 @@ public:
     void cancel_presence() override;
     bool presence_confirmed() const override;
 
-    void observe_button_state(bool pressed);
+    void observe_button_state(bool pressed) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        gate_.observe_input_state(pressed);
+    }
     bool button_pressed(std::uint64_t now_ms);
     bool expire(std::uint64_t now_ms);
     PresenceView view() const;
