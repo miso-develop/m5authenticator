@@ -7,28 +7,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SDKCONFIG = ROOT / "firmware" / "sdkconfig.defaults"
-DEVICE_CPP = (
-    ROOT
-    / "firmware"
-    / "components"
-    / "m5auth_device_sticks3"
-    / "device.cpp"
-)
-CANONICAL_DEVICE_CPP = (
-    ROOT
-    / "firmware"
-    / "components"
-    / "m5auth_device_sticks3"
-    / "canonical_device.cpp"
-)
+DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "device.cpp"
+CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
-CANONICAL_PROTOCOL = (
-    ROOT
-    / "firmware"
-    / "components"
-    / "m5auth_provisioning"
-    / "canonical_protocol_v2.cpp"
-)
+CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
 
 
 class StickS3RuntimeContractTests(unittest.TestCase):
@@ -60,11 +42,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         app = APP_MAIN.read_text(encoding="utf-8")
         protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
 
-        teardown = re.search(
-            r"void teardown_transport_session\([^}]+\}\n",
-            app,
-            re.MULTILINE,
-        )
+        teardown = re.search(r"void teardown_transport_session\([^}]+\}\n", app, re.MULTILINE)
         self.assertIsNotNone(teardown)
         self.assertIn("protocol.disconnect();", teardown.group(0))
         self.assertNotIn("runtime.lock", teardown.group(0))
@@ -72,7 +50,24 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
         self.assertIn('operation == "device.lock"', protocol)
         self.assertIn("time_service_.with_secret_boundary", protocol)
-        self.assertIn("return runtime_.lock();", protocol)
+        self.assertIn("result = runtime_.lock();", protocol)
+        self.assertIn("notify_security_boundary();", protocol)
+
+    def test_security_boundary_wipes_ui_cache_before_protocol_returns(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
+        ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        self.assertIn("[&ui]() { ui.security_boundary_clear(); }", app)
+        self.assertIn("void CanonicalUiController::security_boundary_clear()", ui)
+        self.assertIn("(void)clear_private_view();", ui)
+        self.assertIn("render();", ui)
+        self.assertIn("notify_security_boundary();", protocol)
+
+    def test_recovery_factory_reset_uses_destructive_presence(self) -> None:
+        protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
+        ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        self.assertIn("session::PresenceOperation::kFactoryReset", protocol)
+        self.assertIn('M5.Display.println("ERASE DEVICE DATA");', ui)
 
     def test_idle_usb_runs_housekeeping_without_becoming_disconnect(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
