@@ -37,6 +37,8 @@ const char* presence_operation_text(PresenceOperation operation) {
             return "Replace browser";
         case PresenceOperation::kVmkRekey:
             return "Re-key Vault";
+        case PresenceOperation::kFactoryReset:
+            return "FACTORY RESET";
     }
     return "Security request";
 }
@@ -72,7 +74,6 @@ bool UserPresenceGate::confirm_current(
 ) {
     if (expire(now_ms) || state_ != PresenceState::kAwaiting) return false;
     if (!input_armed_) return false;
-    // A button event observed before the request cannot authorize it.
     if (input_generation <= input_generation_at_start_) return false;
     state_ = PresenceState::kConfirmed;
     return true;
