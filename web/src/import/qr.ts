@@ -48,17 +48,46 @@ export function decodeQrImageData(imageData: ImageData): string {
   }
 
   const luminances = toLuminanceBuffer(imageData);
-  const hints = new Map<DecodeHintType, any>([[DecodeHintType.TRY_HARDER, true]]);
   const source = new RGBLuminanceSource(luminances, imageData.width, imageData.height);
+  const detectorHints = new Map<DecodeHintType, any>([[DecodeHintType.TRY_HARDER, true]]);
+  const pureHints = new Map<DecodeHintType, any>([
+    [DecodeHintType.TRY_HARDER, true],
+    [DecodeHintType.PURE_BARCODE, true],
+  ]);
+
+  const attempts: Array<() => string> = [
+    () =>
+      new QRCodeReader()
+        .decode(new BinaryBitmap(new HybridBinarizer(source)), detectorHints)
+        .getText(),
+    () =>
+      new QRCodeReader()
+        .decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), detectorHints)
+        .getText(),
+    // Clean generated/exported QR images can be perfectly valid while finder-pattern
+    // detection is mask-sensitive. PURE_BARCODE bypasses that detector and is only
+    // attempted after both normal paths fail, so arbitrary screenshots keep the
+    // detector-first behavior.
+    () =>
+      new QRCodeReader()
+        .decode(new BinaryBitmap(new HybridBinarizer(source)), pureHints)
+        .getText(),
+    () =>
+      new QRCodeReader()
+        .decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), pureHints)
+        .getText(),
+  ];
 
   try {
-    try {
-      const hybrid = new BinaryBitmap(new HybridBinarizer(source));
-      return new QRCodeReader().decode(hybrid, hints).getText();
-    } catch {
-      const global = new BinaryBitmap(new GlobalHistogramBinarizer(source));
-      return new QRCodeReader().decode(global, hints).getText();
+    let lastError: unknown;
+    for (const attempt of attempts) {
+      try {
+        return attempt();
+      } catch (error) {
+        lastError = error;
+      }
     }
+    throw lastError ?? new Error("QR decoder exhausted all strategies.");
   } finally {
     luminances.fill(0);
   }
