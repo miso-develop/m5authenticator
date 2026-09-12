@@ -190,6 +190,9 @@ SyncResult TimeService::connect_and_sync(
     teardown_network();
     if (!synced) return SyncResult::kSyncFailed;
 
+    // All NTP callers hold sync_mutex_ across this method. Security boundaries
+    // use the same mutex and therefore cannot return before this credential-
+    // bearing operation has torn down the network and finished this anchor write.
     clock_.mark_synchronized(
         static_cast<std::uint64_t>(now.tv_sec),
         esp_timer_get_time(),
@@ -294,10 +297,31 @@ SyncResult TimeService::sync_from_usb(std::uint64_t unix_seconds) {
 
 SyncResult TimeService::resync_if_due() {
     const std::int64_t before_lock = esp_timer_get_time();
-    if (!clock_.snapshot(before_lock).resync_due) return SyncResult::kNotDue;
+    const Snapshot before = clock_.snapshot(before_lock);
+    const bool initial_sync = before.readiness == Readiness::kNotSynced;
+    if (!initial_sync && !before.resync_due) return SyncResult::kNotDue;
+
     std::lock_guard<std::mutex> lock(sync_mutex_);
     const std::int64_t now = esp_timer_get_time();
-    if (!clock_.snapshot(now).resync_due) return SyncResult::kNotDue;
+    const Snapshot current = clock_.snapshot(now);
+
+    if (current.readiness == Readiness::kNotSynced) {
+        if (last_initial_attempt_us_ >= 0 &&
+            now - last_initial_attempt_us_ <
+                static_cast<std::int64_t>(kInitialNtpRetrySeconds * 1'000'000ULL)) {
+            return SyncResult::kNotDue;
+        }
+
+        const SyncResult result = sync_ntp_once();
+        // A LOCKED poll must not consume the initial-sync retry budget. This
+        // makes the first periodic poll after a cold-boot unlock immediately
+        // eligible for NTP without requiring a prior USB time sync.
+        if (result != SyncResult::kLocked) last_initial_attempt_us_ = now;
+        if (result == SyncResult::kOk) last_initial_attempt_us_ = -1;
+        return result;
+    }
+
+    if (!current.resync_due) return SyncResult::kNotDue;
     if (last_periodic_attempt_us_ >= 0 &&
         now - last_periodic_attempt_us_ < kResyncIntervalSeconds * 1'000'000LL) {
         return SyncResult::kNotDue;
