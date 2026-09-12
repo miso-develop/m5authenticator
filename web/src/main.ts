@@ -67,6 +67,16 @@ app.innerHTML = `
       </form>
     </section>
 
+    <section class="panel" aria-labelledby="rekey-heading">
+      <h2 id="rekey-heading">Rotate Vault Master Key</h2>
+      <p class="hint">Security-sensitive recovery operation. Re-encrypts the canonical Vault under a fresh VMK, re-wraps recovery material with the current Recovery Passphrase, and requires a fresh confirmation on M5StickS3. Trusted Browser registration is preserved.</p>
+      <label for="rekey-recovery-passphrase">Current Recovery Passphrase</label>
+      <input id="rekey-recovery-passphrase" type="password" autocomplete="current-password" disabled />
+      <div class="actions">
+        <button id="rotate-vmk" type="button" disabled>Rotate VMK</button>
+      </div>
+    </section>
+
     <section class="panel danger" aria-labelledby="reset-heading">
       <h2 id="reset-heading">Factory Reset</h2>
       <p class="hint">Deletes the encrypted canonical Vault and active Trusted Browser registration from the Device and removes this browser's matching canonical state. The stable non-secret Device ID is preserved.</p>
@@ -99,6 +109,8 @@ const wifiPassword = queryRequired<HTMLInputElement>("#wifi-password", "Wi-Fi pa
 const saveWifiButton = queryRequired<HTMLButtonElement>("#save-wifi", "Wi-Fi save button is missing");
 const clearWifiButton = queryRequired<HTMLButtonElement>("#clear-wifi", "Wi-Fi clear button is missing");
 const wifiStatus = queryRequired<HTMLElement>("#wifi-status", "Wi-Fi status is missing");
+const rekeyPassphrase = queryRequired<HTMLInputElement>("#rekey-recovery-passphrase", "VMK re-key Recovery Passphrase is missing");
+const rotateVmkButton = queryRequired<HTMLButtonElement>("#rotate-vmk", "VMK rotation button is missing");
 const resetConfirmation = queryRequired<HTMLInputElement>("#reset-confirmation", "Reset confirmation is missing");
 const factoryResetButton = queryRequired<HTMLButtonElement>("#factory-reset", "Factory reset button is missing");
 
@@ -212,6 +224,21 @@ clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi 
   await refreshDevice();
 }));
 
+rotateVmkButton.addEventListener("click", () => {
+  if (!canWriteCanonical() || rekeyPassphrase.value.length === 0) return;
+  if (!window.confirm("Rotate the Vault Master Key now? The M5StickS3 will require a fresh physical confirmation. Keep your Recovery Package current after this operation.")) {
+    rekeyPassphrase.value = "";
+    return;
+  }
+  const passphrase = rekeyPassphrase.value;
+  rekeyPassphrase.value = "";
+  void runDeviceAction("Rotating Vault Master Key… confirm on M5StickS3.", async () => {
+    await requireManagement().rotateVmk(passphrase);
+    deviceNotice.textContent = "Vault Master Key rotated. Export a fresh Recovery Package and retire older copies you control.";
+    await refreshDevice();
+  });
+});
+
 resetConfirmation.addEventListener("input", updateControls);
 factoryResetButton.addEventListener("click", () => {
   if (resetConfirmation.value !== "RESET") return;
@@ -220,6 +247,7 @@ factoryResetButton.addEventListener("click", () => {
     await requireManagement().factoryReset();
     resetConfirmation.value = "";
     wifiPassword.value = "";
+    rekeyPassphrase.value = "";
     deviceNotice.textContent = "Factory Reset completed. Encrypted user state and active registration were removed; stable Device ID was preserved.";
     await refreshDevice();
   });
@@ -228,6 +256,7 @@ factoryResetButton.addEventListener("click", () => {
 window.addEventListener("pagehide", () => {
   importSession.clear();
   wifiPassword.value = "";
+  rekeyPassphrase.value = "";
   clearInitialPassphrase();
   if (management) void management.close();
 });
@@ -243,6 +272,7 @@ async function disconnectDevice(): Promise<void> {
   serialSession = null;
   snapshot = null;
   wifiPassword.value = "";
+  rekeyPassphrase.value = "";
   clearInitialPassphrase();
   if (current) {
     try {
@@ -295,6 +325,8 @@ function updateControls(): void {
   wifiPassword.disabled = deviceActionInProgress || !writable;
   saveWifiButton.disabled = deviceActionInProgress || !writable;
   clearWifiButton.disabled = deviceActionInProgress || !writable || snapshot?.wifi.configured !== true;
+  rekeyPassphrase.disabled = deviceActionInProgress || !writable;
+  rotateVmkButton.disabled = deviceActionInProgress || !writable || rekeyPassphrase.value.length === 0;
   resetConfirmation.disabled = deviceActionInProgress || !writable;
   factoryResetButton.disabled = deviceActionInProgress || !writable || resetConfirmation.value !== "RESET";
 }
