@@ -10,6 +10,7 @@ const JOURNAL_STORE_NAME = "pending-transactions";
 
 export type BrowserTransactionKind =
   | "initial-provisioning"
+  | "recovery-provisioning"
   | "vault-update"
   | "vmk-rekey"
   | "factory-reset";
