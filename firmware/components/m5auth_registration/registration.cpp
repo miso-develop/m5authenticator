@@ -95,9 +95,16 @@ std::string device_id_text(const DeviceId& device_id) {
     return std::string(encoded);
 }
 
+void Store::generate_device_id_candidate() {
+    do {
+        esp_fill_random(snapshot_.device_id.data(), snapshot_.device_id.size());
+    } while (all_zero(snapshot_.device_id));
+}
+
 Status Store::initialize() {
     ready_ = false;
     recovery_reset_available_ = false;
+    device_id_recovery_required_ = false;
     snapshot_ = Snapshot{};
 
     // Never erase NVS implicitly here. Corrupt/newer NVS is a fail-closed state;
@@ -106,11 +113,22 @@ Status Store::initialize() {
     if (nvs_status != ESP_OK) return map_error(nvs_status);
 
     Status status = load_or_create_device_id();
+    if (status == Status::kCorrupt) {
+        // The persisted M5Authenticator-owned Device ID is structurally invalid.
+        // Do not mutate NVS yet. Generate a fresh nonzero RAM candidate so the
+        // explicit recovery-reset protocol has a stable identity before/after
+        // confirmation; only clear_corrupt_registration_for_recovery() persists it.
+        snapshot_ = Snapshot{};
+        generate_device_id_candidate();
+        recovery_reset_available_ = true;
+        device_id_recovery_required_ = true;
+        return status;
+    }
     if (status != Status::kOk) return status;
 
     // Preserve the valid stable Device ID even when the active registration is
-    // structurally corrupt. This is the only initialization failure that can
-    // later enable the explicit destructive recovery path.
+    // structurally corrupt. This is the only registration initialization failure
+    // that can later enable the explicit destructive recovery path.
     const DeviceId stable_device_id = snapshot_.device_id;
     status = load_registration();
     if (status == Status::kCorrupt) {
@@ -147,9 +165,7 @@ Status Store::load_or_create_device_id() {
         return map_error(result);
     }
 
-    do {
-        esp_fill_random(snapshot_.device_id.data(), snapshot_.device_id.size());
-    } while (all_zero(snapshot_.device_id));
+    generate_device_id_candidate();
 
     result = nvs_set_blob(
         handle,
@@ -314,6 +330,7 @@ Status Store::clear_registration() {
     snapshot_ = Snapshot{};
     snapshot_.device_id = device_id;
     recovery_reset_available_ = false;
+    device_id_recovery_required_ = false;
     return Status::kOk;
 }
 
@@ -321,20 +338,37 @@ Status Store::clear_corrupt_registration_for_recovery() {
     if (ready_) return clear_registration();
     if (!recovery_reset_available_ || all_zero(snapshot_.device_id)) return Status::kIo;
 
+    const DeviceId recovery_device_id = snapshot_.device_id;
     nvs_handle_t handle = 0;
     Status status = open_namespace(NVS_READWRITE, &handle);
     if (status != Status::kOk) return status;
 
-    esp_err_t result = nvs_erase_key(handle, kRegistrationKey);
-    if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+    esp_err_t result = ESP_OK;
+    if (device_id_recovery_required_) {
+        // Explicitly confirmed recovery of a structurally corrupt Device-ID
+        // record clears only this application's registration namespace, then
+        // persists the already-displayed RAM candidate as the new stable ID.
+        result = nvs_erase_all(handle);
+        if (result == ESP_OK) {
+            result = nvs_set_blob(
+                handle,
+                kDeviceIdKey,
+                recovery_device_id.data(),
+                recovery_device_id.size()
+            );
+        }
+    } else {
+        result = nvs_erase_key(handle, kRegistrationKey);
+        if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+    }
     if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
     if (result != ESP_OK) return map_error(result);
 
-    const DeviceId device_id = snapshot_.device_id;
     snapshot_ = Snapshot{};
-    snapshot_.device_id = device_id;
+    snapshot_.device_id = recovery_device_id;
     recovery_reset_available_ = false;
+    device_id_recovery_required_ = false;
     ready_ = true;
     return Status::kOk;
 }
@@ -342,6 +376,7 @@ Status Store::clear_corrupt_registration_for_recovery() {
 Status Store::reinitialize_after_partition_reset() {
     ready_ = false;
     recovery_reset_available_ = false;
+    device_id_recovery_required_ = false;
     snapshot_ = Snapshot{};
     return initialize();
 }
