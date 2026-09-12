@@ -14,6 +14,11 @@ CANONICAL_PROTOCOL = ROOT / "firmware/components/m5auth_provisioning/canonical_p
 BROWSER_VAULT = ROOT / "web/src/security/browser-vault.ts"
 PROVISIONER_HTML = ROOT / "web/index.html"
 QR_IMAGE_DECODER = ROOT / "web/src/import/qr.ts"
+PROVISIONING_ERROR_UI = ROOT / "web/src/provisioning-error.ts"
+WEB_STYLE = ROOT / "web/src/style.css"
+BROWSER_SMOKE_HTML = ROOT / "web/tests/browser/qr-smoke.html"
+ARGON2_CSP_SMOKE = ROOT / "web/tests/browser/argon2-csp-smoke.ts"
+COMBINED_BROWSER_SMOKE = ROOT / "web/tests/browser/combined-smoke.ts"
 SECRET_VAULT_DOC = ROOT / "docs/SECRET_VAULT.md"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
@@ -51,6 +56,25 @@ LOGGING_APIS = (
     "console.error(",
     "console.debug(",
 )
+
+
+def extract_csp(html: str) -> str:
+    match = re.search(
+        r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"',
+        html,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise AssertionError("Content-Security-Policy meta tag is missing")
+    return match.group(1)
+
+
+def directive_tokens(policy: str, name: str) -> list[str]:
+    for directive in policy.split(";"):
+        parts = directive.strip().split()
+        if parts and parts[0] == name:
+            return parts[1:]
+    return []
 
 
 class SecurityCloseoutContractTest(unittest.TestCase):
@@ -98,11 +122,20 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIn('operation == "vault.rekey"', source)
         self.assertIn('operation == "device.lock"', source)
 
-    def test_provisioner_csp_forbids_network_connections(self) -> None:
+    def test_provisioner_csp_forbids_network_and_allows_only_wasm_eval(self) -> None:
         html = PROVISIONER_HTML.read_text(encoding="utf-8")
-        self.assertIn("connect-src 'none'", html)
-        self.assertIn("form-action 'none'", html)
-        self.assertIn("object-src 'none'", html)
+        smoke_html = BROWSER_SMOKE_HTML.read_text(encoding="utf-8")
+        policy = extract_csp(html)
+        smoke_policy = extract_csp(smoke_html)
+        script_tokens = directive_tokens(policy, "script-src")
+
+        self.assertEqual(smoke_policy, policy)
+        self.assertIn("connect-src 'none'", policy)
+        self.assertIn("form-action 'none'", policy)
+        self.assertIn("object-src 'none'", policy)
+        self.assertIn("'self'", script_tokens)
+        self.assertIn("'wasm-unsafe-eval'", script_tokens)
+        self.assertNotIn("'unsafe-eval'", script_tokens)
 
     def test_qr_file_decode_stays_local_without_object_urls(self) -> None:
         html = PROVISIONER_HTML.read_text(encoding="utf-8")
@@ -126,6 +159,31 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIn("connect-src 'none'", html)
         self.assertIn("form-action 'none'", html)
         self.assertIn("object-src 'none'", html)
+
+    def test_argon2_browser_smoke_exercises_real_kdf_and_keeps_js_eval_blocked(self) -> None:
+        smoke = ARGON2_CSP_SMOKE.read_text(encoding="utf-8")
+        combined = COMBINED_BROWSER_SMOKE.read_text(encoding="utf-8")
+        self.assertIn("wrapVmkWithPassphrase", smoke)
+        self.assertIn('globalThis.eval("1 + 1")', smoke)
+        self.assertIn("javascriptEvalBlocked", smoke)
+        self.assertIn("ARGON2ID_MEMORY_KIB", smoke)
+        self.assertIn("ARGON2ID_ITERATIONS", smoke)
+        self.assertIn("ARGON2ID_PARALLELISM", smoke)
+        self.assertIn("runArgon2CspSmoke", combined)
+        self.assertIn('await import("./qr-smoke")', combined)
+
+    def test_provisioning_failure_ui_is_adjacent_visible_and_cleared(self) -> None:
+        source = PROVISIONING_ERROR_UI.read_text(encoding="utf-8")
+        style = WEB_STYLE.read_text(encoding="utf-8")
+        self.assertIn('error.id = "provision-error"', source)
+        self.assertIn('error.className = "notice error"', source)
+        self.assertIn('error.setAttribute("aria-live", "assertive")', source)
+        self.assertIn('actionRow.insertAdjacentElement("afterend", error)', source)
+        self.assertIn('provisionButton.addEventListener("click"', source)
+        self.assertIn('clearImportButton.addEventListener("click"', source)
+        self.assertIn('qrFileInput?.addEventListener("change", clearError)', source)
+        self.assertIn("PROVISIONING_SUCCESS_MARKER", source)
+        self.assertRegex(style, r"(?s)\.notice\.error\s*\{[^}]*color:\s*#b91c1c;")
 
     def test_credential_processing_sources_have_no_network_or_console_egress(self) -> None:
         excluded = {
