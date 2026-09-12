@@ -4,6 +4,7 @@ import {
 } from "./canonical-protocol-v2";
 import {
   IndexedDbBrowserVaultStore,
+  displayVaultId,
   type BrowserCanonicalState,
 } from "./security/browser-vault";
 import {
@@ -12,6 +13,10 @@ import {
   withCanonicalBrowserStateLock,
 } from "./security/browser-state-lock";
 import { IndexedDbBrowserTransactionJournal } from "./security/browser-transaction-journal";
+import {
+  IndexedDbBrowserResetIntentStore,
+  type BrowserResetIntent,
+} from "./security/browser-reset-intent";
 import {
   decodeBase64UrlCanonical,
   encodeBase64UrlCanonical,
@@ -33,12 +38,19 @@ export type RecoveryResetStatus = "awaiting_confirmation" | "confirmed";
 
 export interface BrowserVaultCleanupStore {
   list(): Promise<BrowserCanonicalState[]>;
+  get(vaultId: Uint8Array): Promise<BrowserCanonicalState | null>;
   delete(vaultId: Uint8Array, expectedGeneration?: bigint): Promise<void>;
 }
 
 export interface BrowserJournalCleanupStore {
   listForDevice(deviceId: string): Promise<Array<{ candidate: BrowserCanonicalState }>>;
   delete(vaultId: Uint8Array): Promise<void>;
+}
+
+export interface BrowserResetIntentCleanupStore {
+  get(deviceId: string): Promise<BrowserResetIntent | null>;
+  stage(intent: BrowserResetIntent): Promise<void>;
+  delete(deviceId: string): Promise<void>;
 }
 
 function parseBegin(data: Record<string, unknown>): RecoveryResetBegin {
@@ -75,6 +87,7 @@ export class CanonicalRecoveryResetController {
     initialHello: CanonicalHelloData,
     private readonly store: BrowserVaultCleanupStore = new IndexedDbBrowserVaultStore(),
     private readonly journal: BrowserJournalCleanupStore = new IndexedDbBrowserTransactionJournal(),
+    private readonly resetIntents: BrowserResetIntentCleanupStore = new IndexedDbBrowserResetIntentStore(),
   ) {
     if (initialHello.recoveryResetRequired !== true) {
       throw new Error("Recovery Factory Reset is not available for this Device state");
@@ -110,23 +123,48 @@ export class CanonicalRecoveryResetController {
 
   public async complete(attemptId: Uint8Array): Promise<CanonicalHelloData> {
     if (attemptId.length !== SESSION_ATTEMPT_ID_BYTES) throw new Error("Invalid recovery-reset attempt id");
-    await this.transport.requestCanonicalV2("factory_reset.recovery_complete", {
-      attempt_id: encodeBase64UrlCanonical(attemptId),
-    });
 
     await withCanonicalBrowserStateLock(async () => {
-      await this.cleanupLocalDeviceState();
+      if (!(await this.resetIntents.get(this.hello.deviceId))) {
+        await this.resetIntents.stage(await this.buildResetIntent());
+      }
     });
 
-    const next = await this.refresh();
+    let operationError: unknown = null;
+    try {
+      await this.transport.requestCanonicalV2("factory_reset.recovery_complete", {
+        attempt_id: encodeBase64UrlCanonical(attemptId),
+      });
+    } catch (error) {
+      operationError = error;
+    }
+
+    let next: CanonicalHelloData;
+    try {
+      next = await this.refresh();
+    } catch {
+      throw new Error(
+        "Recovery Factory Reset outcome is not yet provable. The durable reset intent is retained; reconnect this Device to reconcile before further canonical writes.",
+      );
+    }
+
     if (
       next.recoveryResetRequired === true ||
       next.vaultPresent ||
       next.registrationPresent ||
       next.state !== "unprovisioned"
     ) {
+      if (operationError) {
+        throw new Error(
+          "Recovery Factory Reset did not produce a provably clean Device. The durable reset intent is retained for fail-closed reconciliation.",
+        );
+      }
       throw new Error("Device did not return to canonical unprovisioned state after Recovery Factory Reset");
     }
+
+    await withCanonicalBrowserStateLock(async () => {
+      await this.cleanupFromResetIntent();
+    });
     return next;
   }
 
@@ -155,20 +193,40 @@ export class CanonicalRecoveryResetController {
     }
   }
 
-  private async cleanupLocalDeviceState(): Promise<void> {
+  private async buildResetIntent(): Promise<BrowserResetIntent> {
+    const affected = new Map<string, { vaultId: Uint8Array; generation: bigint }>();
     const states = await this.store.list();
     for (const state of states) {
       if (state.deviceMetadata?.deviceId !== this.hello.deviceId) continue;
-      await this.journal.delete(state.vault.vaultId);
-      await this.store.delete(state.vault.vaultId, state.vault.generation);
+      affected.set(displayVaultId(state.vault.vaultId), {
+        vaultId: state.vault.vaultId.slice(),
+        generation: state.vault.generation,
+      });
     }
-
-    // A crash may leave a write-ahead candidate without a committed browser
-    // Vault row. Remove only candidates bound to this stable Device ID.
     const pending = await this.journal.listForDevice(this.hello.deviceId);
     for (const transaction of pending) {
-      await this.journal.delete(transaction.candidate.vault.vaultId);
+      affected.set(displayVaultId(transaction.candidate.vault.vaultId), {
+        vaultId: transaction.candidate.vault.vaultId.slice(),
+        generation: transaction.candidate.vault.generation,
+      });
     }
+    return { deviceId: this.hello.deviceId, affectedVaults: Array.from(affected.values()) };
+  }
+
+  private async cleanupFromResetIntent(): Promise<void> {
+    const intent = await this.resetIntents.get(this.hello.deviceId);
+    if (!intent) throw new Error("Recovery Factory Reset is missing its durable browser reset intent");
+    for (const affected of intent.affectedVaults) {
+      const current = await this.store.get(affected.vaultId);
+      if (current) {
+        if (current.vault.generation !== affected.generation) {
+          throw new Error("Browser canonical state changed while Recovery Factory Reset was pending");
+        }
+        await this.store.delete(affected.vaultId, affected.generation);
+      }
+      await this.journal.delete(affected.vaultId);
+    }
+    await this.resetIntents.delete(intent.deviceId);
     notifyCanonicalBrowserStateChanged();
   }
 }
