@@ -324,7 +324,7 @@ Canonical V1 is now active end to end:
 - `STORAGE_SCHEMA_VERSION = 2`
 - `VAULT_FORMAT_VERSION = 1`
 
-Tasks #51-#56 activated the Vault format, RAM-only VMK runtime, Trusted Browser ownership, Protocol v2 fresh-session transport, canonical Web/Device management flow, and the V1 release contract. Task #15 is the final security closeout: the release remains production-ineligible until its cross-surface verification is green and the final eligibility gate is explicitly enabled.
+Tasks #51-#56 activated the Vault format, RAM-only VMK runtime, Trusted Browser ownership, Protocol v2 fresh-session transport, canonical Web/Device management flow, and the V1 release contract. Task #15 completed the final cross-surface security closeout; production release eligibility is enabled only with those V1 invariants and fail-closed release checks intact.
 
 Legacy Protocol 1 / Storage Schema 1 source may remain only as non-release historical/test material where required. It is not the canonical firmware bootstrap and must not be compiled into the V1 release credential surface or be advertised as current behavior.
 
