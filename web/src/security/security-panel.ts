@@ -13,6 +13,10 @@ import {
   notifyCanonicalBrowserStateChanged,
   withCanonicalBrowserStateLock,
 } from "./browser-state-lock";
+import {
+  IndexedDbBrowserTransactionJournal,
+  PendingBrowserTransactionError,
+} from "./browser-transaction-journal";
 
 const shell = document.querySelector<HTMLElement>(".shell");
 if (!shell) throw new Error("Security panel requires the main application shell");
@@ -79,10 +83,24 @@ const changePassphraseButton = queryRequired<HTMLButtonElement>("#browser-change
 const passphraseCancel = queryRequired<HTMLButtonElement>("#browser-passphrase-cancel");
 
 const store = new IndexedDbBrowserVaultStore();
+const journal = new IndexedDbBrowserTransactionJournal();
 let states: BrowserCanonicalState[] = [];
 let current: BrowserCanonicalState | null = null;
+let pendingVaultIds = new Set<string>();
 let conflictMessage: string | null = null;
 let busy = false;
+
+function selectedPending(): boolean {
+  return current !== null && pendingVaultIds.has(displayVaultId(current.vault.vaultId));
+}
+
+async function assertNoPendingTransaction(vaultId: Uint8Array): Promise<void> {
+  if (await journal.get(vaultId)) {
+    throw new PendingBrowserTransactionError(
+      "Recovery export and Passphrase mutation are blocked until the pending Device outcome is reconciled.",
+    );
+  }
+}
 
 vaultSelect.addEventListener("change", () => {
   current = states.find((state) => displayVaultId(state.vault.vaultId) === vaultSelect.value) ?? null;
@@ -95,6 +113,7 @@ exportButton.addEventListener("click", () => void run(async () => {
     if (!current) return;
     const latest = await store.get(current.vault.vaultId);
     if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
+    await assertNoPendingTransaction(latest.vault.vaultId);
     if (latest.trustedBrowser.status !== "active") {
       throw new Error("Recovery Package export is blocked until Device replacement is confirmed and this browser becomes active");
     }
@@ -129,6 +148,7 @@ importButton.addEventListener("click", () => void run(async () => {
       if (existing) {
         throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
       }
+      await assertNoPendingTransaction(imported.vault.vaultId);
       await store.put(imported);
       notifyCanonicalBrowserStateChanged();
       conflictMessage = null;
@@ -149,6 +169,7 @@ changePassphraseButton.addEventListener("click", () => void run(async () => {
     if (!current) throw new Error("No browser canonical Vault is selected");
     const latest = await store.get(current.vault.vaultId);
     if (!latest) throw new Error("Canonical Vault state changed before Passphrase update; refresh and retry");
+    await assertNoPendingTransaction(latest.vault.vaultId);
     if (latest.trustedBrowser.status !== "active") {
       throw new Error("Recovery Passphrase changes are blocked while Device replacement is pending");
     }
@@ -164,6 +185,7 @@ changePassphraseButton.addEventListener("click", () => void run(async () => {
   await refresh();
 }));
 
+recoveryCancel.addEventListener("click", clearRecoveryInputs);
 passphraseCancel.addEventListener("click", clearPassphraseInputs);
 window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
   void refresh().catch((error: unknown) => {
@@ -180,7 +202,9 @@ void refresh().catch((error: unknown) => {
 });
 
 async function refresh(): Promise<void> {
-  states = await store.list();
+  const [nextStates, pending] = await Promise.all([store.list(), journal.list()]);
+  states = nextStates;
+  pendingVaultIds = new Set(pending.map((value) => displayVaultId(value.candidate.vault.vaultId)));
   const selectedKey = current ? displayVaultId(current.vault.vaultId) : vaultSelect.value;
   vaultSelect.replaceChildren();
   for (const state of states) {
@@ -200,7 +224,8 @@ function render(): void {
   status.replaceChildren();
   const hasState = current !== null;
   const conflict = conflictMessage !== null;
-  const active = hasState && current?.trustedBrowser.status === "active" && !conflict;
+  const pending = selectedPending();
+  const active = hasState && current?.trustedBrowser.status === "active" && !conflict && !pending;
   vaultSelect.disabled = busy || states.length <= 1;
   exportButton.disabled = busy || !active;
   currentPassphrase.disabled = busy || !active;
@@ -218,8 +243,8 @@ function render(): void {
     return;
   }
 
-  if (conflict) {
-    trustState.textContent = "Conflict / recovery required";
+  if (conflict || pending) {
+    trustState.textContent = pending ? "Pending Device reconciliation" : "Conflict / recovery required";
   } else {
     trustState.textContent = current.trustedBrowser.status === "active" ? "Trusted Browser active" : "Replacement pending";
   }
@@ -229,11 +254,13 @@ function render(): void {
   appendStatus("Registration epoch", String(current.trustedBrowser.epoch));
   appendStatus(
     "Browser ownership",
-    conflict
-      ? "Writes blocked pending explicit recovery/reconciliation"
-      : current.trustedBrowser.status === "active"
-        ? "Active writer"
-        : "Pending explicit Device replacement; recovery export and Passphrase mutation are blocked until Device confirmation",
+    pending
+      ? "Encrypted candidate is pending Device reconciliation; recovery export and Passphrase mutation are blocked"
+      : conflict
+        ? "Writes blocked pending explicit recovery/reconciliation"
+        : current.trustedBrowser.status === "active"
+          ? "Active writer"
+          : "Pending explicit Device replacement; recovery export and Passphrase mutation are blocked until Device confirmation",
   );
   if (conflictMessage) appendStatus("Conflict", conflictMessage);
   appendStatus("BUK", "Local non-extractable AES-256-GCM key");
@@ -257,13 +284,15 @@ async function run(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error) {
-    if (error instanceof GenerationConflictError) conflictMessage = error.message;
+    if (error instanceof GenerationConflictError || error instanceof PendingBrowserTransactionError) {
+      conflictMessage = error.message;
+    }
     notice.textContent = userFacingError(error, "Security operation failed.");
     clearRecoveryInputs();
     clearPassphraseInputs();
   } finally {
     busy = false;
-    render();
+    await refresh().catch(() => render());
   }
 }
 
