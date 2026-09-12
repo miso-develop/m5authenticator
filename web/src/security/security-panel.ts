@@ -85,21 +85,25 @@ vaultSelect.addEventListener("change", () => {
   render();
 });
 
-exportButton.addEventListener("click", () => {
-  if (!current || busy) return;
-  const serialized = exportRecoveryPackage(current);
+exportButton.addEventListener("click", () => void run(async () => {
+  if (!current) return;
+  const latest = await store.get(current.vault.vaultId);
+  if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
+  current = latest;
+  const serialized = exportRecoveryPackage(latest);
   const blob = new Blob([serialized], { type: "application/vnd.m5authenticator.recovery+json" });
   const url = URL.createObjectURL(blob);
   try {
     const link = document.createElement("a");
     link.href = url;
-    link.download = `m5authenticator-recovery-${displayVaultId(current.vault.vaultId).slice(0, 12)}.json`;
+    link.download = `m5authenticator-recovery-${displayVaultId(latest.vault.vaultId).slice(0, 12)}.json`;
     link.click();
-    notice.textContent = "Recovery Package exported. Store it as a security-sensitive offline file.";
+    notice.textContent = "Latest Recovery Package exported. Store it as a security-sensitive offline file.";
   } finally {
     URL.revokeObjectURL(url);
   }
-});
+  await refresh();
+}));
 
 importButton.addEventListener("click", () => void run(async () => {
   const file = recoveryFile.files?.[0];
@@ -182,7 +186,7 @@ function render(): void {
   if (!current) {
     trustState.textContent = "No canonical Vault";
     appendStatus("Browser state", "None");
-    appendStatus("Initial setup", "Created by the V1 canonical provisioning flow; Protocol 2 is not activated by this screen");
+    appendStatus("Initial setup", "Create the Protocol 2 canonical Vault from the Import accounts section after connecting an unprovisioned Device");
     return;
   }
 
