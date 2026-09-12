@@ -41,7 +41,10 @@ export interface CanonicalHelloData {
   buildCommit: string;
   state: DeviceRuntimeState;
   storageReady: boolean;
-  recoveryResetRequired: boolean;
+  // parseCanonicalHelloData always returns an explicit boolean. This remains
+  // optional on the structural interface so synthetic test transports created
+  // before recovery-reset support do not weaken production wire validation.
+  recoveryResetRequired?: boolean;
   vaultPresent: boolean;
   vaultId: Uint8Array | null;
   generation: bigint;
