@@ -95,12 +95,10 @@ int main() {
     assert(!model.select_next());
     assert(!model.select_previous());
 
-    // Runtime refresh preserves the current local selection while it still exists.
     assert(model.update_accounts(make_max_accounts(), 1));
     assert(model.selected_id() == 7);
     assert(model.account_count() == 32);
 
-    // A fresh boot model restores the persisted last-used id and wraps at both ends.
     UiModel boot_model;
     assert(boot_model.update_accounts(make_max_accounts(), 1));
     assert(boot_model.selected_id() == 1);
@@ -110,7 +108,6 @@ int main() {
     assert(boot_model.select_next());
     assert(boot_model.selected_id() == 1);
 
-    // A security request is visually/behaviorally distinct and owns the button.
     UiModel security_model;
     std::vector<m5auth::storage::AccountMetadata> security_accounts;
     security_accounts.push_back(account(2, 1, "Second", "two"));
@@ -133,9 +130,16 @@ int main() {
     assert(!security_model.reveal(111111, 50'101));
     assert(security_model.selected_id() == selected_before_request);
 
-    assert(security_model.primary_button_pressed(50'102));
+    // A press observed before a post-request released baseline is rejected.
+    security_model.observe_primary_button_state(true);
+    assert(!security_model.primary_button_pressed(50'102));
+    assert(!security_model.unlock_request_confirmed());
+    security_model.observe_primary_button_state(false);
+    security_model.observe_primary_button_state(false);
+    security_model.observe_primary_button_state(true);
+    assert(security_model.primary_button_pressed(50'103));
     assert(security_model.unlock_request_confirmed());
-    assert(security_model.consume_unlock_confirmation(attempt, 50'103));
+    assert(security_model.consume_unlock_confirmation(attempt, 50'104));
     assert(!security_model.unlock_request_active());
     assert(security_model.select_next());
 
