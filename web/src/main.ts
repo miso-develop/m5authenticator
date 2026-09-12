@@ -224,18 +224,24 @@ clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi 
   await refreshDevice();
 }));
 
+rekeyPassphrase.addEventListener("input", updateControls);
 rotateVmkButton.addEventListener("click", () => {
   if (!canWriteCanonical() || rekeyPassphrase.value.length === 0) return;
   if (!window.confirm("Rotate the Vault Master Key now? The M5StickS3 will require a fresh physical confirmation. Keep your Recovery Package current after this operation.")) {
     rekeyPassphrase.value = "";
+    updateControls();
     return;
   }
-  const passphrase = rekeyPassphrase.value;
+  let passphrase = rekeyPassphrase.value;
   rekeyPassphrase.value = "";
   void runDeviceAction("Rotating Vault Master Key… confirm on M5StickS3.", async () => {
-    await requireManagement().rotateVmk(passphrase);
-    deviceNotice.textContent = "Vault Master Key rotated. Export a fresh Recovery Package and retire older copies you control.";
-    await refreshDevice();
+    try {
+      await requireManagement().rotateVmk(passphrase);
+      deviceNotice.textContent = "Vault Master Key rotated. Export a fresh Recovery Package and retire older copies you control.";
+      await refreshDevice();
+    } finally {
+      passphrase = "";
+    }
   });
 });
 
