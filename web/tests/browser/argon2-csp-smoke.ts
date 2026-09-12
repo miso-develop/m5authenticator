@@ -26,11 +26,11 @@ async function flushMutations(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-async function run(): Promise<void> {
+export async function runArgon2CspSmoke(): Promise<void> {
   const csp = document
     .querySelector<HTMLMetaElement>('meta[http-equiv="Content-Security-Policy"]')
     ?.getAttribute("content");
-  assertCondition(csp, "Production-equivalent CSP is missing from Argon2 smoke page");
+  assertCondition(csp, "Production-equivalent CSP is missing from browser smoke page");
 
   const scriptTokens = directiveTokens(csp, "script-src");
   assertCondition(scriptTokens.includes("'self'"), "CSP script-src no longer permits self-hosted modules");
@@ -109,12 +109,4 @@ async function run(): Promise<void> {
     vmk.fill(0);
     vaultId.fill(0);
   }
-
-  document.body.dataset.status = "pass";
-  document.body.textContent = "ARGON2_CSP_SMOKE_PASS";
 }
-
-void run().catch(() => {
-  document.body.dataset.status = "fail";
-  document.body.textContent = "ARGON2_CSP_SMOKE_FAIL";
-});
