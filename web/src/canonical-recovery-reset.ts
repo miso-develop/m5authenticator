@@ -41,10 +41,6 @@ export interface BrowserJournalCleanupStore {
   delete(vaultId: Uint8Array): Promise<void>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseBegin(data: Record<string, unknown>): RecoveryResetBegin {
   if (
     typeof data.attempt_id !== "string" ||
@@ -90,13 +86,18 @@ export class CanonicalRecoveryResetController {
     return this.hello;
   }
 
+  public async refresh(): Promise<CanonicalHelloData> {
+    const next = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
+    this.assertSameDevice(next);
+    this.hello = next;
+    return next;
+  }
+
   public async begin(): Promise<RecoveryResetBegin> {
-    const current = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
-    this.assertSameDevice(current);
+    const current = await this.refresh();
     if (current.recoveryResetRequired !== true) {
       throw new Error("Recovery Factory Reset is no longer required");
     }
-    this.hello = current;
     return parseBegin(await this.transport.requestCanonicalV2("factory_reset.recovery_begin"));
   }
 
@@ -117,8 +118,7 @@ export class CanonicalRecoveryResetController {
       await this.cleanupLocalDeviceState();
     });
 
-    const next = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
-    this.assertSameDevice(next);
+    const next = await this.refresh();
     if (
       next.recoveryResetRequired === true ||
       next.vaultPresent ||
@@ -127,7 +127,6 @@ export class CanonicalRecoveryResetController {
     ) {
       throw new Error("Device did not return to canonical unprovisioned state after Recovery Factory Reset");
     }
-    this.hello = next;
     return next;
   }
 
