@@ -15,6 +15,11 @@ DEFAULT_PROFILE = REPO_ROOT / "firmware" / "release-profile.json"
 DEFAULT_METADATA = REPO_ROOT / "firmware" / "components" / "m5auth_core" / "include" / "m5auth" / "core" / "metadata.hpp"
 DEFAULT_PARTITIONS = REPO_ROOT / "firmware" / "partitions.csv"
 DEFAULT_BOOTSTRAP = REPO_ROOT / "firmware" / "main" / "app_main.cpp"
+DEFAULT_SDKCONFIG = REPO_ROOT / "firmware" / "sdkconfig.defaults"
+DEFAULT_PROVISIONING_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_provisioning" / "CMakeLists.txt"
+DEFAULT_DEVICE_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "CMakeLists.txt"
+DEFAULT_TIME_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_time" / "CMakeLists.txt"
+DEFAULT_TOTP_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_totp" / "CMakeLists.txt"
 
 REQUIRED_PARTITIONS = ("nvs", "otadata", "phy_init", "ota_0", "ota_1", "auth_nvs")
 V1_SECURITY_PROFILE = "encrypted-vault-ram-only-vmk"
@@ -33,6 +38,13 @@ def _require(condition: bool, message: str) -> None:
         raise ReleaseValidationError(message)
 
 
+def _read_text(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReleaseValidationError(f"cannot read {label}: {exc}") from exc
+
+
 def load_profile(path: Path = DEFAULT_PROFILE) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -43,10 +55,7 @@ def load_profile(path: Path = DEFAULT_PROFILE) -> dict[str, Any]:
 
 
 def parse_metadata(path: Path = DEFAULT_METADATA) -> dict[str, Any]:
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ReleaseValidationError(f"cannot read firmware metadata: {exc}") from exc
+    source = _read_text(path, "firmware metadata")
 
     version = re.search(r'kFirmwareVersion\[\]\s*=\s*"([^"]+)"', source)
     protocol = re.search(r"kProtocolVersion\s*=\s*(\d+)", source)
@@ -91,15 +100,13 @@ def parse_partitions(path: Path = DEFAULT_PARTITIONS) -> dict[str, dict[str, int
 
 
 def validate_canonical_bootstrap(path: Path = DEFAULT_BOOTSTRAP) -> None:
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ReleaseValidationError(f"cannot read firmware bootstrap: {exc}") from exc
+    source = _read_text(path, "firmware bootstrap")
 
     required = (
         "m5auth::vault_runtime::CompatibleNvsPersistence",
         "m5auth::vault_runtime::Runtime runtime",
         "m5auth::provisioning::CanonicalProtocolV2Handler protocol",
+        '"m5auth/device/sticks3/canonical_device.hpp"',
     )
     for token in required:
         _require(token in source, f"canonical V1 bootstrap missing: {token}")
@@ -108,9 +115,61 @@ def validate_canonical_bootstrap(path: Path = DEFAULT_BOOTSTRAP) -> None:
         "DevSecurityBackend",
         "m5auth::storage::Store",
         "m5auth::provisioning::Session provisioning",
+        '"m5auth/device/sticks3/device.hpp"',
     )
     for token in forbidden:
         _require(token not in source, f"legacy/synthetic credential bootstrap is release-ineligible: {token}")
+
+
+def validate_release_build_surface(
+    sdkconfig_path: Path = DEFAULT_SDKCONFIG,
+    provisioning_cmake_path: Path = DEFAULT_PROVISIONING_CMAKE,
+    device_cmake_path: Path = DEFAULT_DEVICE_CMAKE,
+    time_cmake_path: Path = DEFAULT_TIME_CMAKE,
+    totp_cmake_path: Path = DEFAULT_TOTP_CMAKE,
+) -> None:
+    sdkconfig = _read_text(sdkconfig_path, "release sdkconfig defaults")
+    _require(
+        re.search(r"^CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y$", sdkconfig, re.MULTILINE) is not None,
+        "release firmware must explicitly disable ESP-IDF core dumps",
+    )
+    for forbidden in (
+        "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y",
+        "CONFIG_ESP_COREDUMP_ENABLE_TO_UART=y",
+    ):
+        _require(forbidden not in sdkconfig, f"credential-bearing core dump destination is forbidden: {forbidden}")
+
+    surfaces = (
+        (
+            "provisioning",
+            _read_text(provisioning_cmake_path, "provisioning component CMake"),
+            ("canonical_protocol_v2.cpp", "session_protocol_v2.cpp"),
+            ('"protocol.cpp"', "m5auth_storage"),
+        ),
+        (
+            "device",
+            _read_text(device_cmake_path, "device component CMake"),
+            ("release_device.cpp", "canonical_device.cpp"),
+            ('"device.cpp"', '"ui_model.cpp"', "m5auth_storage"),
+        ),
+        (
+            "time",
+            _read_text(time_cmake_path, "time component CMake"),
+            ("canonical_time_service.cpp",),
+            ('"time_service.cpp"', "m5auth_storage"),
+        ),
+        (
+            "totp",
+            _read_text(totp_cmake_path, "TOTP component CMake"),
+            ("vault_generator.cpp",),
+            ('"generator.cpp"', "m5auth_storage"),
+        ),
+    )
+    for label, source, required, forbidden in surfaces:
+        for token in required:
+            _require(token in source, f"release {label} surface missing canonical source: {token}")
+        for token in forbidden:
+            _require(token not in source, f"release {label} surface still includes legacy source/dependency: {token}")
 
 
 def validate_release(
@@ -147,6 +206,7 @@ def validate_release(
     _require(isinstance(eligible, bool), "production_release_allowed must be boolean")
 
     validate_canonical_bootstrap(bootstrap_path)
+    validate_release_build_surface()
 
     for name in REQUIRED_PARTITIONS:
         _require(name in partitions, f"missing required partition: {name}")
