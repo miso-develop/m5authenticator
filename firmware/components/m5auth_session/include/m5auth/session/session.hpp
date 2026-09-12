@@ -24,6 +24,11 @@ using DeviceChallenge = std::array<std::uint8_t, kDeviceChallengeBytes>;
 using P256PublicKey = std::array<std::uint8_t, kP256PublicKeyBytes>;
 using Vmk = std::array<std::uint8_t, kSessionKeyBytes>;
 
+// Validate a SEC1 uncompressed P-256 public key as an actual point on the
+// prime256v1/secp256r1 curve. Framing checks alone (0x04 + 64 bytes) are not a
+// trust-root integrity boundary and must not be used for BRK persistence.
+bool valid_p256_public_key(std::span<const std::uint8_t> public_key);
+
 struct AttemptDescriptor {
     AttemptId attempt_id{};
     DeviceChallenge challenge{};
