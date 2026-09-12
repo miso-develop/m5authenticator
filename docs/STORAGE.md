@@ -1,8 +1,10 @@
 # Secure Account Storage
 
-V1 uses an application-level authenticated Encrypted Vault as the canonical Device credential boundary. Decision #40 and Decisions #45-#49 define the security architecture; `docs/SECRET_VAULT.md` is the durable consolidated reference.
+V1 uses an application-level authenticated Encrypted Vault as the canonical Device credential boundary. Decision #40 and Decisions #45-#49 define the security architecture; `docs/SECRET_VAULT.md` is the durable consolidated security reference.
 
-The current development implementation may still use development Protocol 1 / Storage Schema 1 and a deliberately public synthetic encrypted-NVS key. That path is **not** production-ready. The V1 target is implemented through Tasks #51-#56 and validated by Task #15.
+Canonical production state is **Protocol 2 / Storage Schema 2 / Vault Format 1** with the `encrypted-vault-ram-only-vmk` security profile. The former development Protocol 1 / Storage Schema 1 / public synthetic encrypted-NVS path is retired from the release credential surface and is not a production fallback.
+
+See `docs/V1_REQUIREMENTS.md` for the cross-feature requirements index and `docs/ARCHITECTURE.md` for responsibility/flow boundaries.
 
 ## Partition layout
 
@@ -21,20 +23,18 @@ The V1 8 MiB M5StickS3 release layout is defined by `firmware/partitions.csv`:
 
 The earlier development move from `0x12000` to `0x7d0000` remains a one-time pre-release layout transition. Development devices that crossed that boundary may require clean reprovisioning. Future relocation requires explicit migration design.
 
-## Target persistence versions
+## Canonical persistence versions
 
-The development implementation uses `STORAGE_SCHEMA_VERSION = 1` for a logical snapshot protected by development encrypted-NVS semantics.
-
-V1 changes the security meaning and therefore uses independent version boundaries:
+V1 uses independent compatibility boundaries:
 
 - `STORAGE_SCHEMA_VERSION = 2`
 - `VAULT_FORMAT_VERSION = 1`
-- Protocol version is independent and becomes 2 only when the complete v2 runtime is activated
+- `PROTOCOL_VERSION = 2`
 - firmware SemVer remains independent from all of the above
 
-Known development schema 1 may be explicitly rejected/reprovisioned because no production release was created with it. Unknown newer storage/Vault versions must fail closed and must not trigger automatic Factory Reset or speculative migration.
+Known development Schema 1 may be explicitly rejected/reprovisioned because no production release used it. Unknown newer storage/Vault versions fail closed and must not trigger automatic Factory Reset or speculative migration.
 
-Firmware/Web must not advertise the target versions before their semantics are actually active.
+Firmware/Web advertise the canonical versions only because the corresponding end-to-end semantics are active. A matching firmware SemVer never overrides an incompatible protocol/storage/Vault boundary.
 
 ## V1 Vault representation
 
@@ -177,14 +177,20 @@ Factory Reset performs no M5Authenticator-specific eFuse operation.
 
 An encrypted Recovery Package exported elsewhere is outside the Device erase boundary.
 
-## Development-to-V1 transition
+## Firmware update persistence boundary
 
-The earlier `DevSecurityBackend`/planned `HmacEfuseSecurityBackend` architecture is superseded by Decision #40. A public synthetic development XTS/NVS key may still exist in development code for verification, but it is never an acceptable V1 release protection boundary because a Flash dump could be decrypted using public material.
+Normal firmware Update writes the secret-free merged firmware image without erasing `auth_nvs`. The Encrypted Vault and registration state therefore survive the update. Reboot destroys the RAM-only VMK, so a provisioned Device returns `LOCKED` after Update.
 
-Tasks #51-#55 introduce and activate the V1 Vault/runtime/protocol semantics. Task #56 replaces the development release contract, and Task #15 performs final security closeout before production eligibility is enabled.
+First install and Factory Reset are separate intentionally destructive paths. See `docs/DISTRIBUTION.md`.
+
+## Development history
+
+The earlier `DevSecurityBackend` and planned `HmacEfuseSecurityBackend` architecture are superseded by Decision #40. A public synthetic development XTS/NVS key is never an acceptable V1 release protection boundary because public material cannot protect a copied Flash image.
+
+Tasks #51-#55 introduced and activated the V1 Vault/runtime/Protocol 2 semantics, Task #56 replaced the development release contract, and Task #15 completed the security closeout before production eligibility was enabled. Legacy source may remain only as historical/non-release context and must not be restored to the production component surface.
 
 ## Memory, logging, and crash handling
 
 VMK, KEK, BUK, BRK private key, session keys, TOTP secrets, Wi-Fi passwords, decrypted Vault data, plaintext account identity metadata, encoded plaintext snapshots, and credential-bearing protocol buffers must never be logged.
 
-Secret-bearing memory must be wiped using a zeroization method that is not optimized away. Production crash/core-dump settings must not persist credential-bearing RAM in a form that defeats the RAM-only VMK design.
+Secret-bearing memory must be wiped using a zeroization method that is not optimized away. Production firmware explicitly disables ESP-IDF core dumps so credential-bearing RAM is not persisted through crash capture.

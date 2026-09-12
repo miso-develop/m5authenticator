@@ -2,7 +2,7 @@
 
 M5Authenticator V1 uses the M5StickS3 primary `BtnA` for local account selection, OTP reveal, and explicit user-presence confirmation during security-sensitive unlock/registration attempts. Account management, secret import, deletion, reorder, Wi-Fi settings, recovery, and reset remain Web/USB operations.
 
-`docs/SECRET_VAULT.md` is the canonical V1 security-state reference. Decisions #45/#47/#48 define the encrypted metadata boundary, single Trusted Browser model, and user-presence scope.
+`docs/SECRET_VAULT.md` is the canonical V1 security-state reference. `docs/V1_REQUIREMENTS.md` and `docs/ARCHITECTURE.md` provide the cross-feature requirements and flow overview. Decisions #45/#47/#48 define the encrypted metadata boundary, single Trusted Browser model, and user-presence scope.
 
 ## Security states shown to the user
 
@@ -57,7 +57,7 @@ Outside `UNLOCK REQUEST`:
 
 Selection wraps at both ends and supports the V1 maximum of 32 accounts.
 
-The persistent `last_used` value outside the Vault is only an opaque random credential id. Its mapping to account identity is inside the encrypted Vault. Account display metadata may be cached in RAM only while unlocked and is cleared on Lock.
+After unlock, selection resumes the previously `last_used` account when that opaque credential id is still present in the current Vault generation. The persistent `last_used` value outside the Vault is only an opaque random credential id; its mapping to account identity is inside the encrypted Vault. Account display metadata may be cached in RAM only while unlocked and is cleared on Lock.
 
 ## Account label
 

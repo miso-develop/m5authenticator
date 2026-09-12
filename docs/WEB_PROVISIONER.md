@@ -4,6 +4,21 @@ The V1 Web Provisioner is a static Vanilla TypeScript application intended for t
 
 The Web Provisioner holds the **M5Authenticator canonical encrypted replica**. The external service enrollment / source Authenticator remains the authoritative source for replacing or re-enrolling a compromised TOTP credential.
 
+For the cross-feature requirements and component/flow view, see `docs/V1_REQUIREMENTS.md` and `docs/ARCHITECTURE.md`.
+
+## Information architecture
+
+The current V1 app is panel-oriented rather than a tab-routed credential application. Its durable information architecture is:
+
+- **Firmware Flash** — separate flasher page for first install and state-preserving Update.
+- **Device** — connect, status, Trusted Browser unlock, clean replacement restore, Lock & Disconnect, refresh, and PC trusted-time sync.
+- **Accounts** — local QR import and canonical account management.
+- **Settings** — Wi-Fi-for-NTP and approved Device settings.
+- **Security & Recovery** — browser Vault/Trusted Browser status, Recovery Package import/export, Recovery Passphrase change, and VMK rotation.
+- **Factory Reset** — explicit destructive normal/recovery reset.
+
+The visual layout may evolve, but these responsibility/security boundaries remain V1 current truth.
+
 ## Local-only boundary
 
 Credential-bearing data stays in the browser/device path:
@@ -17,7 +32,7 @@ Credential-bearing data stays in the browser/device path:
 
 ## Browser persistence
 
-IndexedDB is the structured persistence surface for the target V1 state.
+IndexedDB is the structured persistence surface for V1 state.
 
 Browser persistence may contain:
 
@@ -134,7 +149,7 @@ If a historical Recovery Package is leaked and must be made unusable, rotate/re-
 
 Connection begins only from a user-initiated Connect action. The app opens Web Serial and performs `hello` before management is enabled.
 
-The current development app may still support Protocol 1. Target V1 requires Protocol 2 and Storage Schema 2 / Vault Format 1 after Task #55 activates the complete security semantics. Unsupported/mismatched versions, request ids, malformed envelopes, oversized responses, timeouts, invalid registration epoch, invalid generation, and transport failures fail closed for security-sensitive operations.
+Canonical V1 uses **Protocol 2 / Storage Schema 2 / Vault Format 1**. Unsupported or mismatched versions, request ids, malformed envelopes, oversized responses, timeouts, invalid registration epoch, invalid generation, and transport failures fail closed for security-sensitive operations. Protocol 1 / Storage Schema 1 remain historical development semantics and are never silently reinterpreted as V1.
 
 Opening Web Serial by itself does not Lock an already-unlocked Device.
 
@@ -163,6 +178,14 @@ There is no stored-secret read/export UI from Device.
 
 QR screenshots and decoded migration/TOTP payloads are transient. They are not persisted as images/plaintext or uploaded.
 
+### Standard TOTP QR
+
+A standard TOTP QR is decoded and parsed locally, validated against the supported V1 TOTP profile, placed in the transient import session, then committed through one encrypted canonical Vault generation update.
+
+### Google Authenticator migration QR
+
+Migration QR screenshots are also decoded and parsed locally. Multi-QR migration batches may accumulate only in transient import-session state until the batch is complete. Applying the batch performs the same canonical encrypted-generation mutation/synchronization path. Successful import clears the QR/migration working state best-effort.
+
 After a successful encrypted Vault update, the import session is cleared. Leaving/reloading the page clears transient state on a best-effort basis.
 
 ## Trusted time
@@ -170,7 +193,7 @@ After a successful encrypted Vault update, the import session is cleared. Leavin
 The UI supports non-secret `time.status` while locked, but trusted-time mutation follows Decision #49:
 
 - `time.sync` is enabled only when Device is `UNLOCKED`
-- a locked/unprovisioned/provisioning sync request fails closed
+- a locked/unprovisioned/provisioning/unlock-pending sync request fails closed
 - credential-backed NTP is available only while unlocked because Wi-Fi credentials are in the Vault
 - an existing current-boot trusted anchor may survive explicit Lock; reboot/power loss clears it
 
@@ -196,20 +219,28 @@ It wipes Device VMK/session material, Device encrypted Vault/registration/user s
 
 Factory Reset performs no M5Authenticator-specific eFuse operation and cannot delete Recovery Packages saved outside the current browser/device.
 
+## Firmware update
+
+Firmware Flash is a separate same-origin page. A normal Update uses the exact validated secret-free CI-built merged firmware image with non-erasing semantics so `auth_nvs` remains intact. Reboot destroys the RAM-only VMK, so a provisioned Device returns `LOCKED` after update while the Encrypted Vault/registration state remains.
+
+First install is the explicitly destructive path. See `docs/DISTRIBUTION.md`.
+
 ## Browser lifetime and zeroization limits
 
 On lifecycle termination, the app clears transient QR/import state, Passphrase/credential form values, unwrapped VMK/KEK references, decrypted Vault buffers, and open Device sessions on a best-effort basis.
 
 JavaScript/Web memory has no universal guaranteed zeroization primitive for all values. The design minimizes plaintext lifetime, prefers byte-oriented mutable buffers, avoids unnecessary copies, and relies on encrypted-at-rest persistence rather than claiming perfect browser-RAM scrubbing.
 
-## Implementation ownership
+## Implementation status and lineage
 
-The superseded Task #41 is not an implementation line. Target implementation is decomposed as:
+The canonical V1 implementation chain is complete:
 
 - #51 Vault crypto/format interoperability foundation
 - #52 browser canonical Vault / Recovery / Trusted Browser state
 - #53 Device RAM-only Vault runtime
-- #54 fresh Protocol v2 unlock/session primitives
-- #55 end-to-end Protocol v2 management activation
-- #56 release contract transition
-- #15 final security closeout
+- #54 fresh Protocol 2 unlock/session primitives
+- #55 end-to-end Protocol 2 management activation
+- #56 V1 release contract transition
+- #15 final V1 security closeout and production eligibility
+
+Decision #40 is the current security root and Decisions #45-#49 are its refinements. Decision #20 / Task #26 / PR #39 are superseded eFuse/HMAC-path history only.

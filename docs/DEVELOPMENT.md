@@ -60,13 +60,13 @@ Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26
 
 Task #15 completed the final cross-surface security closeout and enabled `production_release_allowed: true` only after Security/Foundation, ESP-IDF 5.5.5 build, merged-firmware surface inspection, synthetic Vault plaintext-at-rest inspection, and package validation were green. `python scripts/validate_release.py --require-production` is therefore expected to succeed on the final V1 closeout state.
 
-The release implementation chain is now:
+The V1 implementation/security/documentation chain is complete:
 
 ```text
-#43 / #44 / #58 / #51 / #52 / #53 / #54 / #55 / #56 / #15  completed
-  ↓
-#16  durable documentation closeout
+#43 / #44 / #58 / #51 / #52 / #53 / #54 / #55 / #56 / #15 / #16  completed
 ```
+
+Durable cross-feature current truth is indexed by `docs/V1_REQUIREMENTS.md`, with component responsibilities and end-to-end flows in `docs/ARCHITECTURE.md`.
 
 Production eligibility is not permission to weaken the V1 contract. Do not:
 
@@ -96,7 +96,7 @@ python -m unittest tests/release_package_test.py
 python -m unittest tests/security_closeout_contract_test.py
 ```
 
-See `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, `docs/PROVISIONING_PROTOCOL.md`, and `docs/DISTRIBUTION.md` for the persistence, key, protocol, and release boundaries.
+See `docs/V1_REQUIREMENTS.md`, `docs/ARCHITECTURE.md`, `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, `docs/PROVISIONING_PROTOCOL.md`, and `docs/DISTRIBUTION.md` for the durable product, architecture, persistence, key, protocol, and release boundaries.
 
 ## Web App
 

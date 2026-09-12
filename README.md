@@ -9,7 +9,9 @@ A compact TOTP authenticator project for M5Stack devices, starting with **M5Stic
 
 ## Project status
 
-V1 implementation is in progress. The current development runtime is not yet production-ready; public firmware release remains fail-closed until the V1 Vault/security task chain and final security closeout are complete.
+The V1 implementation and security closeout are complete. The canonical production architecture is **Protocol 2 / Storage Schema 2 / Vault Format 1** with the `encrypted-vault-ram-only-vmk` security profile, and production release eligibility is enabled behind the fail-closed release/profile checks.
+
+The GitHub Pages path now builds and deploys validated production firmware for the Web Flasher. Formal GitHub Releases remain version-tag driven and use the same secret-free CI-built merged firmware image.
 
 The initial target is M5StickS3 with:
 
@@ -30,23 +32,25 @@ After reboot or power loss, the Device starts locked because the VMK is not stor
 
 The original service enrollment/source Authenticator remains the authoritative source for replacing or re-enrolling credentials. The Web Provisioner's encrypted Vault is canonical only within M5Authenticator for browser/device synchronization.
 
-See `PROJECT.md` for project-wide constraints, `SECURITY.md` for mandatory security policy, and `docs/SECRET_VAULT.md` for the current Vault/key/unlock/recovery architecture.
+For the durable V1 overview, start with [`docs/V1_REQUIREMENTS.md`](docs/V1_REQUIREMENTS.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Security-sensitive key, persistence, unlock, recovery, and Trusted Browser semantics are consolidated in [`docs/SECRET_VAULT.md`](docs/SECRET_VAULT.md). Project-wide constraints remain in `PROJECT.md`, and mandatory handling/threat-model policy remains in `SECURITY.md`.
 
-## Foundation development
+## V1 documentation
 
-The canonical firmware build is ESP-IDF / CMake for M5StickS3. The Web App is Vanilla TypeScript + Vite + Vitest.
+- `docs/V1_REQUIREMENTS.md` — cross-feature V1 requirements index, state/behavior tables, version boundary, and Decision lineage.
+- `docs/ARCHITECTURE.md` — firmware/Web/Vault/protocol responsibility boundaries and end-to-end V1 flows.
+- `docs/SECRET_VAULT.md` — Encrypted Vault, RAM-only VMK, Passphrase/Recovery Package, Trusted Browser, Lock/Unlock, and user-presence architecture.
+- `docs/DEVICE_UI.md` — StickS3 account selection, unlock user presence, trusted-time display, and 10-second OTP reveal behavior.
+- `docs/WEB_PROVISIONER.md` — local-only Web Serial management, encrypted browser state, Trusted Browser ownership/recovery, and account/device management.
+- `docs/TIME.md` — trusted-time synchronization and TOTP readiness rules.
+- `docs/STORAGE.md` — encrypted Vault persistence, metadata privacy, and versioning boundaries.
+- `docs/PROVISIONING_PROTOCOL.md` — canonical Protocol 2 NDJSON provisioning/unlock protocol.
+- `docs/DISTRIBUTION.md` — Web Flasher, GitHub Releases, M5Burner, and state-preserving update contract.
+- `docs/DEVELOPMENT.md` — pinned toolchains and reproducible build/test commands.
+- `docs/REPOSITORY_SECURITY.md` — repository-level secret-protection controls.
 
-See:
+## Development foundation
 
-- `docs/DEVELOPMENT.md` for pinned toolchains, current development-security state, and reproducible build/test commands.
-- `docs/SECRET_VAULT.md` for the Encrypted Vault, RAM-only VMK, Passphrase/Recovery Package, Trusted Browser, lock/unlock, and user-presence architecture.
-- `docs/DEVICE_UI.md` for StickS3 account selection, unlock user presence, trusted-time display, and 10-second OTP reveal behavior.
-- `docs/WEB_PROVISIONER.md` for local-only Web Serial provisioning, encrypted browser state, Trusted Browser ownership/recovery, and account/device management.
-- `docs/TIME.md` for trusted-time synchronization and TOTP readiness rules.
-- `docs/STORAGE.md` for encrypted Vault persistence, metadata privacy, and versioning boundaries.
-- `docs/PROVISIONING_PROTOCOL.md` for the versioned NDJSON provisioning/unlock protocol.
-- `docs/DISTRIBUTION.md` for the Web Flasher, GitHub Releases, M5Burner, and state-preserving update contract.
-- `docs/REPOSITORY_SECURITY.md` for repository-level security controls.
+The canonical firmware build is ESP-IDF / CMake for M5StickS3. The Web App is Vanilla TypeScript + Vite + Vitest. See `docs/DEVELOPMENT.md` for exact pinned versions and commands.
 
 ## Development process
 
