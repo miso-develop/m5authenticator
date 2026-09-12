@@ -30,8 +30,8 @@ private:
 };
 
 // Owns the production transition from authenticated Protocol v2 VMK delivery to
-// the RAM-only Vault runtime. Initial provisioning and VMK re-key retain a VMK
-// only as a short-lived pending value until the corresponding encrypted Vault
+// the RAM-only Vault runtime. Provision/install and VMK re-key retain a VMK only
+// as a short-lived pending value until the corresponding encrypted Vault
 // envelope is supplied; every other path either installs it immediately into
 // Runtime RAM or wipes it before returning.
 class CanonicalVmkSink final : public SessionV2VmkSink {
@@ -61,6 +61,10 @@ public:
     void cancel_pending();
 
     bool install_initial_vault(
+        vault::VaultEnvelope envelope,
+        std::uint64_t now_ms
+    );
+    bool install_recovered_vault(
         vault::VaultEnvelope envelope,
         std::uint64_t now_ms
     );
