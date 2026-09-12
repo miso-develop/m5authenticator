@@ -71,7 +71,20 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("runtime_.lock", teardown.group(0))
 
         self.assertIn('operation == "device.lock"', protocol)
-        self.assertIn("status = runtime_.lock();", protocol)
+        self.assertIn("time_service_.with_secret_boundary", protocol)
+        self.assertIn("return runtime_.lock();", protocol)
+
+    def test_idle_usb_runs_housekeeping_without_becoming_disconnect(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        self.assertIn("protocol.housekeeping(monotonic_ms());", app)
+        self.assertIn("usb_serial_jtag_is_connected()", app)
+        idle_branch = re.search(
+            r"if \(std::fgets\([\s\S]+?== nullptr\) \{([\s\S]+?)continue;\n        \}",
+            app,
+        )
+        self.assertIsNotNone(idle_branch)
+        self.assertIn("if (!usb_serial_jtag_is_connected())", idle_branch.group(1))
+        self.assertIn("teardown_transport_session(protocol);", idle_branch.group(1))
 
     def test_canonical_presence_requires_neutral_and_quarantines_authorizing_gesture(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
