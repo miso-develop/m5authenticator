@@ -14,8 +14,10 @@ function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-function finish(status: "pass" | "fail") {
+function finish(status: "pass" | "fail", fixture: string, stage: string) {
   document.body.dataset.status = status;
+  document.body.dataset.fixture = fixture;
+  document.body.dataset.stage = stage;
   document.body.textContent = status === "pass" ? "QR_SMOKE_PASS" : "QR_SMOKE_FAIL";
 }
 
@@ -27,20 +29,20 @@ function isExpectedSyntheticTotp(decoded: string): boolean {
   );
 }
 
+const requestedFixture = new URLSearchParams(location.search).get("fixture") ?? "mask3";
+const fixture =
+  requestedFixture === "baseline"
+    ? ["baseline", "synthetic-qr.png", baselineSyntheticQrPngBase64] as const
+    : ["mask3", "synthetic-qr-mask3.png", fixedMask3SyntheticQrPngBase64] as const;
+
 try {
-  const fixtures = [
-    ["synthetic-qr.png", baselineSyntheticQrPngBase64],
-    ["synthetic-qr-mask3.png", fixedMask3SyntheticQrPngBase64],
-  ] as const;
-
-  let allPassed = true;
-  for (const [filename, pngBase64] of fixtures) {
-    const file = new File([decodeBase64(pngBase64)], filename, { type: "image/png" });
-    const decoded = await decodeQrImage(file);
-    allPassed &&= isExpectedSyntheticTotp(decoded);
-  }
-
-  finish(allPassed ? "pass" : "fail");
+  const [fixtureName, filename, pngBase64] = fixture;
+  document.body.dataset.fixture = fixtureName;
+  document.body.dataset.stage = "before-decode";
+  const file = new File([decodeBase64(pngBase64)], filename, { type: "image/png" });
+  const decoded = await decodeQrImage(file);
+  document.body.dataset.stage = "decoded";
+  finish(isExpectedSyntheticTotp(decoded) ? "pass" : "fail", fixtureName, "validated");
 } catch {
-  finish("fail");
+  finish("fail", fixture[0], "caught");
 }
