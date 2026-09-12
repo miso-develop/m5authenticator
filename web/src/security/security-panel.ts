@@ -8,6 +8,11 @@ import {
   importRecoveryPackage,
   type BrowserCanonicalState,
 } from "./browser-vault";
+import {
+  CANONICAL_BROWSER_STATE_CHANGED_EVENT,
+  notifyCanonicalBrowserStateChanged,
+  withCanonicalBrowserStateLock,
+} from "./browser-state-lock";
 
 const shell = document.querySelector<HTMLElement>(".shell");
 if (!shell) throw new Error("Security panel requires the main application shell");
@@ -86,22 +91,27 @@ vaultSelect.addEventListener("change", () => {
 });
 
 exportButton.addEventListener("click", () => void run(async () => {
-  if (!current) return;
-  const latest = await store.get(current.vault.vaultId);
-  if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
-  current = latest;
-  const serialized = exportRecoveryPackage(latest);
-  const blob = new Blob([serialized], { type: "application/vnd.m5authenticator.recovery+json" });
-  const url = URL.createObjectURL(blob);
-  try {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `m5authenticator-recovery-${displayVaultId(latest.vault.vaultId).slice(0, 12)}.json`;
-    link.click();
-    notice.textContent = "Latest Recovery Package exported. Store it as a security-sensitive offline file.";
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  await withCanonicalBrowserStateLock(async () => {
+    if (!current) return;
+    const latest = await store.get(current.vault.vaultId);
+    if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
+    if (latest.trustedBrowser.status !== "active") {
+      throw new Error("Recovery Package export is blocked until Device replacement is confirmed and this browser becomes active");
+    }
+    current = latest;
+    const serialized = exportRecoveryPackage(latest);
+    const blob = new Blob([serialized], { type: "application/vnd.m5authenticator.recovery+json" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `m5authenticator-recovery-${displayVaultId(latest.vault.vaultId).slice(0, 12)}.json`;
+      link.click();
+      notice.textContent = "Latest Recovery Package exported. Store it as a security-sensitive offline file.";
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
   await refresh();
 }));
 
@@ -113,14 +123,17 @@ importButton.addEventListener("click", () => void run(async () => {
   let serialized = await file.text();
   const passphrase = recoveryPassphrase.value;
   try {
-    const imported = await importRecoveryPackage(serialized, passphrase);
-    const existing = await store.get(imported.vault.vaultId);
-    if (existing) {
-      throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
-    }
-    await store.put(imported);
-    conflictMessage = null;
-    notice.textContent = "Recovery Package imported. Fresh local BUK/BRK keys were created, but this browser is replacement-pending and is not yet an active Device writer.";
+    await withCanonicalBrowserStateLock(async () => {
+      const imported = await importRecoveryPackage(serialized, passphrase);
+      const existing = await store.get(imported.vault.vaultId);
+      if (existing) {
+        throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
+      }
+      await store.put(imported);
+      notifyCanonicalBrowserStateChanged();
+      conflictMessage = null;
+      notice.textContent = "Recovery Package imported. Fresh local BUK/BRK keys were created, but this browser is replacement-pending and is not yet an active Device writer.";
+    });
     await refresh();
   } finally {
     serialized = "";
@@ -131,18 +144,32 @@ importButton.addEventListener("click", () => void run(async () => {
 recoveryCancel.addEventListener("click", clearRecoveryInputs);
 
 changePassphraseButton.addEventListener("click", () => void run(async () => {
-  if (!current) throw new Error("No browser canonical Vault is selected");
   if (newPassphrase.value !== confirmPassphrase.value) throw new Error("New Passphrase confirmation does not match");
-  const expectedGeneration = current.vault.generation;
-  const updated = await changeRecoveryPassphrase(current, currentPassphrase.value, newPassphrase.value);
-  await store.put(updated, expectedGeneration);
-  conflictMessage = null;
-  notice.textContent = RECOVERY_PASSPHRASE_CHANGE_NOTICE;
+  await withCanonicalBrowserStateLock(async () => {
+    if (!current) throw new Error("No browser canonical Vault is selected");
+    const latest = await store.get(current.vault.vaultId);
+    if (!latest) throw new Error("Canonical Vault state changed before Passphrase update; refresh and retry");
+    if (latest.trustedBrowser.status !== "active") {
+      throw new Error("Recovery Passphrase changes are blocked while Device replacement is pending");
+    }
+    const expectedGeneration = latest.vault.generation;
+    const updated = await changeRecoveryPassphrase(latest, currentPassphrase.value, newPassphrase.value);
+    await store.put(updated, expectedGeneration);
+    current = updated;
+    notifyCanonicalBrowserStateChanged();
+    conflictMessage = null;
+    notice.textContent = RECOVERY_PASSPHRASE_CHANGE_NOTICE;
+  });
   clearPassphraseInputs();
   await refresh();
 }));
 
 passphraseCancel.addEventListener("click", clearPassphraseInputs);
+window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
+  void refresh().catch((error: unknown) => {
+    notice.textContent = userFacingError(error, "Browser security state could not be refreshed.");
+  });
+});
 window.addEventListener("pagehide", () => {
   clearRecoveryInputs();
   clearPassphraseInputs();
@@ -173,12 +200,13 @@ function render(): void {
   status.replaceChildren();
   const hasState = current !== null;
   const conflict = conflictMessage !== null;
+  const active = hasState && current?.trustedBrowser.status === "active" && !conflict;
   vaultSelect.disabled = busy || states.length <= 1;
-  exportButton.disabled = busy || !hasState;
-  currentPassphrase.disabled = busy || !hasState || conflict;
-  newPassphrase.disabled = busy || !hasState || conflict;
-  confirmPassphrase.disabled = busy || !hasState || conflict;
-  changePassphraseButton.disabled = busy || !hasState || conflict;
+  exportButton.disabled = busy || !active;
+  currentPassphrase.disabled = busy || !active;
+  newPassphrase.disabled = busy || !active;
+  confirmPassphrase.disabled = busy || !active;
+  changePassphraseButton.disabled = busy || !active;
   recoveryFile.disabled = busy;
   recoveryPassphrase.disabled = busy;
   importButton.disabled = busy;
@@ -205,7 +233,7 @@ function render(): void {
       ? "Writes blocked pending explicit recovery/reconciliation"
       : current.trustedBrowser.status === "active"
         ? "Active writer"
-        : "Pending explicit Device replacement",
+        : "Pending explicit Device replacement; recovery export and Passphrase mutation are blocked until Device confirmation",
   );
   if (conflictMessage) appendStatus("Conflict", conflictMessage);
   appendStatus("BUK", "Local non-extractable AES-256-GCM key");
