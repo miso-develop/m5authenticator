@@ -90,7 +90,9 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     expect(hello.state).toBe("unprovisioned");
     expect(hello.firmware).toBe("0.1.0");
     expect(writes).toHaveLength(1);
-    expect(JSON.parse(writes[0].trim())).toMatchObject({ v: 2, id: 1, op: "hello" });
+    const firstWrite = writes[0];
+    if (firstWrite === undefined) throw new Error("Serial hello request was not written");
+    expect(JSON.parse(firstWrite.trim())).toMatchObject({ v: 2, id: 1, op: "hello" });
     await session.close();
   });
 
