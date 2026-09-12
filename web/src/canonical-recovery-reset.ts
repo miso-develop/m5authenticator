@@ -194,6 +194,19 @@ export class CanonicalRecoveryResetController {
 
   private async buildResetIntent(): Promise<BrowserResetIntent> {
     const affected = new Map<string, { vaultId: Uint8Array; generation: bigint }>();
+
+    // A structurally corrupt persisted Device ID is intentionally replaced by a
+    // fresh RAM recovery candidate before confirmation. Browser canonical state
+    // may therefore still be tagged with the old Device ID. If hello retains an
+    // exact non-secret Vault identity, include that Vault independently of the
+    // Device-ID tag so confirmed destruction cannot orphan its browser replica.
+    if (this.hello.vaultPresent && this.hello.vaultId !== null && this.hello.generation > 0n) {
+      affected.set(displayVaultId(this.hello.vaultId), {
+        vaultId: this.hello.vaultId.slice(),
+        generation: this.hello.generation,
+      });
+    }
+
     const states = await this.store.list();
     for (const state of states) {
       if (state.deviceMetadata?.deviceId !== this.hello.deviceId) continue;
