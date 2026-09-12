@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'"
+      content="default-src 'self'; connect-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'"
     />
     <title>M5 Authenticator</title>
   </head>
@@ -13,6 +13,7 @@
     <nav aria-label="M5 Authenticator sections"><a href="./flash.html">Firmware Flash</a></nav>
     <main id="app"></main>
     <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/provisioning-error.ts"></script>
     <script type="module" src="/src/security/security-panel.ts"></script>
   </body>
 </html>
