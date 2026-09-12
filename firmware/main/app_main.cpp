@@ -45,14 +45,14 @@ std::uint64_t monotonic_ms() {
         : static_cast<std::uint64_t>(microseconds / 1'000);
 }
 
-void enforce_disconnect_lock(
-    m5auth::provisioning::CanonicalProtocolV2Handler& protocol,
-    m5auth::vault_runtime::Runtime& runtime,
-    std::recursive_mutex& runtime_access_mutex
+void teardown_transport_session(
+    m5auth::provisioning::CanonicalProtocolV2Handler& protocol
 ) {
+    // Transport loss/malformed framing cancels only the in-flight authenticated
+    // session and pending VMK delivery. An already-UNLOCKED runtime remains
+    // usable as a standalone authenticator. VMK destruction is reserved for
+    // explicit Lock and the other documented trust-root boundaries.
     protocol.disconnect();
-    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex);
-    (void)runtime.lock();
 }
 
 }  // namespace
@@ -137,7 +137,7 @@ extern "C" void app_main(void) {
                 static_cast<int>(input.size()),
                 stdin
             ) == nullptr) {
-            enforce_disconnect_lock(protocol, runtime, runtime_access_mutex);
+            teardown_transport_session(protocol);
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             std::clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -149,7 +149,7 @@ extern "C" void app_main(void) {
         if (!complete_line) {
             const bool overflow = length == input.size() - 1;
             if (overflow) discard_line_remainder();
-            enforce_disconnect_lock(protocol, runtime, runtime_access_mutex);
+            teardown_transport_session(protocol);
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             if (overflow) {
                 write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
