@@ -30,13 +30,16 @@ jobs:
       - name: Test Web App
         working-directory: web
         run: npm test
-      - name: Test QR image decode in real Chrome
+      - name: Build QR production smoke bundle
+        working-directory: web
+        run: npx --no-install vite build --mode qr-smoke
+      - name: Test QR image decode in production bundle on Chrome
         working-directory: web
         shell: bash
         run: |
           set -euo pipefail
           smoke_url="http://127.0.0.1:4173/m5authenticator/tests/browser/qr-smoke.html"
-          npm run dev -- --host 127.0.0.1 --port 4173 --strictPort >/tmp/m5auth-vite.log 2>&1 &
+          npx --no-install vite preview --mode qr-smoke --host 127.0.0.1 --port 4173 --strictPort >/tmp/m5auth-vite.log 2>&1 &
           vite_pid=$!
           trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
 
@@ -66,6 +69,85 @@ jobs:
         run: npm run build
       - name: Verify Web lockfile is unchanged
         run: git diff --exit-code -- web/package-lock.json
+
+  web-qr-windows:
+    name: web QR Windows Chrome
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - name: Install exact dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build QR production smoke bundle
+        working-directory: web
+        run: npx --no-install vite build --mode qr-smoke
+      - name: Test QR image decode in production bundle on Windows Chrome
+        working-directory: web
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smokeUrl = "http://127.0.0.1:4173/m5authenticator/tests/browser/qr-smoke.html"
+          $domFile = Join-Path $env:RUNNER_TEMP "qr-smoke-dom.html"
+          $stdoutFile = Join-Path $env:RUNNER_TEMP "m5auth-vite.out.log"
+          $stderrFile = Join-Path $env:RUNNER_TEMP "m5auth-vite.err.log"
+
+          $preview = Start-Process -FilePath "npx.cmd" `
+            -ArgumentList @("--no-install", "vite", "preview", "--mode", "qr-smoke", "--host", "127.0.0.1", "--port", "4173", "--strictPort") `
+            -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
+              try {
+                Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              Get-Content $stdoutFile -ErrorAction SilentlyContinue
+              Get-Content $stderrFile -ErrorAction SilentlyContinue
+              throw "QR smoke preview server did not start"
+            }
+
+            $chromeCandidates = @(
+              (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+              (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
+            )
+            $chrome = $chromeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+            if (-not $chrome) {
+              throw "Google Chrome executable was not found on the Windows runner"
+            }
+
+            & $chrome `
+              "--headless=new" `
+              "--disable-gpu" `
+              "--virtual-time-budget=5000" `
+              "--dump-dom" `
+              $smokeUrl | Set-Content -Path $domFile -Encoding utf8
+
+            if (-not (Select-String -Path $domFile -Pattern 'data-status="pass"' -Quiet)) {
+              Get-Content $domFile
+              throw "Windows Chrome QR smoke test failed"
+            }
+          } finally {
+            if (-not $preview.HasExited) {
+              taskkill.exe /PID $preview.Id /T /F | Out-Null
+            }
+          }
 
   firmware:
     name: firmware
