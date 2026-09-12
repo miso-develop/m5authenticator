@@ -49,10 +49,6 @@ std::uint64_t monotonic_ms() {
 void teardown_transport_session(
     m5auth::provisioning::CanonicalProtocolV2Handler& protocol
 ) {
-    // Transport loss/malformed framing cancels only the in-flight authenticated
-    // session and pending VMK delivery. An already-UNLOCKED runtime remains
-    // usable as a standalone authenticator. VMK destruction is reserved for
-    // explicit Lock and the other documented trust-root boundaries.
     protocol.disconnect();
 }
 
@@ -118,7 +114,8 @@ extern "C" void app_main(void) {
         session_handler,
         vmk_sink,
         presence,
-        runtime_access_mutex
+        runtime_access_mutex,
+        [&ui]() { ui.security_boundary_clear(); }
     );
 
     std::vector<char> input(
@@ -127,9 +124,6 @@ extern "C" void app_main(void) {
     );
 
     while (true) {
-        // The USB Serial/JTAG console uses non-blocking reads by default. Keep
-        // Protocol-v2 expiry active while the host is silent, and distinguish
-        // an empty FIFO from actual USB host loss before cancelling sessions.
         protocol.housekeeping(monotonic_ms());
 
         if (std::fgets(
