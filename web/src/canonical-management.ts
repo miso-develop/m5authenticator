@@ -185,7 +185,7 @@ export class CanonicalDeviceManagement {
 
     let accounts: CanonicalAccountView[] = [];
     let wifi = { configured: false, ssid: "" };
-    if (this.state) {
+    if (this.state && this.ownership === "active" && this.hello.state === "unlocked") {
       const view = await this.readBrowserVaultView(this.state);
       accounts = view.accounts;
       wifi = view.wifi;
