@@ -19,6 +19,22 @@ inline RecoveryResetDecision classify_recovery_reset(
     const registration::Snapshot& registration,
     bool corrupt_registration_recovery_available
 ) {
+    // Runtime explicitly distinguishes structural/unsupported/reprovision
+    // failures from generic persistence I/O. Only the former may expose the
+    // destructive, presence-gated recovery-reset surface.
+    if (runtime.state == vault_runtime::State::kError ||
+        runtime.state == vault_runtime::State::kReprovisionRequired) {
+        if (!runtime.recovery_reset_allowed) return RecoveryResetDecision::kUnavailable;
+        if (registration_status == registration::Status::kIo) {
+            return RecoveryResetDecision::kUnavailable;
+        }
+        if (registration_status == registration::Status::kCorrupt &&
+            !corrupt_registration_recovery_available) {
+            return RecoveryResetDecision::kUnavailable;
+        }
+        return RecoveryResetDecision::kRequired;
+    }
+
     if (registration_status == registration::Status::kCorrupt) {
         return corrupt_registration_recovery_available
             ? RecoveryResetDecision::kRequired
