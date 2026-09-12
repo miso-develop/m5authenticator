@@ -38,7 +38,6 @@ export type RecoveryResetStatus = "awaiting_confirmation" | "confirmed";
 
 export interface BrowserVaultCleanupStore {
   list(): Promise<BrowserCanonicalState[]>;
-  get(vaultId: Uint8Array): Promise<BrowserCanonicalState | null>;
   delete(vaultId: Uint8Array, expectedGeneration?: bigint): Promise<void>;
 }
 
@@ -216,8 +215,12 @@ export class CanonicalRecoveryResetController {
   private async cleanupFromResetIntent(): Promise<void> {
     const intent = await this.resetIntents.get(this.hello.deviceId);
     if (!intent) throw new Error("Recovery Factory Reset is missing its durable browser reset intent");
+
+    const currentStates = new Map(
+      (await this.store.list()).map((state) => [displayVaultId(state.vault.vaultId), state] as const),
+    );
     for (const affected of intent.affectedVaults) {
-      const current = await this.store.get(affected.vaultId);
+      const current = currentStates.get(displayVaultId(affected.vaultId));
       if (current) {
         if (current.vault.generation !== affected.generation) {
           throw new Error("Browser canonical state changed while Recovery Factory Reset was pending");
