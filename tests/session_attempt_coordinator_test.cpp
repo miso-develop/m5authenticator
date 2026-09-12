@@ -21,7 +21,15 @@ using namespace m5auth::session::protocol_v2;
 class FakePresence final : public PresenceBinding {
 public:
     bool begin_presence(PresenceOperation operation, const AttemptId& attempt_id, std::uint64_t now_ms) override {
-        return gate_.begin(operation, attempt_id, now_ms, generation_);
+        const bool started = gate_.begin(operation, attempt_id, now_ms, generation_);
+        if (started) {
+            // This pure coordinator fixture has no physical button sampler, so
+            // model the post-request neutral baseline explicitly. Hardware race
+            // handling is covered by user_presence_test.cpp.
+            gate_.observe_input_state(false);
+            gate_.observe_input_state(false);
+        }
+        return started;
     }
 
     bool consume_presence(const AttemptId& attempt_id, std::uint64_t now_ms) override {
@@ -33,6 +41,7 @@ public:
 
     bool press(std::uint64_t now_ms) {
         ++generation_;
+        gate_.observe_input_state(true);
         return gate_.confirm_current(now_ms, generation_);
     }
 
@@ -246,7 +255,6 @@ int main() {
     assert(presence.active());
     assert(coordinator.state() == AttemptState::kAwaitingPresence);
 
-    // Only a button action generated after this attempt can confirm it.
     assert(presence.press(1'002));
     assert(coordinator.state() == AttemptState::kConfirmed);
 
@@ -261,12 +269,10 @@ int main() {
     assert(!coordinator.active());
     assert(!presence.active());
 
-    // A completed attempt is one-shot and cannot be replayed.
     opened.fill(0xa5);
     assert(!coordinator.complete(sealed.nonce, sealed.ciphertext, sealed.tag, 1'004, &opened));
     assert(std::all_of(opened.begin(), opened.end(), [](std::uint8_t byte) { return byte == 0; }));
 
-    // Invalid BRK authentication fails before opening the physical presence gate.
     AttemptDescriptor invalid{};
     assert(coordinator.begin(context, 2'000, &invalid));
     EVP_PKEY_free(web_private);
@@ -278,7 +284,6 @@ int main() {
     assert(!coordinator.active());
     assert(!presence.active());
 
-    // A new begin supersedes and wipes the prior pending attempt.
     AttemptDescriptor first{};
     AttemptDescriptor second{};
     assert(coordinator.begin(context, 3'000, &first));
@@ -289,7 +294,6 @@ int main() {
     assert(!coordinator.active());
     assert(!presence.active());
 
-    // TTL expiry cancels all attempt and presence state.
     assert(coordinator.begin(context, 4'000, &first));
     assert(!coordinator.expire(33'999));
     assert(coordinator.expire(34'000));

@@ -51,36 +51,29 @@ bool same_envelope(
            left.tag == right.tag;
 }
 
+bool explicit_reset_recovery_status(Status status) {
+    return status == Status::kCorrupt ||
+           status == Status::kUnsupportedSchema ||
+           status == Status::kReprovisionRequired;
+}
+
 }  // namespace
 
 const char* status_code(Status status) {
     switch (status) {
-        case Status::kOk:
-            return "ok";
-        case Status::kNotReady:
-            return "not_ready";
-        case Status::kUnprovisioned:
-            return "unprovisioned";
-        case Status::kLocked:
-            return "locked";
-        case Status::kInvalidState:
-            return "invalid_state";
-        case Status::kInvalidArgument:
-            return "invalid_argument";
-        case Status::kNotFound:
-            return "not_found";
-        case Status::kReprovisionRequired:
-            return "reprovision_required";
-        case Status::kUnsupportedSchema:
-            return "unsupported_schema";
-        case Status::kGenerationMismatch:
-            return "generation_mismatch";
-        case Status::kAuthenticationFailed:
-            return "authentication_failed";
-        case Status::kCorrupt:
-            return "corrupt";
-        case Status::kIo:
-            return "io_error";
+        case Status::kOk: return "ok";
+        case Status::kNotReady: return "not_ready";
+        case Status::kUnprovisioned: return "unprovisioned";
+        case Status::kLocked: return "locked";
+        case Status::kInvalidState: return "invalid_state";
+        case Status::kInvalidArgument: return "invalid_argument";
+        case Status::kNotFound: return "not_found";
+        case Status::kReprovisionRequired: return "reprovision_required";
+        case Status::kUnsupportedSchema: return "unsupported_schema";
+        case Status::kGenerationMismatch: return "generation_mismatch";
+        case Status::kAuthenticationFailed: return "authentication_failed";
+        case Status::kCorrupt: return "corrupt";
+        case Status::kIo: return "io_error";
     }
     return "runtime_error";
 }
@@ -129,35 +122,36 @@ Status Runtime::initialize() {
     initialized_ = true;
     schema_ready_ = false;
     has_vault_ = false;
+    recovery_reset_allowed_ = false;
     envelope_ = vault::VaultEnvelope{};
     last_used_.reset();
     state_ = State::kUnprovisioned;
 
     PersistedSnapshot snapshot;
     const Status status = persistence_.load(&snapshot);
-    if (status == Status::kUnprovisioned) {
-        return status;
-    }
+    if (status == Status::kUnprovisioned) return status;
     if (status == Status::kReprovisionRequired) {
         state_ = State::kReprovisionRequired;
+        recovery_reset_allowed_ = true;
         return status;
     }
     if (status != Status::kOk) {
         state_ = State::kError;
+        recovery_reset_allowed_ = explicit_reset_recovery_status(status);
         return status;
     }
     if (!snapshot.schema_ready) {
         state_ = State::kError;
+        recovery_reset_allowed_ = true;
         return Status::kCorrupt;
     }
 
     schema_ready_ = true;
     last_used_ = snapshot.last_used;
-    if (!snapshot.has_vault) {
-        return Status::kUnprovisioned;
-    }
+    if (!snapshot.has_vault) return Status::kUnprovisioned;
     if (!valid_envelope_framing(snapshot.envelope)) {
         state_ = State::kError;
+        recovery_reset_allowed_ = true;
         return Status::kCorrupt;
     }
 
@@ -172,10 +166,12 @@ Status Runtime::reload_after_persistence() {
     const Status status = persistence_.load(&snapshot);
     if (status != Status::kOk || !snapshot.schema_ready) {
         state_ = State::kError;
+        recovery_reset_allowed_ = status == Status::kOk || explicit_reset_recovery_status(status);
         wipe_vmk();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
 
+    recovery_reset_allowed_ = false;
     schema_ready_ = true;
     last_used_ = snapshot.last_used;
     has_vault_ = snapshot.has_vault;
@@ -187,6 +183,7 @@ Status Runtime::reload_after_persistence() {
     }
     if (!valid_envelope_framing(snapshot.envelope)) {
         state_ = State::kError;
+        recovery_reset_allowed_ = true;
         wipe_vmk();
         return Status::kCorrupt;
     }
@@ -204,6 +201,7 @@ Status Runtime::format_for_schema2() {
     const Status status = persistence_.format_schema2();
     if (status != Status::kOk) {
         state_ = State::kError;
+        recovery_reset_allowed_ = explicit_reset_recovery_status(status);
         return status;
     }
     return reload_after_persistence();
@@ -243,6 +241,7 @@ Status Runtime::install_encrypted_vault(vault::VaultEnvelope envelope, Vmk vmk) 
     status = reload_after_persistence();
     if (status != Status::kOk || !has_vault_ || !same_envelope(envelope_, envelope)) {
         state_ = State::kError;
+        recovery_reset_allowed_ = status == Status::kOk || explicit_reset_recovery_status(status);
         wipe_vmk();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
@@ -261,6 +260,7 @@ Status Runtime::unlock(Vmk vmk) {
     vmk_ = vmk;
     vmk_present_ = true;
     state_ = State::kUnlocked;
+    recovery_reset_allowed_ = false;
     return Status::kOk;
 }
 
@@ -284,6 +284,7 @@ Status Runtime::fatal_security_error() {
     if (!initialized_) return Status::kNotReady;
     wipe_vmk();
     state_ = State::kError;
+    recovery_reset_allowed_ = true;
     return Status::kOk;
 }
 
@@ -292,9 +293,7 @@ Status Runtime::update_encrypted_vault(
     vault::VaultEnvelope envelope
 ) {
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) {
-        return Status::kLocked;
-    }
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) return Status::kLocked;
     if (expected_generation != envelope_.generation ||
         expected_generation == std::numeric_limits<std::uint64_t>::max() ||
         envelope.generation != expected_generation + 1 ||
@@ -320,6 +319,7 @@ Status Runtime::update_encrypted_vault(
     last_used_ = snapshot.last_used;
     schema_ready_ = true;
     has_vault_ = true;
+    recovery_reset_allowed_ = false;
     state_ = State::kUnlocked;
     return Status::kOk;
 }
@@ -332,6 +332,7 @@ Status Runtime::metadata(Metadata* metadata_output) const {
     result.state = state_;
     result.schema_ready = schema_ready_;
     result.has_vault = has_vault_;
+    result.recovery_reset_allowed = recovery_reset_allowed_;
     result.storage_schema_version = schema_ready_ ? kStorageSchemaVersion : 0;
     result.last_used = last_used_;
     if (has_vault_) {
@@ -348,9 +349,7 @@ Status Runtime::with_credential(
     const CredentialConsumer& consumer
 ) {
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) {
-        return Status::kLocked;
-    }
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) return Status::kLocked;
     if (!consumer) return Status::kInvalidArgument;
 
     std::vector<std::uint8_t> encoded_plaintext;
@@ -384,11 +383,8 @@ Status Runtime::with_credential(
     Status status = consumer(*found);
     if (status == Status::kOk) {
         const Status last_used_status = persistence_.set_last_used(credential_id);
-        if (last_used_status == Status::kOk) {
-            last_used_ = credential_id;
-        } else {
-            status = last_used_status;
-        }
+        if (last_used_status == Status::kOk) last_used_ = credential_id;
+        else status = last_used_status;
     }
     wipe_plaintext(&plaintext);
     return status;
@@ -396,9 +392,7 @@ Status Runtime::with_credential(
 
 Status Runtime::with_wifi(const WifiConsumer& consumer) {
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) {
-        return Status::kLocked;
-    }
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) return Status::kLocked;
     if (!consumer) return Status::kInvalidArgument;
 
     std::vector<std::uint8_t> encoded_plaintext;
@@ -429,9 +423,7 @@ Status Runtime::with_wifi(const WifiConsumer& consumer) {
 
 Status Runtime::set_last_used(const CredentialId& credential_id) {
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) {
-        return Status::kLocked;
-    }
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) return Status::kLocked;
 
     std::vector<std::uint8_t> encoded_plaintext;
     if (!vault::decrypt_vault(envelope_, vmk_, encoded_plaintext)) {
@@ -470,11 +462,13 @@ Status Runtime::factory_reset() {
     const Status status = persistence_.erase_all();
     if (status != Status::kOk) {
         state_ = State::kError;
+        recovery_reset_allowed_ = false;
         return status;
     }
 
     schema_ready_ = false;
     has_vault_ = false;
+    recovery_reset_allowed_ = false;
     envelope_ = vault::VaultEnvelope{};
     last_used_.reset();
     state_ = State::kUnprovisioned;

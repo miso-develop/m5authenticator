@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace m5auth::totp {
@@ -24,10 +25,23 @@ using HmacSha1Provider = bool (*)(
     std::uint8_t output[20]
 );
 
+CoreResult generate_raw_with_provider(
+    std::span<const std::uint8_t> secret,
+    std::uint64_t unix_seconds,
+    HmacSha1Provider provider,
+    std::uint32_t* code
+);
+
 CoreResult generate_with_provider(
     std::string_view base32_secret,
     std::uint64_t unix_seconds,
     HmacSha1Provider provider,
+    std::uint32_t* code
+);
+
+CoreResult generate_raw(
+    std::span<const std::uint8_t> secret,
+    std::uint64_t unix_seconds,
     std::uint32_t* code
 );
 

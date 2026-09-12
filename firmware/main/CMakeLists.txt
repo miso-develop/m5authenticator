@@ -2,10 +2,12 @@ idf_component_register(
     SRCS "app_main.cpp"
     INCLUDE_DIRS "."
     REQUIRES
+        esp_driver_usb_serial_jtag
         m5auth_core
         m5auth_provisioning
         m5auth_device_sticks3
-        m5auth_storage
+        m5auth_registration
+        m5auth_session
         m5auth_time
         m5auth_totp
         m5auth_vault

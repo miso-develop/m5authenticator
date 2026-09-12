@@ -7,6 +7,7 @@ import {
   createBrowserCanonicalState,
   exportRecoveryPackage,
   importRecoveryPackage,
+  mergeVaultAdvanceWithCurrentBrowserState,
   sanitizeBrowserCanonicalState,
   unwrapVmkForTrustedBrowser,
 } from "./browser-vault";
@@ -88,6 +89,29 @@ describe("browser canonical Vault", () => {
     historicalVmk.fill(0);
     expect(RECOVERY_PASSPHRASE_CHANGE_NOTICE).toContain("does not cryptographically revoke");
     vmk.fill(0);
+  });
+
+  it("preserves same-generation browser security state when the encrypted Vault advances", async () => {
+    const { vmk, state } = await fixture();
+    const changed = await changeRecoveryPassphrase(state, oldPassphrase, newPassphrase);
+    const plaintext = await decryptVault(state.vault, vmk);
+    try {
+      const nextVault = await encryptVault(plaintext, vmk, state.vault.vaultId, state.vault.generation + 1n);
+      const staleVaultAdvance = sanitizeBrowserCanonicalState({ ...state, vault: nextVault });
+      const merged = mergeVaultAdvanceWithCurrentBrowserState(changed, staleVaultAdvance, state.vault.generation);
+
+      expect(merged.vault.generation).toBe(8n);
+      expect(merged.trustedBrowser.registrationId).toEqual(changed.trustedBrowser.registrationId);
+      expect(merged.trustedBrowser.wrappedVmk).toEqual(changed.trustedBrowser.wrappedVmk);
+
+      const recovered = await unwrapVmkWithPassphrase(merged.recoveryWrappedVmk, newPassphrase);
+      expect(recovered).toEqual(vmk);
+      recovered.fill(0);
+      await expect(unwrapVmkWithPassphrase(merged.recoveryWrappedVmk, oldPassphrase)).rejects.toThrow();
+    } finally {
+      plaintext.fill(0);
+      vmk.fill(0);
+    }
   });
 
   it("fails closed on unexpected generation divergence", async () => {

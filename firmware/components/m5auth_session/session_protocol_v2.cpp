@@ -76,12 +76,13 @@ bool is_zero_public_key(const P256PublicKey& key) {
 }
 
 bool valid_optional_p256_identity(const P256PublicKey& key) {
-    return is_zero_public_key(key) || key[0] == 0x04;
+    return is_zero_public_key(key) || session::valid_p256_public_key(key);
 }
 
 bool encode_transcript(const TranscriptInput& input, std::vector<std::uint8_t>* output) {
     if (output == nullptr || input.device_id.empty() || input.device_id.size() > kMaxDeviceIdBytes) return false;
-    if (input.device_ephemeral_public_key[0] != 0x04 || input.web_ephemeral_public_key[0] != 0x04) return false;
+    if (!session::valid_p256_public_key(input.device_ephemeral_public_key) ||
+        !session::valid_p256_public_key(input.web_ephemeral_public_key)) return false;
     if (!valid_optional_p256_identity(input.current_brk_public_key) ||
         !valid_optional_p256_identity(input.proposed_brk_public_key)) return false;
 

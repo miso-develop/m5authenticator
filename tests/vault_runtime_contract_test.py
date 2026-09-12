@@ -101,7 +101,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
 
     def test_wifi_driver_storage_is_ram_only_and_runtime_is_torn_down(self) -> None:
         self.assertIn("esp_wifi_set_storage(WIFI_STORAGE_RAM)", self.time_service)
-        self.assertIn("storage::secure_zero(&config, sizeof(config));", self.time_service)
+        self.assertIn("vault_runtime::secure_zero(&config, sizeof(config));", self.time_service)
         self.assertIn("esp_wifi_disconnect()", self.time_service)
         self.assertIn("esp_wifi_stop()", self.time_service)
         self.assertIn("esp_wifi_deinit()", self.time_service)
@@ -140,11 +140,12 @@ class VaultRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.nvs.lower())
 
-    def test_schema2_is_staged_without_canonical_activation(self) -> None:
+    def test_schema2_is_canonically_activated(self) -> None:
         self.assertIn("kStorageSchemaVersion = 2", self.header)
         self.assertIn("kTargetStorageSchemaVersion", self.nvs)
-        self.assertIn("kProtocolVersion = 1", self.core_metadata)
-        self.assertIn("kStorageSchemaVersion = 1", self.core_metadata)
+        self.assertIn("kProtocolVersion = 2", self.core_metadata)
+        self.assertIn("kStorageSchemaVersion = 2", self.core_metadata)
+        self.assertIn("kVaultFormatVersion = 1", self.core_metadata)
         self.assertNotIn("kProtocolVersion", self.component)
 
     def test_known_schema1_requires_reprovision_and_newer_fails_closed(self) -> None:

@@ -8,6 +8,17 @@ import {
   importRecoveryPackage,
   type BrowserCanonicalState,
 } from "./browser-vault";
+import {
+  CANONICAL_BROWSER_STATE_CHANGED_EVENT,
+  notifyCanonicalBrowserStateChanged,
+  withCanonicalBrowserStateLock,
+} from "./browser-state-lock";
+import { IndexedDbBrowserResetIntentStore } from "./browser-reset-intent";
+import {
+  IndexedDbBrowserTransactionJournal,
+  PendingBrowserTransactionError,
+} from "./browser-transaction-journal";
+import { assertNoPendingSecurityMutation } from "./security-mutation-guard";
 
 const shell = document.querySelector<HTMLElement>(".shell");
 if (!shell) throw new Error("Security panel requires the main application shell");
@@ -74,10 +85,24 @@ const changePassphraseButton = queryRequired<HTMLButtonElement>("#browser-change
 const passphraseCancel = queryRequired<HTMLButtonElement>("#browser-passphrase-cancel");
 
 const store = new IndexedDbBrowserVaultStore();
+const journal = new IndexedDbBrowserTransactionJournal();
+const resetIntents = new IndexedDbBrowserResetIntentStore();
 let states: BrowserCanonicalState[] = [];
 let current: BrowserCanonicalState | null = null;
+let pendingVaultIds = new Set<string>();
+let pendingResetDeviceIds = new Set<string>();
+let pendingResetVaultIds = new Set<string>();
 let conflictMessage: string | null = null;
 let busy = false;
+
+function selectedPending(): boolean {
+  if (!current) return false;
+  const vaultId = displayVaultId(current.vault.vaultId);
+  const deviceId = current.deviceMetadata?.deviceId;
+  return pendingVaultIds.has(vaultId) ||
+    pendingResetVaultIds.has(vaultId) ||
+    (deviceId !== undefined && pendingResetDeviceIds.has(deviceId));
+}
 
 vaultSelect.addEventListener("change", () => {
   current = states.find((state) => displayVaultId(state.vault.vaultId) === vaultSelect.value) ?? null;
@@ -85,21 +110,31 @@ vaultSelect.addEventListener("change", () => {
   render();
 });
 
-exportButton.addEventListener("click", () => {
-  if (!current || busy) return;
-  const serialized = exportRecoveryPackage(current);
-  const blob = new Blob([serialized], { type: "application/vnd.m5authenticator.recovery+json" });
-  const url = URL.createObjectURL(blob);
-  try {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `m5authenticator-recovery-${displayVaultId(current.vault.vaultId).slice(0, 12)}.json`;
-    link.click();
-    notice.textContent = "Recovery Package exported. Store it as a security-sensitive offline file.";
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-});
+exportButton.addEventListener("click", () => void run(async () => {
+  await withCanonicalBrowserStateLock(async () => {
+    if (!current) return;
+    const latest = await store.get(current.vault.vaultId);
+    if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
+    await assertNoPendingSecurityMutation(latest, journal, resetIntents);
+    if (latest.trustedBrowser.status !== "active") {
+      throw new Error("Recovery Package export is blocked until Device replacement is confirmed and this browser becomes active");
+    }
+    current = latest;
+    const serialized = exportRecoveryPackage(latest);
+    const blob = new Blob([serialized], { type: "application/vnd.m5authenticator.recovery+json" });
+    const url = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `m5authenticator-recovery-${displayVaultId(latest.vault.vaultId).slice(0, 12)}.json`;
+      link.click();
+      notice.textContent = "Latest Recovery Package exported. Store it as a security-sensitive offline file.";
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
+  await refresh();
+}));
 
 importButton.addEventListener("click", () => void run(async () => {
   const file = recoveryFile.files?.[0];
@@ -109,14 +144,18 @@ importButton.addEventListener("click", () => void run(async () => {
   let serialized = await file.text();
   const passphrase = recoveryPassphrase.value;
   try {
-    const imported = await importRecoveryPackage(serialized, passphrase);
-    const existing = await store.get(imported.vault.vaultId);
-    if (existing) {
-      throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
-    }
-    await store.put(imported);
-    conflictMessage = null;
-    notice.textContent = "Recovery Package imported. Fresh local BUK/BRK keys were created, but this browser is replacement-pending and is not yet an active Device writer.";
+    await withCanonicalBrowserStateLock(async () => {
+      const imported = await importRecoveryPackage(serialized, passphrase);
+      const existing = await store.get(imported.vault.vaultId);
+      if (existing) {
+        throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
+      }
+      await assertNoPendingSecurityMutation(imported, journal, resetIntents);
+      await store.put(imported);
+      notifyCanonicalBrowserStateChanged();
+      conflictMessage = null;
+      notice.textContent = "Recovery Package imported. Fresh local BUK/BRK keys were created, but this browser is replacement-pending and is not yet an active Device writer.";
+    });
     await refresh();
   } finally {
     serialized = "";
@@ -127,18 +166,34 @@ importButton.addEventListener("click", () => void run(async () => {
 recoveryCancel.addEventListener("click", clearRecoveryInputs);
 
 changePassphraseButton.addEventListener("click", () => void run(async () => {
-  if (!current) throw new Error("No browser canonical Vault is selected");
   if (newPassphrase.value !== confirmPassphrase.value) throw new Error("New Passphrase confirmation does not match");
-  const expectedGeneration = current.vault.generation;
-  const updated = await changeRecoveryPassphrase(current, currentPassphrase.value, newPassphrase.value);
-  await store.put(updated, expectedGeneration);
-  conflictMessage = null;
-  notice.textContent = RECOVERY_PASSPHRASE_CHANGE_NOTICE;
+  await withCanonicalBrowserStateLock(async () => {
+    if (!current) throw new Error("No browser canonical Vault is selected");
+    const latest = await store.get(current.vault.vaultId);
+    if (!latest) throw new Error("Canonical Vault state changed before Passphrase update; refresh and retry");
+    await assertNoPendingSecurityMutation(latest, journal, resetIntents);
+    if (latest.trustedBrowser.status !== "active") {
+      throw new Error("Recovery Passphrase changes are blocked while Device replacement is pending");
+    }
+    const expectedGeneration = latest.vault.generation;
+    const updated = await changeRecoveryPassphrase(latest, currentPassphrase.value, newPassphrase.value);
+    await store.put(updated, expectedGeneration);
+    current = updated;
+    notifyCanonicalBrowserStateChanged();
+    conflictMessage = null;
+    notice.textContent = RECOVERY_PASSPHRASE_CHANGE_NOTICE;
+  });
   clearPassphraseInputs();
   await refresh();
 }));
 
+recoveryCancel.addEventListener("click", clearRecoveryInputs);
 passphraseCancel.addEventListener("click", clearPassphraseInputs);
+window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
+  void refresh().catch((error: unknown) => {
+    notice.textContent = userFacingError(error, "Browser security state could not be refreshed.");
+  });
+});
 window.addEventListener("pagehide", () => {
   clearRecoveryInputs();
   clearPassphraseInputs();
@@ -149,7 +204,18 @@ void refresh().catch((error: unknown) => {
 });
 
 async function refresh(): Promise<void> {
-  states = await store.list();
+  const [nextStates, pending, resetPending] = await Promise.all([
+    store.list(),
+    journal.list(),
+    resetIntents.list(),
+  ]);
+  states = nextStates;
+  pendingVaultIds = new Set(pending.map((value) => displayVaultId(value.candidate.vault.vaultId)));
+  pendingResetDeviceIds = new Set(resetPending.map((intent) => intent.deviceId));
+  pendingResetVaultIds = new Set(
+    resetPending.flatMap((intent) => intent.affectedVaults.map((affected) => displayVaultId(affected.vaultId))),
+  );
+
   const selectedKey = current ? displayVaultId(current.vault.vaultId) : vaultSelect.value;
   vaultSelect.replaceChildren();
   for (const state of states) {
@@ -169,12 +235,14 @@ function render(): void {
   status.replaceChildren();
   const hasState = current !== null;
   const conflict = conflictMessage !== null;
+  const pending = selectedPending();
+  const active = hasState && current?.trustedBrowser.status === "active" && !conflict && !pending;
   vaultSelect.disabled = busy || states.length <= 1;
-  exportButton.disabled = busy || !hasState;
-  currentPassphrase.disabled = busy || !hasState || conflict;
-  newPassphrase.disabled = busy || !hasState || conflict;
-  confirmPassphrase.disabled = busy || !hasState || conflict;
-  changePassphraseButton.disabled = busy || !hasState || conflict;
+  exportButton.disabled = busy || !active;
+  currentPassphrase.disabled = busy || !active;
+  newPassphrase.disabled = busy || !active;
+  confirmPassphrase.disabled = busy || !active;
+  changePassphraseButton.disabled = busy || !active;
   recoveryFile.disabled = busy;
   recoveryPassphrase.disabled = busy;
   importButton.disabled = busy;
@@ -182,12 +250,12 @@ function render(): void {
   if (!current) {
     trustState.textContent = "No canonical Vault";
     appendStatus("Browser state", "None");
-    appendStatus("Initial setup", "Created by the V1 canonical provisioning flow; Protocol 2 is not activated by this screen");
+    appendStatus("Initial setup", "Create the Protocol 2 canonical Vault from the Import accounts section after connecting an unprovisioned Device");
     return;
   }
 
-  if (conflict) {
-    trustState.textContent = "Conflict / recovery required";
+  if (conflict || pending) {
+    trustState.textContent = pending ? "Pending Device reconciliation" : "Conflict / recovery required";
   } else {
     trustState.textContent = current.trustedBrowser.status === "active" ? "Trusted Browser active" : "Replacement pending";
   }
@@ -197,11 +265,13 @@ function render(): void {
   appendStatus("Registration epoch", String(current.trustedBrowser.epoch));
   appendStatus(
     "Browser ownership",
-    conflict
-      ? "Writes blocked pending explicit recovery/reconciliation"
-      : current.trustedBrowser.status === "active"
-        ? "Active writer"
-        : "Pending explicit Device replacement",
+    pending
+      ? "Encrypted candidate or Device reset is pending reconciliation; recovery export and Passphrase mutation are blocked"
+      : conflict
+        ? "Writes blocked pending explicit recovery/reconciliation"
+        : current.trustedBrowser.status === "active"
+          ? "Active writer"
+          : "Pending explicit Device replacement; recovery export and Passphrase mutation are blocked until Device confirmation",
   );
   if (conflictMessage) appendStatus("Conflict", conflictMessage);
   appendStatus("BUK", "Local non-extractable AES-256-GCM key");
@@ -225,13 +295,15 @@ async function run(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error) {
-    if (error instanceof GenerationConflictError) conflictMessage = error.message;
+    if (error instanceof GenerationConflictError || error instanceof PendingBrowserTransactionError) {
+      conflictMessage = error.message;
+    }
     notice.textContent = userFacingError(error, "Security operation failed.");
     clearRecoveryInputs();
     clearPassphraseInputs();
   } finally {
     busy = false;
-    render();
+    await refresh().catch(() => render());
   }
 }
 

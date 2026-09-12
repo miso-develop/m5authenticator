@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "m5auth/vault.hpp"
 
@@ -73,7 +75,6 @@ public:
     virtual Status erase_all() = 0;
 };
 
-// Low-level plaintext-NVS adapter for the target Schema 2 representation.
 class NvsPersistence final : public Persistence {
 public:
     Status load(PersistedSnapshot* snapshot) override;
@@ -86,11 +87,6 @@ public:
     Status erase_all() override;
 };
 
-// Runtime-facing adapter. It first attempts target Schema 2 and, if that cannot
-// be opened, performs a read-only probe using the deliberately public legacy
-// development NVS keys. A positively identified Schema 1 returns
-// kReprovisionRequired. Unknown/corrupt states retain the original fail-closed
-// result; this probe never erases or migrates storage.
 class CompatibleNvsPersistence final : public Persistence {
 public:
     Status load(PersistedSnapshot* snapshot) override;
@@ -110,11 +106,24 @@ struct Metadata {
     State state{State::kUnprovisioned};
     bool schema_ready{false};
     bool has_vault{false};
+    // True only when Runtime classified the fail-closed persisted state as a
+    // structural/unsupported/reprovision condition for which an explicitly
+    // user-confirmed destructive reset is a valid recovery. Generic I/O does
+    // not set this bit and must not become erase-authorizing metadata.
+    bool recovery_reset_allowed{false};
     std::uint32_t storage_schema_version{0};
     std::uint16_t vault_format_version{0};
     std::array<std::uint8_t, vault::kVaultIdBytes> vault_id{};
     std::uint64_t generation{0};
     std::optional<CredentialId> last_used;
+};
+
+struct CredentialMetadata {
+    CredentialId credential_id{};
+    std::string issuer;
+    std::string account;
+    std::string display_name;
+    std::uint16_t manual_order{0};
 };
 
 using CredentialConsumer = std::function<Status(const vault::CredentialRecord&)>;
@@ -131,23 +140,11 @@ public:
     Runtime& operator=(Runtime&&) = delete;
 
     Status initialize();
-
-    // Explicitly erase/format the Device-owned partition for Schema 2. This is
-    // intended for first provisioning or explicit reprovisioning only.
     Status format_for_schema2();
-
-    // First install validates the authenticated envelope with the transient VMK,
-    // persists only encrypted state, wipes the local VMK copy, and remains LOCKED.
     Status install_encrypted_vault(vault::VaultEnvelope envelope, Vmk vmk);
-
-    // VMK is retained only after successful authenticated open of the active Vault.
     Status unlock(Vmk vmk);
     Status lock();
 
-    // Security-root transition boundaries all destroy the resident VMK before
-    // subsequent recovery/registration/re-key processing begins. Keeping the
-    // entry points distinct makes it difficult for downstream protocol code to
-    // accidentally treat an ordinary same-VMK generation update as a re-key.
     Status enter_recovery_boundary();
     Status enter_registration_replacement_boundary() {
         return enter_recovery_boundary();
@@ -157,17 +154,20 @@ public:
     }
     Status fatal_security_error();
 
-    // Same-VMK generation update while UNLOCKED. The active VMK remains resident
-    // only if staging/activation succeeds and the new envelope authenticates.
     Status update_encrypted_vault(
         std::uint64_t expected_generation,
         vault::VaultEnvelope envelope
     );
 
-    Status metadata(Metadata* metadata) const;
+    Status rekey_encrypted_vault(
+        std::uint64_t expected_generation,
+        vault::VaultEnvelope envelope,
+        Vmk vmk
+    );
 
-    // Consumers are synchronous and must not retain references beyond the call.
-    // The decrypted Vault is wiped before these methods return.
+    Status metadata(Metadata* metadata) const;
+    Status list_credentials(std::vector<CredentialMetadata>* credentials);
+
     Status with_credential(
         const CredentialId& credential_id,
         const CredentialConsumer& consumer
@@ -191,6 +191,7 @@ private:
     bool initialized_{false};
     bool schema_ready_{false};
     bool has_vault_{false};
+    bool recovery_reset_allowed_{false};
     State state_{State::kUnprovisioned};
     vault::VaultEnvelope envelope_{};
     std::optional<CredentialId> last_used_;
