@@ -2,9 +2,11 @@
 
 M5Authenticator V1 uses USB Serial / Web Serial with newline-delimited JSON (NDJSON). Decision #40 establishes the RAM-only VMK security model; Decisions #47-#49 settle Trusted Browser ownership, fresh-session cryptography, user presence, and trusted-time mutation semantics.
 
-The current development implementation may still advertise `PROTOCOL_VERSION = 1`. The complete V1 security transition activates **`PROTOCOL_VERSION = 2`** only in Task #55 after the underlying Vault/Web/Device/session components are present. Protocol v1 semantics must never be silently reinterpreted as v2.
+Canonical V1 is **`PROTOCOL_VERSION = 2`** with **Storage Schema 2 / Vault Format 1**. Protocol 1 / Storage Schema 1 remain historical development semantics and must never be silently reinterpreted as V1. The production release build has no fallback to the retired Protocol 1 credential-management path.
 
 Requests and responses are versioned, bounded, and request-id correlated. Binary cryptographic fields are encoded in canonical base64url form. Credential/key material is never echoed in errors or logs.
+
+See `docs/ARCHITECTURE.md` for cross-component flows and `docs/V1_REQUIREMENTS.md` for the durable V1 requirements index.
 
 ## Protocol v2 security states
 
@@ -84,7 +86,7 @@ The cryptographic transcript is a versioned **fixed-order encoding** independent
 - both ephemeral ECDH public keys
 - current or proposed BRK identity where applicable
 
-Exact field limits/encoding bytes must be fixed by Task #54 and covered by Web/native interoperability vectors; implementations must not sign incidental serializer output.
+Exact field limits/encoding are implemented and covered by Web/native interoperability tests. Implementations sign the canonical transcript encoding rather than incidental serializer output.
 
 ### Attempt lifecycle
 
@@ -216,6 +218,8 @@ Unknown newer Vault/storage/protocol formats are not automatically erased or gue
 
 The production path never falls back to the legacy synthetic-key development storage backend.
 
-## Version migration
+## Version history and compatibility policy
 
-Protocol v1 remains historical development behavior. Tasks #51-#54 may stage target components without changing the canonical advertised protocol. Task #55 activates v2 only when end-to-end Vault/session/management semantics are complete. Task #56 then updates the release contract, followed by security closeout Task #15.
+Protocol 1 is historical pre-V1 development behavior. Tasks #51-#54 staged the new cryptographic/runtime pieces, Task #55 activated canonical Protocol 2 end to end, Task #56 changed the release contract, and Task #15 completed the security closeout before production eligibility was enabled.
+
+Current production compatibility is therefore Protocol 2 / Storage Schema 2 / Vault Format 1. Legacy development artifacts may remain in repository history or non-release test context, but they are not a negotiated production fallback and must not be treated as equivalent to V1.
