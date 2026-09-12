@@ -14,6 +14,13 @@ DEVICE_CPP = (
     / "m5auth_device_sticks3"
     / "device.cpp"
 )
+CANONICAL_DEVICE_CPP = (
+    ROOT
+    / "firmware"
+    / "components"
+    / "m5auth_device_sticks3"
+    / "canonical_device.cpp"
+)
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 CANONICAL_PROTOCOL = (
     ROOT
@@ -65,6 +72,13 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
         self.assertIn('operation == "device.lock"', protocol)
         self.assertIn("status = runtime_.lock();", protocol)
+
+    def test_canonical_presence_requires_neutral_and_quarantines_authorizing_gesture(self) -> None:
+        text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        self.assertIn("presence_.observe_button_state(M5.BtnA.isPressed());", text)
+        self.assertIn("presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());", text)
+        self.assertIn("M5.BtnA.wasDecideClickCount()", text)
+        self.assertIn("!presence_gesture_quarantine_.active()", text)
 
 
 if __name__ == "__main__":
