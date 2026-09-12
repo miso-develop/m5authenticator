@@ -1,6 +1,5 @@
 idf_component_register(
     SRCS
-        "protocol.cpp"
         "session_binding_v2.cpp"
         "session_protocol_v2.cpp"
         "canonical_v2_state.cpp"
@@ -10,7 +9,6 @@ idf_component_register(
         m5auth_core
         m5auth_registration
         m5auth_session
-        m5auth_storage
         m5auth_time
         m5auth_vault
         m5auth_vault_runtime

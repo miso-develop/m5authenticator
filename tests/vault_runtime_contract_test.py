@@ -9,7 +9,7 @@ COMPAT_NVS = ROOT / "firmware/components/m5auth_vault_runtime/compatible_nvs_per
 VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
 VAULT_CRYPTO = ROOT / "firmware/components/m5auth_vault/vault_crypto.cpp"
 TOTP_CORE = ROOT / "firmware/components/m5auth_totp/totp_core.cpp"
-TIME_SERVICE = ROOT / "firmware/components/m5auth_time/time_service.cpp"
+TIME_SERVICE = ROOT / "firmware/components/m5auth_time/canonical_time_service.cpp"
 CORE_METADATA = ROOT / "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp"
 
 

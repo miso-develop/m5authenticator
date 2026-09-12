@@ -108,7 +108,7 @@ jobs:
           && /tmp/m5auth-vault-rekey-test
       - name: Test Vault runtime security contract
         run: python -m unittest tests/vault_runtime_contract_test.py
-      - name: Test Device session crypto primitives
+      - name: Device session crypto primitives
         run: >-
           g++ -std=c++20 -Wall -Wextra -Werror
           -Ifirmware/components/m5auth_session/include
@@ -192,10 +192,11 @@ jobs:
           && /tmp/m5auth-device-ui-model-test
       - name: Test StickS3 runtime contract
         run: python -m unittest tests/sticks3_runtime_contract_test.py
-      - name: Validate release profile and package rules
+      - name: Validate release profile and security closeout rules
         run: |
           python scripts/validate_release.py
           python -m unittest tests/release_package_test.py
+          python -m unittest tests/security_closeout_contract_test.py
       - name: Build and merge with ESP-IDF 5.5.5
         run: >-
           docker run --rm
@@ -204,10 +205,11 @@ jobs:
           espressif/idf:v5.5.5
           bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
       - name: Validate the CI-built distribution package
-        run: >-
-          python scripts/package_firmware.py
-          --merged-binary firmware/build/m5authenticator-merged.bin
-          --output-dir /tmp/m5auth-release
-          --build-commit "$GITHUB_SHA"
+        run: |
+          python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
+          python scripts/package_firmware.py \
+            --merged-binary firmware/build/m5authenticator-merged.bin \
+            --output-dir /tmp/m5auth-release \
+            --build-commit "$GITHUB_SHA"
       - name: Verify ESP-IDF dependency lockfile is unchanged
         run: git diff --exit-code -- firmware/dependencies.lock

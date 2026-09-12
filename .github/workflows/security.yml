@@ -13,19 +13,17 @@ jobs:
   security-scan:
     name: security:scan
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Show Python runtime
         run: python3 --version
-
+      - name: Verify V1 release security closeout contract
+        run: python3 -m unittest tests/security_closeout_contract_test.py
       - name: Test repository security scanner
         run: python3 -m unittest discover -s tests -p 'test_security_scan.py'
-
       - name: Scan tracked repository content
         run: python3 scripts/security_scan.py

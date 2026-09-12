@@ -1,10 +1,12 @@
 #include "m5auth/vault.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace m5auth::vault;
@@ -29,6 +31,15 @@ std::array<std::uint8_t, N> sequence(std::uint8_t start) {
         result[index] = static_cast<std::uint8_t>(start + index);
     }
     return result;
+}
+
+template <typename Needle>
+bool contains_bytes(const std::vector<std::uint8_t>& haystack, const Needle& needle) {
+    return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
+}
+
+bool contains_text(const std::vector<std::uint8_t>& haystack, std::string_view needle) {
+    return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
 }
 
 VaultPlaintext sample_vault() {
@@ -85,6 +96,37 @@ int main() {
     assert(decoded.wifi->password == original.wifi->password);
 
     const auto vmk = sequence<kVmkBytes>(0x00);
+
+    // Device persistence stores the authenticated Vault envelope, not this
+    // plaintext. Inspect the exact encrypted payload that is handed to the NVS
+    // persistence layer and fail if any synthetic private marker or VMK is
+    // present verbatim. The NVS contract test independently pins that only the
+    // envelope ciphertext plus bounded non-secret framing/registration state is
+    // persisted outside the Vault.
+    VaultEnvelope persisted_private_state;
+    assert(encrypt_vault_with_nonce(
+        encoded,
+        vmk,
+        vault_id,
+        8,
+        sequence<kVaultNonceBytes>(0xc0),
+        persisted_private_state
+    ));
+    for (const std::string_view marker : {
+        "synthetic-issuer-only",
+        "synthetic-account-only",
+        "synthetic-display-only",
+        "synthetic-ssid-only",
+        "synthetic-network-pass-only",
+    }) {
+        assert(!contains_text(persisted_private_state.ciphertext, marker));
+    }
+    assert(!contains_bytes(
+        persisted_private_state.ciphertext,
+        original.credentials[0].secret
+    ));
+    assert(!contains_bytes(persisted_private_state.ciphertext, vmk));
+
     const auto nonce = sequence<kVaultNonceBytes>(0xa0);
     const std::string payload_text = "synthetic-vault-payload-only";
     const std::vector<std::uint8_t> payload(payload_text.begin(), payload_text.end());

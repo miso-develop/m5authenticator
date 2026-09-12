@@ -79,8 +79,8 @@ V1 uses **one authenticated ciphertext per Vault generation**.
 - VMK: random 256-bit
 - nonce: fresh random 96-bit value for every Vault encryption
 - authentication tag: 128-bit
-- target: `VAULT_FORMAT_VERSION = 1`
-- target persistence semantics: `STORAGE_SCHEMA_VERSION = 2`
+- canonical `VAULT_FORMAT_VERSION = 1`
+- canonical persistence semantics: `STORAGE_SCHEMA_VERSION = 2`
 
 The Vault nonce is never derived solely from `generation`. V1 has no hardware-backed monotonic counter, so a restored old state must not cause deterministic nonce reuse under the same VMK.
 
@@ -316,17 +316,17 @@ Factory Reset must:
 
 An exported Recovery Package outside the current browser/device is outside this erase boundary and cannot be deleted remotely by Factory Reset.
 
-## Version transition and implementation ownership
+## Version boundary and implementation status
 
-Current development main may still implement Protocol 1 / Storage Schema 1 using the deliberately public synthetic development storage backend. That state is not production-ready security and remains release-ineligible.
-
-Target V1 is:
+Canonical V1 is now active end to end:
 
 - `PROTOCOL_VERSION = 2`
 - `STORAGE_SCHEMA_VERSION = 2`
 - `VAULT_FORMAT_VERSION = 1`
 
-The former catch-all Task #41 is superseded. Implementation is decomposed into Tasks #51-#56, followed by the security closeout Task #15. Firmware/Web must not advertise the target version tuple before the complete Protocol v2 integration semantics are active.
+Tasks #51-#56 activated the Vault format, RAM-only VMK runtime, Trusted Browser ownership, Protocol v2 fresh-session transport, canonical Web/Device management flow, and the V1 release contract. Task #15 completed the final cross-surface security closeout; production release eligibility is enabled only with those V1 invariants and fail-closed release checks intact.
+
+Legacy Protocol 1 / Storage Schema 1 source may remain only as non-release historical/test material where required. It is not the canonical firmware bootstrap and must not be compiled into the V1 release credential surface or be advertised as current behavior.
 
 ## Superseded design
 
