@@ -83,6 +83,24 @@ export class IndexedDbBrowserResetIntentStore {
     }
   }
 
+  async list(): Promise<BrowserResetIntent[]> {
+    if (this.usesFallback()) {
+      return Array.from(this.fallback.values(), (value) => cloneIntent(value));
+    }
+    const db = await openResetDatabase();
+    try {
+      const transaction = db.transaction(RESET_STORE_NAME, "readonly");
+      const request = transaction.objectStore(RESET_STORE_NAME).getAll();
+      const records = await new Promise<PersistedResetIntent[]>((resolve, reject) => {
+        request.onsuccess = () => resolve((request.result as PersistedResetIntent[] | undefined) ?? []);
+        request.onerror = () => reject(request.error ?? new Error("Failed to list Device reset intents"));
+      });
+      return records.map((record) => cloneIntent(record));
+    } finally {
+      db.close();
+    }
+  }
+
   async stage(value: BrowserResetIntent): Promise<void> {
     validateIntent(value);
     const safe = cloneIntent(value);
