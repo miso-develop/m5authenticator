@@ -30,6 +30,37 @@ jobs:
       - name: Test Web App
         working-directory: web
         run: npm test
+      - name: Test QR image decode in real Chrome
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_url="http://127.0.0.1:4173/m5authenticator/tests/browser/qr-smoke.html"
+          npm run dev -- --host 127.0.0.1 --port 4173 --strictPort >/tmp/m5auth-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..30}; do
+            if curl -fsS "$smoke_url" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$smoke_url" >/dev/null
+
+          google-chrome \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --virtual-time-budget=5000 \
+            --dump-dom \
+            "$smoke_url" \
+            >/tmp/qr-smoke-dom.html
+
+          if ! grep -q 'data-status="pass"' /tmp/qr-smoke-dom.html; then
+            cat /tmp/qr-smoke-dom.html
+            exit 1
+          fi
       - name: Build Web App
         working-directory: web
         run: npm run build
