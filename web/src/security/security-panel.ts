@@ -18,6 +18,7 @@ import {
   IndexedDbBrowserTransactionJournal,
   PendingBrowserTransactionError,
 } from "./browser-transaction-journal";
+import { assertNoPendingSecurityMutation } from "./security-mutation-guard";
 
 const shell = document.querySelector<HTMLElement>(".shell");
 if (!shell) throw new Error("Security panel requires the main application shell");
@@ -100,20 +101,6 @@ function selectedPending(): boolean {
   return vaultPending || (deviceId !== undefined && pendingResetDeviceIds.has(deviceId));
 }
 
-async function assertNoPendingSecurityMutation(state: BrowserCanonicalState): Promise<void> {
-  if (await journal.get(state.vault.vaultId)) {
-    throw new PendingBrowserTransactionError(
-      "Recovery export and Passphrase mutation are blocked until the pending Device outcome is reconciled.",
-    );
-  }
-  const deviceId = state.deviceMetadata?.deviceId;
-  if (deviceId && await resetIntents.get(deviceId)) {
-    throw new PendingBrowserTransactionError(
-      "Recovery export and Passphrase mutation are blocked until the pending Device reset outcome is reconciled.",
-    );
-  }
-}
-
 vaultSelect.addEventListener("change", () => {
   current = states.find((state) => displayVaultId(state.vault.vaultId) === vaultSelect.value) ?? null;
   conflictMessage = null;
@@ -125,7 +112,7 @@ exportButton.addEventListener("click", () => void run(async () => {
     if (!current) return;
     const latest = await store.get(current.vault.vaultId);
     if (!latest) throw new Error("Canonical Vault state changed before Recovery Package export; refresh and retry");
-    await assertNoPendingSecurityMutation(latest);
+    await assertNoPendingSecurityMutation(latest, journal, resetIntents);
     if (latest.trustedBrowser.status !== "active") {
       throw new Error("Recovery Package export is blocked until Device replacement is confirmed and this browser becomes active");
     }
@@ -160,7 +147,7 @@ importButton.addEventListener("click", () => void run(async () => {
       if (existing) {
         throw new Error("This browser already has canonical state for that Vault. Import will not overwrite an active or pending Trusted Browser implicitly.");
       }
-      await assertNoPendingSecurityMutation(imported);
+      await assertNoPendingSecurityMutation(imported, journal, resetIntents);
       await store.put(imported);
       notifyCanonicalBrowserStateChanged();
       conflictMessage = null;
@@ -181,7 +168,7 @@ changePassphraseButton.addEventListener("click", () => void run(async () => {
     if (!current) throw new Error("No browser canonical Vault is selected");
     const latest = await store.get(current.vault.vaultId);
     if (!latest) throw new Error("Canonical Vault state changed before Passphrase update; refresh and retry");
-    await assertNoPendingSecurityMutation(latest);
+    await assertNoPendingSecurityMutation(latest, journal, resetIntents);
     if (latest.trustedBrowser.status !== "active") {
       throw new Error("Recovery Passphrase changes are blocked while Device replacement is pending");
     }
