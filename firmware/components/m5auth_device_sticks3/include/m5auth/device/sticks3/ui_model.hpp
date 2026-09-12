@@ -47,7 +47,7 @@ public:
     bool unlock_request_active() const;
     bool unlock_request_confirmed() const;
     session::PresenceOperation unlock_request_operation() const;
-    void observe_primary_button_state(bool pressed);
+    void observe_primary_button_state(bool pressed) { presence_.observe_input_state(pressed); }
     bool primary_button_pressed(std::uint64_t now_ms);
     bool consume_unlock_confirmation(
         const session::AttemptId& attempt_id,
