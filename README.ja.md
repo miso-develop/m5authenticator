@@ -9,7 +9,9 @@
 
 ## プロジェクト状況
 
-V1を実装中です。現在のdevelopment runtimeはまだproduction-readyではなく、V1 Vault/security task chainと最終security closeoutが完了するまでpublic firmware releaseはfail closedです。
+V1実装とsecurity closeoutは完了しています。canonical production architectureは **Protocol 2 / Storage Schema 2 / Vault Format 1**、security profileは `encrypted-vault-ram-only-vmk` で、fail-closedなrelease/profile checkを前提にproduction release eligibilityが有効化されています。
+
+GitHub Pages経路では、検証済みproduction firmwareをWeb Flasher向けにbuild/deployする状態です。正式なGitHub Releaseはversion tagによって作成され、Pages/M5Burnerと同じsecret-freeなCI-built merged firmware imageを使用します。
 
 最初の対象はM5StickS3で、以下に対応します。
 
@@ -30,23 +32,25 @@ V1を実装中です。現在のdevelopment runtimeはまだproduction-readyで�
 
 外部serviceのTOTP enrollment / source Authenticatorはcredentialをreplace/re-enrollするためのauthoritative sourceとして維持します。Web ProvisionerのEncrypted VaultはM5Authenticator内部でbrowser/device replicaを同期するためのcanonical encrypted replicaです。
 
-project全体の制約は `PROJECT.md`、必須security policyは `SECURITY.md`、Vault/key/unlock/recovery設計は `docs/SECRET_VAULT.md` を参照してください。
+V1全体像は [`docs/V1_REQUIREMENTS.md`](docs/V1_REQUIREMENTS.md) と [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) から参照してください。鍵階層、persistence、unlock/recovery、Trusted Browser等のsecurity-sensitiveなcurrent truthは [`docs/SECRET_VAULT.md`](docs/SECRET_VAULT.md) に集約しています。project-wide constraintは `PROJECT.md`、必須security policy / threat modelは `SECURITY.md` を正本とします。
+
+## V1ドキュメント
+
+- `docs/V1_REQUIREMENTS.md`: V1確定要件の横断index、状態/操作表、version boundary、Decision lineage
+- `docs/ARCHITECTURE.md`: Firmware/Web/Vault/Protocolの責務境界と主要end-to-end flow
+- `docs/SECRET_VAULT.md`: Encrypted Vault、RAM-only VMK、Passphrase/Recovery Package、Trusted Browser、Lock/Unlock、user-presence設計
+- `docs/DEVICE_UI.md`: StickS3のaccount selection、unlock user presence、trusted-time表示、10秒OTP reveal
+- `docs/WEB_PROVISIONER.md`: local-only Web Serial管理、encrypted browser state、Trusted Browser ownership/recovery、account/device management
+- `docs/TIME.md`: trusted-time syncとTOTP readiness rule
+- `docs/STORAGE.md`: Encrypted Vault persistence、metadata privacy、versioning boundary
+- `docs/PROVISIONING_PROTOCOL.md`: canonical Protocol 2 NDJSON provisioning/unlock protocol
+- `docs/DISTRIBUTION.md`: Web Flasher、GitHub Releases、M5Burner、state-preserving update contract
+- `docs/DEVELOPMENT.md`: pinned toolchainと再現可能なbuild/test command
+- `docs/REPOSITORY_SECURITY.md`: repository-level secret protection control
 
 ## 開発基盤
 
-M5StickS3向けfirmwareのcanonical buildはESP-IDF / CMakeです。Web AppはVanilla TypeScript + Vite + Vitestを使用します。
-
-参照先:
-
-- `docs/DEVELOPMENT.md`: pinned toolchain、現在のdevelopment-security状態、再現可能なbuild/test command
-- `docs/SECRET_VAULT.md`: Encrypted Vault、RAM-only VMK、Passphrase/Recovery Package、Trusted Browser、Lock/Unlock、user-presence設計
-- `docs/DEVICE_UI.md`: StickS3のaccount selection、unlock user presence、trusted-time表示、10秒OTP reveal
-- `docs/WEB_PROVISIONER.md`: local-only Web Serial、encrypted browser state、Trusted Browser ownership/recovery、account/device management
-- `docs/TIME.md`: trusted-time syncとTOTP readiness rule
-- `docs/STORAGE.md`: Encrypted Vault persistence、metadata privacy、versioning boundary
-- `docs/PROVISIONING_PROTOCOL.md`: versioned NDJSON provisioning/unlock protocol
-- `docs/DISTRIBUTION.md`: Web Flasher、GitHub Releases、M5Burner、state-preserving update contract
-- `docs/REPOSITORY_SECURITY.md`: repository-level security control
+M5StickS3向けfirmwareのcanonical buildはESP-IDF / CMakeです。Web AppはVanilla TypeScript + Vite + Vitestを使用します。正確なpinned versionとcommandは `docs/DEVELOPMENT.md` を参照してください。
 
 ## 開発プロセス
 
