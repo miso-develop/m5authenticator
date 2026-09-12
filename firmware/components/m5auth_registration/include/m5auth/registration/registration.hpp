@@ -62,10 +62,13 @@ public:
     // the stable, non-secret Device ID in the registration namespace.
     Status clear_registration();
 
-    // Explicit recovery only: when initialize() proved that the stable Device
-    // ID is valid but the registration blob is structurally corrupt, erase only
-    // the M5Authenticator-owned active registration and restore a ready,
-    // unregistered state. Generic NVS I/O failures never enable this path.
+    // Explicit recovery only. Structural corruption of either the active
+    // registration or the M5Authenticator-owned stable Device-ID record may be
+    // recovered only after the Device-side fresh-presence Factory Reset flow.
+    // A corrupt Device ID receives a fresh nonzero candidate in RAM so hello
+    // has a stable identity during confirmation; this method persists exactly
+    // that candidate only after confirmation. Generic NVS I/O never enables
+    // this path.
     bool recovery_reset_available() const { return recovery_reset_available_; }
     Status clear_corrupt_registration_for_recovery();
 
@@ -83,9 +86,11 @@ private:
         std::uint32_t epoch,
         const BrkPublicKey& brk_public_key
     );
+    void generate_device_id_candidate();
 
     bool ready_{false};
     bool recovery_reset_available_{false};
+    bool device_id_recovery_required_{false};
     Snapshot snapshot_{};
 };
 
