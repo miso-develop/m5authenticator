@@ -134,6 +134,25 @@ bool CanonicalUiController::start() {
     ) == pdPASS;
 }
 
+void CanonicalUiController::security_boundary_clear() {
+    std::lock_guard<std::mutex> view(view_mutex_);
+    vault_runtime::Metadata metadata{};
+    {
+        std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+        const vault_runtime::Status status = runtime_.metadata(&metadata);
+        if (status == vault_runtime::Status::kOk) {
+            runtime_state_ = metadata.state;
+            storage_error_ = metadata.state == vault_runtime::State::kError;
+        } else {
+            runtime_state_ = vault_runtime::State::kError;
+            storage_error_ = true;
+        }
+    }
+    (void)clear_private_view();
+    last_generate_result_ = totp::GenerateResult::kOk;
+    render();
+}
+
 void CanonicalUiController::task_entry(void* context) {
     auto* controller = static_cast<CanonicalUiController*>(context);
     controller->run();
@@ -317,6 +336,9 @@ void CanonicalUiController::render() {
     if (presence.active) {
         M5.Display.println("UNLOCK REQUEST");
         M5.Display.println(session::presence_operation_text(presence.operation));
+        if (presence.operation == session::PresenceOperation::kFactoryReset) {
+            M5.Display.println("ERASE DEVICE DATA");
+        }
         if (presence.confirmed) {
             M5.Display.println("Confirmed");
             M5.Display.println("Waiting for browser");
@@ -379,11 +401,14 @@ void CanonicalUiController::render() {
 }
 
 void CanonicalUiController::run() {
-    (void)refresh_credentials(true);
     time::Readiness previous_readiness = time_service_.status().readiness;
     PresenceView previous_presence = presence_.view();
     std::uint64_t last_refresh_ms = monotonic_ms();
-    render();
+    {
+        std::lock_guard<std::mutex> view(view_mutex_);
+        (void)refresh_credentials(true);
+        render();
+    }
 
     while (true) {
         bool dirty = false;
@@ -415,56 +440,59 @@ void CanonicalUiController::run() {
             now_ms
         );
 
-        const time::Readiness readiness = time_service_.status().readiness;
-        if (readiness != previous_readiness) {
-            previous_readiness = readiness;
-            dirty = true;
-        }
-
-        vault_runtime::State observed_state = vault_runtime::State::kError;
         {
-            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-            vault_runtime::Metadata metadata;
-            if (runtime_.metadata(&metadata) == vault_runtime::Status::kOk) {
-                observed_state = metadata.state;
-            }
-        }
-        if (observed_state != runtime_state_) {
-            runtime_state_ = observed_state;
-            dirty = true;
-        }
-        if (observed_state != vault_runtime::State::kUnlocked && vault_visible_) {
-            dirty = clear_private_view() || dirty;
-        }
-
-        if (reveal_active_ &&
-            (readiness != time::Readiness::kReady || now_ms >= reveal_deadline_ms_ ||
-             observed_state != vault_runtime::State::kUnlocked)) {
-            hide_reveal();
-            dirty = true;
-        }
-
-        if (!current_presence.active && !presence_gesture_quarantine_.active()) {
-            if (M5.BtnA.wasHold()) {
-                reveal_selected(now_ms);
-                dirty = true;
-            } else if (M5.BtnA.wasDoubleClicked()) {
-                select_previous();
-                dirty = true;
-            } else if (M5.BtnA.wasSingleClicked()) {
-                select_next();
+            std::lock_guard<std::mutex> view(view_mutex_);
+            const time::Readiness readiness = time_service_.status().readiness;
+            if (readiness != previous_readiness) {
+                previous_readiness = readiness;
                 dirty = true;
             }
-        }
 
-        if (observed_state == vault_runtime::State::kUnlocked &&
-            !current_presence.active &&
-            now_ms - last_refresh_ms >= kCredentialRefreshIntervalMs) {
-            dirty = refresh_credentials(false) || dirty;
-            last_refresh_ms = now_ms;
-        }
+            vault_runtime::State observed_state = vault_runtime::State::kError;
+            {
+                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                vault_runtime::Metadata metadata;
+                if (runtime_.metadata(&metadata) == vault_runtime::Status::kOk) {
+                    observed_state = metadata.state;
+                }
+            }
+            if (observed_state != runtime_state_) {
+                runtime_state_ = observed_state;
+                dirty = true;
+            }
+            if (observed_state != vault_runtime::State::kUnlocked && vault_visible_) {
+                dirty = clear_private_view() || dirty;
+            }
 
-        if (dirty) render();
+            if (reveal_active_ &&
+                (readiness != time::Readiness::kReady || now_ms >= reveal_deadline_ms_ ||
+                 observed_state != vault_runtime::State::kUnlocked)) {
+                hide_reveal();
+                dirty = true;
+            }
+
+            if (!current_presence.active && !presence_gesture_quarantine_.active()) {
+                if (M5.BtnA.wasHold()) {
+                    reveal_selected(now_ms);
+                    dirty = true;
+                } else if (M5.BtnA.wasDoubleClicked()) {
+                    select_previous();
+                    dirty = true;
+                } else if (M5.BtnA.wasSingleClicked()) {
+                    select_next();
+                    dirty = true;
+                }
+            }
+
+            if (observed_state == vault_runtime::State::kUnlocked &&
+                !current_presence.active &&
+                now_ms - last_refresh_ms >= kCredentialRefreshIntervalMs) {
+                dirty = refresh_credentials(false) || dirty;
+                last_refresh_ms = now_ms;
+            }
+
+            if (dirty) render();
+        }
         vTaskDelay(kUiPollInterval);
     }
 }
