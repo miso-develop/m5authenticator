@@ -15,6 +15,10 @@
 
 namespace m5auth::device::sticks3 {
 
+inline constexpr char kDeviceModel[] = "M5StickS3";
+
+void initialize();
+
 struct PresenceView {
     bool active{false};
     bool confirmed{false};
@@ -80,14 +84,10 @@ private:
     static void task_entry(void* context);
     void run();
     bool refresh_credentials(bool force = false);
-    bool clear_private_view();
     bool persist_selection();
-    void select_next();
-    void select_previous();
     void render();
+    bool clear_private_view();
     void hide_reveal();
-    void reveal_selected(std::uint64_t now_ms);
-
     static void wipe_text(std::string* value);
     static std::string display_label(const CredentialView& credential);
 
@@ -96,9 +96,6 @@ private:
     time::TimeService& time_service_;
     std::recursive_mutex& runtime_access_mutex_;
     CanonicalPresence& presence_;
-
-    // UI-private decrypted state is accessed by the UI task and by synchronous
-    // security-boundary invalidation from the protocol task.
     mutable std::mutex view_mutex_;
     std::vector<CredentialView> credentials_;
     std::size_t selected_index_{0};
@@ -110,7 +107,6 @@ private:
     std::uint32_t revealed_code_{0};
     std::uint64_t reveal_deadline_ms_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
-    session::PresenceGestureQuarantine presence_gesture_quarantine_;
     TaskHandle_t task_{nullptr};
 };
 
