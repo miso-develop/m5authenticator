@@ -8,7 +8,11 @@ const JOURNAL_DB_NAME = "m5authenticator-canonical-journal-v1";
 const JOURNAL_DB_VERSION = 1;
 const JOURNAL_STORE_NAME = "pending-transactions";
 
-export type BrowserTransactionKind = "initial-provisioning" | "vault-update" | "vmk-rekey";
+export type BrowserTransactionKind =
+  | "initial-provisioning"
+  | "vault-update"
+  | "vmk-rekey"
+  | "factory-reset";
 
 export interface BrowserPendingTransaction {
   kind: BrowserTransactionKind;
