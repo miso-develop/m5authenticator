@@ -58,6 +58,8 @@ export interface CanonicalDeviceSnapshot {
   time: CanonicalTimeStatus;
   browserOwnership: "none" | "active" | "replacement-pending" | "conflict";
   unlockRequired: boolean;
+  recoveryProvisioningAvailable: boolean;
+  recoveryProvisioningCandidates: number;
   accounts: CanonicalAccountView[];
   wifi: { configured: boolean; ssid: string };
 }
@@ -258,15 +260,78 @@ export class CanonicalDeviceManagement {
         accounts = view.accounts;
         wifi = view.wifi;
       }
+      const recoveryCandidates = !this.hello.vaultPresent &&
+          !this.hello.registrationPresent && this.hello.state === "unprovisioned"
+        ? await this.cleanRecoveryCandidates()
+        : [];
       const time = parseCanonicalTimeStatus(await this.transport.requestCanonicalV2("time.status"));
       return {
         hello: this.hello,
         time,
         browserOwnership: this.ownership,
         unlockRequired: this.unlockRequired,
+        recoveryProvisioningAvailable: recoveryCandidates.length === 1,
+        recoveryProvisioningCandidates: recoveryCandidates.length,
         accounts,
         wifi,
       };
+    });
+  }
+
+  public async recoverImportedVaultToCleanDevice(): Promise<void> {
+    await withCanonicalBrowserStateLock(async () => {
+      await this.refreshHelloAndBrowserState();
+      if (this.hello.vaultPresent || this.hello.registrationPresent || this.hello.state !== "unprovisioned") {
+        throw new Error("Recovery provisioning requires a clean unprovisioned Device");
+      }
+      const candidates = await this.cleanRecoveryCandidates();
+      if (candidates.length !== 1) {
+        throw new Error(candidates.length === 0
+          ? "Import a Recovery Package before provisioning a replacement Device"
+          : "Multiple Recovery Package candidates are pending; keep exactly one replacement-pending Vault before provisioning");
+      }
+
+      const state = candidates[0]!;
+      const existingPending = await this.journal.get(state.vault.vaultId);
+      if (existingPending) throw new PendingBrowserTransactionError();
+      const vmk = await unwrapVmkForTrustedBrowser(state);
+      const candidate = sanitizeBrowserCanonicalState({
+        ...state,
+        trustedBrowser: {
+          ...state.trustedBrowser,
+          epoch: 1,
+          status: "active",
+        },
+        deviceMetadata: { deviceId: this.hello.deviceId },
+      });
+      const pending: BrowserPendingTransaction = {
+        kind: "recovery-provisioning",
+        expectedGeneration: state.vault.generation,
+        candidate,
+      };
+      await this.journal.stage(pending);
+
+      let operationError: unknown = null;
+      try {
+        await deliverVmkOverSessionV2({
+          transport: this.transport,
+          operation: "recovery",
+          deviceId: this.hello.deviceId,
+          vaultId: state.vault.vaultId,
+          expectedGeneration: state.vault.generation,
+          registrationId: candidate.trustedBrowser.registrationId,
+          registrationEpoch: 1,
+          currentBrkPublicKey: absentBrkIdentity(),
+          proposedBrkPublicKey: candidate.trustedBrowser.brkPublicKeyRaw,
+          vmk,
+        });
+        await this.transport.requestCanonicalV2("vault.install", encryptedVaultParams(state.vault));
+      } catch (error) {
+        operationError = error;
+      } finally {
+        vmk.fill(0);
+      }
+      await this.resolvePendingOperation(pending, operationError);
     });
   }
 
@@ -446,14 +511,20 @@ export class CanonicalDeviceManagement {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
       const state = this.state!;
-      await this.transport.requestCanonicalV2("factory_reset");
-      await this.store.delete(state.vault.vaultId, state.vault.generation);
-      await this.journal.delete(state.vault.vaultId);
-      this.state = null;
-      this.ownership = "none";
-      this.unlockRequired = false;
-      notifyCanonicalBrowserStateChanged();
-      this.hello = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
+      const pending: BrowserPendingTransaction = {
+        kind: "factory-reset",
+        expectedGeneration: state.vault.generation,
+        candidate: state,
+      };
+      await this.journal.stage(pending);
+
+      let operationError: unknown = null;
+      try {
+        await this.transport.requestCanonicalV2("factory_reset");
+      } catch (error) {
+        operationError = error;
+      }
+      await this.resolveFactoryReset(pending, operationError);
     });
   }
 
@@ -480,12 +551,33 @@ export class CanonicalDeviceManagement {
     await this.reloadBrowserState();
   }
 
+  private async cleanRecoveryCandidates(): Promise<BrowserCanonicalState[]> {
+    return (await this.store.list()).filter((state) => state.trustedBrowser.status === "replacement-pending");
+  }
+
   private async reconcilePendingForHello(): Promise<void> {
     if (!this.hello.vaultPresent || this.hello.vaultId === null) {
       if (this.hello.state === "unprovisioned" && !this.hello.registrationPresent) {
         const pendingForDevice = await this.journal.listForDevice(this.hello.deviceId);
         for (const pending of pendingForDevice) {
-          if (pending.kind === "initial-provisioning" && pending.expectedGeneration === 0n) {
+          if (pending.kind === "factory-reset") {
+            const current = await this.store.get(pending.candidate.vault.vaultId);
+            if (current) {
+              if (current.vault.generation !== pending.expectedGeneration) {
+                this.ownership = "conflict";
+                throw new GenerationConflictError("Browser state changed while Factory Reset was pending");
+              }
+              await this.store.delete(pending.candidate.vault.vaultId, pending.expectedGeneration);
+            }
+            await this.journal.delete(pending.candidate.vault.vaultId);
+            notifyCanonicalBrowserStateChanged();
+          } else if (
+            (pending.kind === "initial-provisioning" && pending.expectedGeneration === 0n) ||
+            pending.kind === "recovery-provisioning"
+          ) {
+            // A reconnect that proves the same Device is still clean proves the
+            // provisioning operation did not commit. Keep any imported Recovery
+            // Package browser state, but clear the in-flight intent so retry is safe.
             await this.journal.delete(pending.candidate.vault.vaultId);
           }
         }
@@ -503,6 +595,17 @@ export class CanonicalDeviceManagement {
     }
 
     const current = await this.store.get(this.hello.vaultId);
+    if (pending.kind === "factory-reset") {
+      if (current && exactBindingMatches(candidate, this.hello) && exactBindingMatches(current, this.hello)) {
+        // Reconnect proves the destructive operation did not commit. The active
+        // canonical state remains valid; clear only the reset intent.
+        await this.journal.delete(candidate.vault.vaultId);
+        return;
+      }
+      this.ownership = "conflict";
+      throw new GenerationConflictError("Pending Factory Reset cannot be reconciled with the connected Device");
+    }
+
     if (exactBindingMatches(candidate, this.hello)) {
       if (!current) {
         if (pending.expectedGeneration !== 0n) {
@@ -523,7 +626,7 @@ export class CanonicalDeviceManagement {
       return;
     }
 
-    if (pending.kind !== "initial-provisioning" &&
+    if (pending.kind !== "initial-provisioning" && pending.kind !== "recovery-provisioning" &&
         this.hello.generation === pending.expectedGeneration && current &&
         exactBindingMatches(current, this.hello)) {
       await this.journal.delete(candidate.vault.vaultId);
@@ -567,6 +670,39 @@ export class CanonicalDeviceManagement {
     }
     if (operationError) throw operationError;
     throw new Error("Device did not commit the staged canonical transaction");
+  }
+
+  private async resolveFactoryReset(
+    pending: BrowserPendingTransaction,
+    operationError: unknown,
+  ): Promise<void> {
+    try {
+      this.hello = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
+      await this.reconcilePendingForHello();
+      await this.reloadBrowserState();
+    } catch (error) {
+      const stillPending = await this.journal.get(pending.candidate.vault.vaultId);
+      if (stillPending) {
+        this.ownership = "conflict";
+        this.unlockRequired = false;
+        throw new PendingBrowserTransactionError(
+          "Factory Reset outcome is not yet provable. The reset intent remains durably journaled; reconnect to reconcile before any further write.",
+        );
+      }
+      throw error;
+    }
+
+    const stillPending = await this.journal.get(pending.candidate.vault.vaultId);
+    if (stillPending) throw new PendingBrowserTransactionError();
+    if (!this.hello.vaultPresent && !this.hello.registrationPresent && this.hello.state === "unprovisioned") {
+      this.state = null;
+      this.ownership = "none";
+      this.unlockRequired = false;
+      notifyCanonicalBrowserStateChanged();
+      return;
+    }
+    if (operationError) throw operationError;
+    throw new Error("Device did not enter UNPROVISIONED after Factory Reset");
   }
 
   private async reloadBrowserState(): Promise<void> {
