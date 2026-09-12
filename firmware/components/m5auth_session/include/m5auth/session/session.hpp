@@ -97,6 +97,11 @@ public:
         std::uint64_t input_generation
     );
 
+    // A request becomes armed only after two consecutive released samples
+    // observed after begin(). Requiring two samples prevents a release state
+    // sampled just before a concurrent request from arming a pre-existing press.
+    void observe_input_state(bool pressed);
+
     bool confirm_current(std::uint64_t now_ms, std::uint64_t input_generation);
     bool consume_confirmation(
         std::span<const std::uint8_t> attempt_id,
@@ -108,6 +113,7 @@ public:
     PresenceState state() const;
     PresenceOperation operation() const;
     bool active() const;
+    bool input_armed() const;
     std::uint64_t expires_at_ms() const;
 
 private:
@@ -118,6 +124,30 @@ private:
     AttemptId attempt_id_{};
     std::uint64_t expires_at_ms_{0};
     std::uint64_t input_generation_at_start_{0};
+    std::uint8_t neutral_samples_{0};
+    bool input_armed_{false};
+};
+
+// Suppresses normal button semantics after a presence-confirmation press until
+// that physical gesture has fully completed. M5Unified emits a delayed click
+// decision up to getHoldThresh() after release, so clearing immediately on
+// release could reinterpret the same authorization gesture as navigation/OTP.
+class PresenceGestureQuarantine {
+public:
+    void begin(std::uint64_t now_ms, std::uint32_t click_decision_timeout_ms);
+    void observe(
+        bool pressed,
+        bool deciding_click_count,
+        std::uint64_t now_ms
+    );
+    void cancel();
+    bool active() const { return active_; }
+
+private:
+    bool active_{false};
+    bool release_observed_{false};
+    std::uint64_t release_observed_at_ms_{0};
+    std::uint32_t click_decision_timeout_ms_{0};
 };
 
 }  // namespace m5auth::session
