@@ -602,6 +602,30 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
+function sameBrowserWrappedVmk(left: BrowserWrappedVmk, right: BrowserWrappedVmk): boolean {
+  return left.version === right.version &&
+    sameBytes(left.nonce, right.nonce) &&
+    sameBytes(left.ciphertext, right.ciphertext) &&
+    sameBytes(left.tag, right.tag);
+}
+
+export function mergeVaultAdvanceWithCurrentBrowserState(
+  current: BrowserCanonicalState,
+  incoming: BrowserCanonicalState,
+  expectedGeneration: bigint,
+): BrowserCanonicalState {
+  const safeCurrent = sanitizeBrowserCanonicalState(current);
+  const safeIncoming = sanitizeBrowserCanonicalState(incoming);
+  const isSingleGenerationAdvance = safeIncoming.vault.generation === expectedGeneration + 1n;
+  const sameVault = sameBytes(safeCurrent.vault.vaultId, safeIncoming.vault.vaultId);
+  const sameBrowserVmk = sameBrowserWrappedVmk(
+    safeCurrent.trustedBrowser.wrappedVmk,
+    safeIncoming.trustedBrowser.wrappedVmk,
+  );
+  if (!isSingleGenerationAdvance || !sameVault || !sameBrowserVmk) return safeIncoming;
+  return sanitizeBrowserCanonicalState({ ...safeCurrent, vault: safeIncoming.vault });
+}
+
 export class IndexedDbBrowserVaultStore {
   async get(vaultId: Uint8Array): Promise<BrowserCanonicalState | null> {
     const db = await openDatabase();
@@ -661,7 +685,10 @@ export class IndexedDbBrowserVaultStore {
             transaction.abort();
             return;
           }
-          store.put(record);
+          const next = current && expectedGeneration !== undefined
+            ? mergeVaultAdvanceWithCurrentBrowserState(current, safe, expectedGeneration)
+            : safe;
+          store.put({ key, ...next } satisfies PersistedBrowserCanonicalState);
         };
         transaction.oncomplete = () => resolve();
         transaction.onabort = () => reject(failure ?? transaction.error ?? new Error("Browser Vault transaction aborted"));
