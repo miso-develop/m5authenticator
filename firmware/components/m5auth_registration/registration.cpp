@@ -150,10 +150,25 @@ Status Store::load_or_create_device_id() {
     Status status = open_namespace(NVS_READWRITE, &handle);
     if (status != Status::kOk) return status;
 
-    std::size_t size = snapshot_.device_id.size();
-    esp_err_t result = nvs_get_blob(handle, kDeviceIdKey, snapshot_.device_id.data(), &size);
+    // Query the owned blob length before supplying the fixed 16-byte buffer.
+    // This deliberately classifies both undersized and oversized blobs as
+    // structural corruption instead of allowing ESP_ERR_NVS_INVALID_LENGTH to
+    // collapse an oversized record into a generic I/O failure. Type mismatch or
+    // genuine NVS failures remain non-destructive kIo errors.
+    std::size_t size = 0;
+    esp_err_t result = nvs_get_blob(handle, kDeviceIdKey, nullptr, &size);
     if (result == ESP_OK) {
+        if (size != snapshot_.device_id.size()) {
+            nvs_close(handle);
+            snapshot_.device_id.fill(0);
+            return Status::kCorrupt;
+        }
+        result = nvs_get_blob(handle, kDeviceIdKey, snapshot_.device_id.data(), &size);
         nvs_close(handle);
+        if (result != ESP_OK) {
+            snapshot_.device_id.fill(0);
+            return map_error(result);
+        }
         if (size != snapshot_.device_id.size() || all_zero(snapshot_.device_id)) {
             snapshot_.device_id.fill(0);
             return Status::kCorrupt;
