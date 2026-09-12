@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string_view>
+#include <utility>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +17,7 @@ namespace m5auth::time {
 
 inline constexpr std::uint64_t kMinAcceptedUnixSeconds = 1'577'836'800ULL;
 inline constexpr std::uint64_t kMaxAcceptedUnixSeconds = 4'102'444'800ULL;
+inline constexpr std::uint64_t kInitialNtpRetrySeconds = 60ULL;
 
 enum class SyncResult {
     kOk,
@@ -59,12 +61,26 @@ public:
 
     bool start_periodic_resync();
 
-    // Stop/deinitialize any credential-bearing transient network state before a
-    // Vault/registration Factory Reset. The caller owns persistent-state erase.
+    // Serialize a VMK/secret-destruction boundary with credential-backed NTP.
+    // The callback runs while sync_mutex_ is held, after the transient Wi-Fi
+    // driver has been torn down. Canonical callers must acquire Runtime state
+    // only inside the callback, preserving the global lock order
+    // sync_mutex_ -> runtime_access_mutex_. When this call returns, no earlier
+    // NTP operation can still retain copied Wi-Fi credentials or later mutate
+    // the trusted-time anchor.
+    template <typename Callback>
+    decltype(auto) with_secret_boundary(Callback&& callback) {
+        std::lock_guard<std::mutex> lock(sync_mutex_);
+        teardown_network();
+        return std::forward<Callback>(callback)();
+    }
+
+    // Historical helper kept for the legacy reset path. Canonical callers that
+    // also mutate Runtime state must use with_secret_boundary() so teardown and
+    // VMK destruction are one serialized lifecycle boundary.
     void prepare_factory_reset();
 
-    // Legacy Protocol 1 helper. Canonical v2 uses prepare_factory_reset() plus
-    // vault_runtime::Runtime::factory_reset().
+    // Legacy Protocol 1 helper. Canonical v2 uses the explicit Runtime boundary.
     storage::Status factory_reset_user_state();
 
 private:
@@ -83,6 +99,7 @@ private:
     bool network_initialized_{false};
     esp_netif_obj* station_netif_{nullptr};
     TaskHandle_t periodic_task_{nullptr};
+    std::int64_t last_initial_attempt_us_{-1};
     std::int64_t last_periodic_attempt_us_{-1};
 };
 
