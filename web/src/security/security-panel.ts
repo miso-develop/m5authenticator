@@ -91,14 +91,17 @@ let states: BrowserCanonicalState[] = [];
 let current: BrowserCanonicalState | null = null;
 let pendingVaultIds = new Set<string>();
 let pendingResetDeviceIds = new Set<string>();
+let pendingResetVaultIds = new Set<string>();
 let conflictMessage: string | null = null;
 let busy = false;
 
 function selectedPending(): boolean {
   if (!current) return false;
-  const vaultPending = pendingVaultIds.has(displayVaultId(current.vault.vaultId));
+  const vaultId = displayVaultId(current.vault.vaultId);
   const deviceId = current.deviceMetadata?.deviceId;
-  return vaultPending || (deviceId !== undefined && pendingResetDeviceIds.has(deviceId));
+  return pendingVaultIds.has(vaultId) ||
+    pendingResetVaultIds.has(vaultId) ||
+    (deviceId !== undefined && pendingResetDeviceIds.has(deviceId));
 }
 
 vaultSelect.addEventListener("change", () => {
@@ -201,16 +204,17 @@ void refresh().catch((error: unknown) => {
 });
 
 async function refresh(): Promise<void> {
-  const [nextStates, pending] = await Promise.all([store.list(), journal.list()]);
+  const [nextStates, pending, resetPending] = await Promise.all([
+    store.list(),
+    journal.list(),
+    resetIntents.list(),
+  ]);
   states = nextStates;
   pendingVaultIds = new Set(pending.map((value) => displayVaultId(value.candidate.vault.vaultId)));
-  pendingResetDeviceIds = new Set<string>();
-  const deviceIds = Array.from(new Set(
-    states.flatMap((state) => state.deviceMetadata?.deviceId ? [state.deviceMetadata.deviceId] : []),
-  ));
-  await Promise.all(deviceIds.map(async (deviceId) => {
-    if (await resetIntents.get(deviceId)) pendingResetDeviceIds.add(deviceId);
-  }));
+  pendingResetDeviceIds = new Set(resetPending.map((intent) => intent.deviceId));
+  pendingResetVaultIds = new Set(
+    resetPending.flatMap((intent) => intent.affectedVaults.map((affected) => displayVaultId(affected.vaultId))),
+  );
 
   const selectedKey = current ? displayVaultId(current.vault.vaultId) : vaultSelect.value;
   vaultSelect.replaceChildren();
