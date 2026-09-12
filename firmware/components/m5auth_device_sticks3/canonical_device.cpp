@@ -397,11 +397,23 @@ void CanonicalUiController::run() {
             dirty = true;
         }
 
+        if (current_presence.active) {
+            presence_.observe_button_state(M5.BtnA.isPressed());
+        }
         if (current_presence.active && M5.BtnA.wasPressed()) {
-            dirty = presence_.button_pressed(now_ms) || dirty;
+            const bool confirmed = presence_.button_pressed(now_ms);
+            dirty = confirmed || dirty;
+            if (confirmed) {
+                presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());
+            }
             current_presence = presence_.view();
             previous_presence = current_presence;
         }
+        presence_gesture_quarantine_.observe(
+            M5.BtnA.isPressed(),
+            M5.BtnA.wasDecideClickCount(),
+            now_ms
+        );
 
         const time::Readiness readiness = time_service_.status().readiness;
         if (readiness != previous_readiness) {
@@ -432,7 +444,7 @@ void CanonicalUiController::run() {
             dirty = true;
         }
 
-        if (!current_presence.active) {
+        if (!current_presence.active && !presence_gesture_quarantine_.active()) {
             if (M5.BtnA.wasHold()) {
                 reveal_selected(now_ms);
                 dirty = true;
