@@ -1,5 +1,9 @@
 import "./style.css";
-import { CanonicalDeviceManagement, type CanonicalDeviceSnapshot } from "./canonical-management";
+import {
+  CANONICAL_BROWSER_STATE_CHANGED_EVENT,
+  CanonicalDeviceManagement,
+  type CanonicalDeviceSnapshot,
+} from "./canonical-management";
 import { CanonicalRecoveryResetController } from "./canonical-recovery-reset";
 import { decodeQrImage } from "./import/qr";
 import { ImportSession, type ImportSessionUpdate } from "./import/session";
@@ -19,6 +23,7 @@ app.innerHTML = `
       <div class="actions">
         <button id="connect" type="button">Connect M5StickS3</button>
         <button id="unlock-device" type="button" disabled>Unlock</button>
+        <button id="restore-recovery-device" type="button" disabled>Restore imported Vault</button>
         <button id="disconnect" class="secondary" type="button" disabled>Lock &amp; Disconnect</button>
         <button id="refresh-device" class="secondary" type="button" disabled>Refresh status</button>
         <button id="sync-time" class="secondary" type="button" disabled>Sync PC time</button>
@@ -95,6 +100,7 @@ app.innerHTML = `
 
 const connectButton = queryRequired<HTMLButtonElement>("#connect", "Connect button is missing");
 const unlockButton = queryRequired<HTMLButtonElement>("#unlock-device", "Unlock button is missing");
+const restoreRecoveryButton = queryRequired<HTMLButtonElement>("#restore-recovery-device", "Recovery restore button is missing");
 const disconnectButton = queryRequired<HTMLButtonElement>("#disconnect", "Disconnect button is missing");
 const refreshButton = queryRequired<HTMLButtonElement>("#refresh-device", "Refresh button is missing");
 const syncTimeButton = queryRequired<HTMLButtonElement>("#sync-time", "Time sync button is missing");
@@ -186,6 +192,10 @@ connectButton.addEventListener("click", async () => {
       deviceNotice.textContent = "Trusted Browser registration is valid, but the Device remains LOCKED. Press Unlock and confirm the dedicated UNLOCK REQUEST on M5StickS3.";
     } else if (snapshot?.hello.state === "unlocked") {
       deviceNotice.textContent = "Trusted Browser active; Device is UNLOCKED.";
+    } else if (snapshot?.recoveryProvisioningAvailable) {
+      deviceNotice.textContent = "A Recovery Package has been imported into this browser. Use Restore imported Vault to provision this clean replacement Device; a fresh physical confirmation is required.";
+    } else if ((snapshot?.recoveryProvisioningCandidates ?? 0) > 1) {
+      deviceNotice.textContent = "Multiple replacement-pending Recovery Vaults exist in this browser. Keep exactly one candidate before restoring a clean Device.";
     }
   } catch (error) {
     const message = userFacingError(error, "Connection failed.");
@@ -203,6 +213,16 @@ unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST —
     ? "Trusted Browser active; Device is UNLOCKED."
     : "Unlock was not confirmed. Registration remains valid; retry when ready.";
 }));
+
+restoreRecoveryButton.addEventListener("click", () => {
+  if (!snapshot?.recoveryProvisioningAvailable) return;
+  if (!window.confirm("Restore the imported encrypted canonical Vault onto this clean replacement M5StickS3? This creates a new Device registration and requires a fresh physical confirmation.")) return;
+  void runDeviceAction("RECOVERY PROVISIONING — confirm on M5StickS3…", async () => {
+    await requireManagement().recoverImportedVaultToCleanDevice();
+    deviceNotice.textContent = "Recovery provisioning completed. The imported canonical Vault is now active on this replacement Device with a fresh registration.";
+    await refreshDevice();
+  });
+});
 
 disconnectButton.addEventListener("click", async () => {
   const recoveryMode = recoveryReset !== null;
@@ -312,6 +332,13 @@ recoveryFactoryResetButton.addEventListener("click", () => {
   });
 });
 
+window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
+  if (!management || recoveryReset || deviceActionInProgress) return;
+  void refreshDevice().catch((error: unknown) => {
+    deviceNotice.textContent = userFacingError(error, "Canonical browser state changed; refresh the Device status.");
+  });
+});
+
 window.addEventListener("pagehide", () => {
   importSession.clear();
   wifiPassword.value = "";
@@ -394,8 +421,11 @@ function updateControls(): void {
   const writable = normalConnected && canWriteCanonical();
   const initial = normalConnected && snapshot !== null && !snapshot.hello.vaultPresent;
   const unlockable = normalConnected && snapshot?.browserOwnership === "active" && snapshot.hello.state === "locked";
+  const recoverable = normalConnected && snapshot?.recoveryProvisioningAvailable === true &&
+    snapshot.hello.state === "unprovisioned" && !snapshot.hello.vaultPresent && !snapshot.hello.registrationPresent;
   connectButton.disabled = deviceActionInProgress || connected;
   unlockButton.disabled = deviceActionInProgress || !unlockable;
+  restoreRecoveryButton.disabled = deviceActionInProgress || !recoverable;
   disconnectButton.disabled = deviceActionInProgress || !connected;
   disconnectButton.textContent = recoveryMode ? "Disconnect" : "Lock & Disconnect";
   refreshButton.disabled = deviceActionInProgress || !connected;
@@ -467,6 +497,7 @@ function renderDevice(): void {
   appendStatus("Browser ownership", snapshot.browserOwnership);
   appendStatus("Unlock", snapshot.unlockRequired ? "Fresh Device confirmation required" : "Not required");
   appendStatus("Generation", hello.generation.toString(10));
+  appendStatus("Recovery candidates", String(snapshot.recoveryProvisioningCandidates));
   appendStatus("Time", `${snapshot.time.readiness} (${snapshot.time.source})`);
   appendStatus("Accounts", String(snapshot.accounts.length));
 
@@ -474,6 +505,12 @@ function renderDevice(): void {
   if (hello.state === "locked" && snapshot.browserOwnership === "active") {
     accountsEmpty.textContent = "Vault-private account metadata is hidden while Device is LOCKED.";
     wifiStatus.textContent = "Vault-private Wi-Fi metadata is hidden while Device is LOCKED.";
+    wifiSsid.value = "";
+  } else if (!hello.vaultPresent) {
+    accountsEmpty.textContent = snapshot.recoveryProvisioningAvailable
+      ? "A Recovery Package is ready for explicit restore to this clean Device. Vault-private metadata remains hidden until restore and unlock complete."
+      : "No canonical Vault is installed on this Device.";
+    wifiStatus.textContent = "No canonical Vault is installed on this Device.";
     wifiSsid.value = "";
   } else {
     wifiStatus.textContent = snapshot.wifi.configured ? `Configured SSID: ${snapshot.wifi.ssid}` : "Wi-Fi is not configured in the canonical Vault.";
