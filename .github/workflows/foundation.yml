@@ -145,6 +145,8 @@ jobs:
           tests/recovery_reset_state_test.cpp
           -o /tmp/m5auth-recovery-reset-state-test
           && /tmp/m5auth-recovery-reset-state-test
+      - name: Test registration recovery persistence contract
+        run: python -m unittest tests/registration_recovery_contract_test.py
       - name: Test Protocol v2 attempt coordinator
         run: >-
           g++ -std=c++20 -Wall -Wextra -Werror
