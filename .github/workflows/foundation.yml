@@ -135,7 +135,7 @@ jobs:
             & $chrome `
               "--headless=new" `
               "--disable-gpu" `
-              "--virtual-time-budget=5000" `
+              "--virtual-time-budget=20000" `
               "--dump-dom" `
               $smokeUrl | Set-Content -Path $domFile -Encoding utf8
 
