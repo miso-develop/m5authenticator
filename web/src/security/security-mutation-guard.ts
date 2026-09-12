@@ -1,5 +1,8 @@
 import type { BrowserCanonicalState } from "./browser-vault";
-import { IndexedDbBrowserResetIntentStore } from "./browser-reset-intent";
+import {
+  IndexedDbBrowserResetIntentStore,
+  type BrowserResetIntent,
+} from "./browser-reset-intent";
 import {
   IndexedDbBrowserTransactionJournal,
   PendingBrowserTransactionError,
@@ -10,7 +13,16 @@ export interface PendingTransactionLookup {
 }
 
 export interface PendingResetLookup {
-  get(deviceId: string): Promise<unknown | null>;
+  list(): Promise<BrowserResetIntent[]>;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
 }
 
 export async function assertNoPendingSecurityMutation(
@@ -23,8 +35,13 @@ export async function assertNoPendingSecurityMutation(
       "Recovery export and Passphrase mutation are blocked until the pending Device outcome is reconciled.",
     );
   }
+
   const deviceId = state.deviceMetadata?.deviceId;
-  if (deviceId && await resetIntents.get(deviceId)) {
+  const resetPending = (await resetIntents.list()).some((intent) =>
+    (deviceId !== undefined && intent.deviceId === deviceId) ||
+    intent.affectedVaults.some((affected) => sameBytes(affected.vaultId, state.vault.vaultId)),
+  );
+  if (resetPending) {
     throw new PendingBrowserTransactionError(
       "Recovery export and Passphrase mutation are blocked until the pending Device reset outcome is reconciled.",
     );
