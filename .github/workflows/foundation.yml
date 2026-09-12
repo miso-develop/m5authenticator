@@ -134,6 +134,17 @@ jobs:
           tests/session_binding_v2_test.cpp
           -o /tmp/m5auth-session-binding-v2-test
           && /tmp/m5auth-session-binding-v2-test
+      - name: Test recovery-reset eligibility boundary
+        run: >-
+          g++ -std=c++20 -Wall -Wextra -Werror
+          -Ifirmware/components/m5auth_provisioning/include
+          -Ifirmware/components/m5auth_registration/include
+          -Ifirmware/components/m5auth_session/include
+          -Ifirmware/components/m5auth_vault/include
+          -Ifirmware/components/m5auth_vault_runtime/include
+          tests/recovery_reset_state_test.cpp
+          -o /tmp/m5auth-recovery-reset-state-test
+          && /tmp/m5auth-recovery-reset-state-test
       - name: Test Protocol v2 attempt coordinator
         run: >-
           g++ -std=c++20 -Wall -Wextra -Werror
