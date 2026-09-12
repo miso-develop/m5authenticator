@@ -113,6 +113,8 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIn("HybridBinarizer", decoder)
         self.assertIn("GlobalHistogramBinarizer", decoder)
         self.assertIn("QRCodeReader", decoder)
+        self.assertIn("DecodeHintType.PURE_BARCODE", decoder)
+        self.assertIn("pureHints", decoder)
         self.assertIn("imageData?.data.fill(0)", decoder)
         self.assertIn("bitmap?.close()", decoder)
         self.assertNotIn("BrowserQRCodeReader", decoder)
