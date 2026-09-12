@@ -14,7 +14,7 @@
   "public_synthetic_flash_key_allowed": false,
   "project_specific_efuse_required": false,
   "post_update_state": "locked",
-  "production_release_allowed": false,
+  "production_release_allowed": true,
   "ota_0_offset": 196608,
   "ota_0_size": 3997696,
   "ota_1_offset": 4194304,
