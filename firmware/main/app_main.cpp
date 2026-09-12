@@ -11,7 +11,6 @@
 #include "freertos/task.h"
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/device/sticks3/canonical_device.hpp"
-#include "m5auth/device/sticks3/device.hpp"
 #include "m5auth/provisioning/canonical_protocol_v2.hpp"
 #include "m5auth/provisioning/canonical_v2_state.hpp"
 #include "m5auth/provisioning/session_protocol_v2.hpp"
