@@ -35,6 +35,7 @@ public:
     void cancel_presence() override;
     bool presence_confirmed() const override;
 
+    void observe_button_state(bool pressed);
     bool button_pressed(std::uint64_t now_ms);
     bool expire(std::uint64_t now_ms);
     PresenceView view() const;
@@ -98,6 +99,7 @@ private:
     std::uint32_t revealed_code_{0};
     std::uint64_t reveal_deadline_ms_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
+    session::PresenceGestureQuarantine presence_gesture_quarantine_;
     TaskHandle_t task_{nullptr};
 };
 
