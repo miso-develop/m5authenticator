@@ -78,6 +78,7 @@ enum class PresenceOperation : std::uint8_t {
     kRecovery,
     kBrowserReplacement,
     kVmkRekey,
+    kFactoryReset,
 };
 
 enum class PresenceState : std::uint8_t {
@@ -128,10 +129,6 @@ private:
     bool input_armed_{false};
 };
 
-// Suppresses normal button semantics after a presence-confirmation press until
-// that physical gesture has fully completed. M5Unified emits a delayed click
-// decision up to getHoldThresh() after release, so clearing immediately on
-// release could reinterpret the same authorization gesture as navigation/OTP.
 class PresenceGestureQuarantine {
 public:
     void begin(std::uint64_t now_ms, std::uint32_t click_decision_timeout_ms);
