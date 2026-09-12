@@ -54,7 +54,7 @@ LOGGING_APIS = (
 
 class SecurityCloseoutContractTest(unittest.TestCase):
     def test_release_contract_and_build_surface_validate(self) -> None:
-        result = validate_release.validate_release()
+        result = validate_release.validate_release(require_production=True)
         profile = result["profile"]
         self.assertEqual(profile["protocol_version"], 2)
         self.assertEqual(profile["storage_schema_version"], 2)
@@ -64,6 +64,7 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIs(profile["project_specific_efuse_required"], False)
         self.assertEqual(profile["vmk_persistence"], "ram-only")
         self.assertEqual(profile["post_update_state"], "locked")
+        self.assertIs(profile["production_release_allowed"], True)
 
     def test_core_dump_is_fail_closed_for_credential_bearing_ram(self) -> None:
         sdkconfig = validate_release.DEFAULT_SDKCONFIG.read_text(encoding="utf-8")
