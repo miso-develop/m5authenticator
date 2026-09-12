@@ -19,7 +19,10 @@ export type CanonicalWireOperation =
   | "time.status"
   | "time.sync"
   | "device.lock"
-  | "factory_reset";
+  | "factory_reset"
+  | "factory_reset.recovery_begin"
+  | "factory_reset.recovery_status"
+  | "factory_reset.recovery_complete";
 
 export type DeviceRuntimeState =
   | "unprovisioned"
@@ -38,6 +41,7 @@ export interface CanonicalHelloData {
   buildCommit: string;
   state: DeviceRuntimeState;
   storageReady: boolean;
+  recoveryResetRequired: boolean;
   vaultPresent: boolean;
   vaultId: Uint8Array | null;
   generation: bigint;
@@ -109,6 +113,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     typeof data.build_commit !== "string" ||
     !isRuntimeState(data.state) ||
     typeof data.storage_ready !== "boolean" ||
+    typeof data.recovery_reset_required !== "boolean" ||
     typeof data.vault_present !== "boolean" ||
     typeof data.registration_present !== "boolean" ||
     typeof data.registration_epoch !== "number" ||
@@ -138,7 +143,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     throw new Error("Unregistered Device returned registration metadata");
   }
 
-  if (data.vault_present !== data.registration_present) {
+  if (data.vault_present !== data.registration_present && !data.recovery_reset_required) {
     throw new Error("Device returned a partial Vault/registration security state");
   }
 
@@ -152,6 +157,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     buildCommit: data.build_commit,
     state: data.state,
     storageReady: data.storage_ready,
+    recoveryResetRequired: data.recovery_reset_required,
     vaultPresent: data.vault_present,
     vaultId,
     generation,
