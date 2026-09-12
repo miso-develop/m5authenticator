@@ -44,9 +44,9 @@ The canonical `app_main` bootstrap uses the Vault runtime and Protocol v2 manage
 
 Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26 and PR #39 are historical/superseded and must not be revived as the V1 production path.
 
-### V1 release transition
+### V1 release state
 
-`firmware/release-profile.json` format 2 describes the V1 production contract independently from the final publication switch. It requires:
+`firmware/release-profile.json` format 2 describes the V1 production contract. It requires:
 
 - Protocol 2 / Storage Schema 2 / Vault Format 1
 - security profile `encrypted-vault-ram-only-vmk`, version 1
@@ -56,28 +56,25 @@ Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26
 - no M5Authenticator-specific eFuse requirement
 - post-update state `LOCKED`
 
-`scripts/validate_release.py` verifies those fields against firmware metadata, the canonical bootstrap, and the fixed Flash layout. It rejects a regression to the legacy synthetic credential bootstrap even when `production_release_allowed` is changed.
+`scripts/validate_release.py` verifies those fields against firmware metadata, the canonical bootstrap, the release component surface, core-dump policy, and the fixed Flash layout. It rejects a regression to the legacy synthetic credential bootstrap even when release eligibility is enabled.
+
+Task #15 completed the final cross-surface security closeout and enabled `production_release_allowed: true` only after Security/Foundation, ESP-IDF 5.5.5 build, merged-firmware surface inspection, synthetic Vault plaintext-at-rest inspection, and package validation were green. `python scripts/validate_release.py --require-production` is therefore expected to succeed on the final V1 closeout state.
 
 The release implementation chain is now:
 
 ```text
-#43 / #44 / #58 / #51 / #52 / #53 / #54 / #55  completed
-#56  V1 release contract
-  ↓
-#15  final security closeout + production eligibility flip
+#43 / #44 / #58 / #51 / #52 / #53 / #54 / #55 / #56 / #15  completed
   ↓
 #16  durable documentation closeout
 ```
 
-Task #56 deliberately leaves `production_release_allowed: false`. Task #15 is the only stage that may set it to `true` after the exact final implementation passes security closeout. This means ordinary CI can validate the real V1 security contract without prematurely publishing production firmware.
+Production eligibility is not permission to weaken the V1 contract. Do not:
 
-Until Task #15 completes, do not:
-
-- enable `production_release_allowed`
 - introduce a public/synthetic or universal credential-decryption key into the production path
 - add an M5Authenticator-specific eFuse burn/provisioning dependency
 - change settled KDF/AEAD/session parameters without a new Decision
-- weaken Protocol/Storage/Vault/security-profile validation to make a release pass
+- weaken Protocol/Storage/Vault/security-profile/build-surface validation to make a release pass
+- re-enable credential-bearing crash/core-dump persistence
 
 The native state-codec check can be run from the repository root with:
 
@@ -94,11 +91,10 @@ g++ -std=c++20 -Wall -Wextra -Werror \
 Release-contract checks can be run with:
 
 ```text
-python scripts/validate_release.py
+python scripts/validate_release.py --require-production
 python -m unittest tests/release_package_test.py
+python -m unittest tests/security_closeout_contract_test.py
 ```
-
-`python scripts/validate_release.py --require-production` is expected to fail until Task #15 enables final production eligibility.
 
 See `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, `docs/PROVISIONING_PROTOCOL.md`, and `docs/DISTRIBUTION.md` for the persistence, key, protocol, and release boundaries.
 
@@ -142,6 +138,7 @@ Long-lived release binaries belong in GitHub Release assets rather than Actions 
 From the repository root:
 
 ```text
+python3 -m unittest tests/security_closeout_contract_test.py
 python3 -m unittest discover -s tests -p "test_security_scan.py"
 python3 scripts/security_scan.py
 ```
