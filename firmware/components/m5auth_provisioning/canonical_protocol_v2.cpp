@@ -328,7 +328,8 @@ CanonicalProtocolV2Handler::CanonicalProtocolV2Handler(
     StagedSessionV2Handler& session_handler,
     CanonicalVmkSink& vmk_sink,
     session::protocol_v2::PresenceBinding& recovery_presence,
-    std::recursive_mutex& runtime_access_mutex
+    std::recursive_mutex& runtime_access_mutex,
+    std::function<void()> security_boundary_clear
 ) : metadata_(metadata),
     runtime_(runtime),
     registration_(registration),
@@ -336,7 +337,8 @@ CanonicalProtocolV2Handler::CanonicalProtocolV2Handler(
     session_handler_(session_handler),
     vmk_sink_(vmk_sink),
     recovery_presence_(recovery_presence),
-    runtime_access_mutex_(runtime_access_mutex) {}
+    runtime_access_mutex_(runtime_access_mutex),
+    security_boundary_clear_(std::move(security_boundary_clear)) {}
 
 CanonicalProtocolV2Handler::~CanonicalProtocolV2Handler() {
     disconnect();
@@ -347,6 +349,10 @@ void CanonicalProtocolV2Handler::cancel_recovery_reset() {
     recovery_reset_attempt_id_.fill(0);
     recovery_reset_deadline_ms_ = 0;
     recovery_reset_active_ = false;
+}
+
+void CanonicalProtocolV2Handler::notify_security_boundary() {
+    if (security_boundary_clear_) security_boundary_clear_();
 }
 
 RecoveryResetDecision CanonicalProtocolV2Handler::recovery_reset_decision(
@@ -432,9 +438,16 @@ std::string CanonicalProtocolV2Handler::handle_line(
             session::protocol_v2::BeginContext boundary{};
             boundary.operation = session_operation;
             const auto prepare = [&]() { return vmk_sink_.prepare_attempt(boundary); };
-            const bool prepared = destroys_runtime_vmk(session_operation)
-                ? time_service_.with_secret_boundary(prepare)
-                : prepare();
+            bool prepared = false;
+            if (destroys_runtime_vmk(session_operation)) {
+                prepared = time_service_.with_secret_boundary([&]() {
+                    const bool result = prepare();
+                    notify_security_boundary();
+                    return result;
+                });
+            } else {
+                prepared = prepare();
+            }
             if (!prepared) {
                 session_handler_.disconnect();
                 vmk_sink_.cancel_pending();
@@ -482,13 +495,19 @@ std::string CanonicalProtocolV2Handler::handle_line(
             cancel_recovery_reset();
 
             const vault_runtime::Status boundary_status = time_service_.with_secret_boundary([&]() {
-                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                if (runtime_metadata.state == vault_runtime::State::kError) {
-                    return runtime_metadata.recovery_reset_allowed
-                        ? vault_runtime::Status::kOk
-                        : vault_runtime::Status::kInvalidState;
+                vault_runtime::Status result = vault_runtime::Status::kIo;
+                {
+                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                    if (runtime_metadata.state == vault_runtime::State::kError) {
+                        result = runtime_metadata.recovery_reset_allowed
+                            ? vault_runtime::Status::kOk
+                            : vault_runtime::Status::kInvalidState;
+                    } else {
+                        result = runtime_.enter_recovery_boundary();
+                    }
                 }
-                return runtime_.enter_recovery_boundary();
+                if (result == vault_runtime::Status::kOk) notify_security_boundary();
+                return result;
             });
             if (boundary_status != vault_runtime::Status::kOk) {
                 response = error_response(id, "invalid_state");
@@ -498,7 +517,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 } while (all_zero_attempt(recovery_reset_attempt_id_));
                 recovery_reset_deadline_ms_ = recovery_deadline_from(now_ms);
                 recovery_reset_active_ = recovery_presence_.begin_presence(
-                    session::PresenceOperation::kRecovery,
+                    session::PresenceOperation::kFactoryReset,
                     recovery_reset_attempt_id_,
                     now_ms
                 );
@@ -550,12 +569,18 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 vault_runtime::Status vault_status = vault_runtime::Status::kIo;
                 registration::Status clear_status = registration::Status::kIo;
                 time_service_.with_secret_boundary([&]() {
-                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                    vault_status = runtime_.factory_reset();
-                    if (vault_status == vault_runtime::Status::kOk) {
-                        clear_status = registration_status == registration::Status::kCorrupt
-                            ? registration_.clear_corrupt_registration_for_recovery()
-                            : registration_.clear_registration();
+                    {
+                        std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                        vault_status = runtime_.factory_reset();
+                        if (vault_status == vault_runtime::Status::kOk) {
+                            clear_status = registration_status == registration::Status::kCorrupt
+                                ? registration_.clear_corrupt_registration_for_recovery()
+                                : registration_.clear_registration();
+                        }
+                    }
+                    if (vault_status == vault_runtime::Status::kOk &&
+                        clear_status == registration::Status::kOk) {
+                        notify_security_boundary();
                     }
                 });
                 response = vault_status == vault_runtime::Status::kOk && clear_status == registration::Status::kOk
@@ -569,10 +594,23 @@ std::string CanonicalProtocolV2Handler::handle_line(
         if (!read_envelope(params, &envelope)) {
             vmk_sink_.cancel_pending();
             response = error_response(id, "invalid_request");
+        } else if (!vmk_sink_.has_pending_vmk()) {
+            response = error_response(id, "invalid_state");
         } else {
-            response = vmk_sink_.install_initial_vault(std::move(envelope), now_ms)
-                ? empty_success(id)
-                : error_response(id, "invalid_state");
+            bool installed = false;
+            switch (vmk_sink_.pending_operation()) {
+                case session::protocol_v2::Operation::kInitialProvisioning:
+                    installed = vmk_sink_.install_initial_vault(std::move(envelope), now_ms);
+                    break;
+                case session::protocol_v2::Operation::kRecovery:
+                    installed = vmk_sink_.install_recovered_vault(std::move(envelope), now_ms);
+                    break;
+                default:
+                    vmk_sink_.cancel_pending();
+                    installed = false;
+                    break;
+            }
+            response = installed ? empty_success(id) : error_response(id, "invalid_state");
         }
     } else if (operation == "vault.update") {
         vault::VaultEnvelope envelope{};
@@ -619,8 +657,13 @@ std::string CanonicalProtocolV2Handler::handle_line(
         vmk_sink_.cancel_pending();
         cancel_recovery_reset();
         const vault_runtime::Status status = time_service_.with_secret_boundary([&]() {
-            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-            return runtime_.lock();
+            vault_runtime::Status result = vault_runtime::Status::kIo;
+            {
+                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                result = runtime_.lock();
+            }
+            if (result == vault_runtime::Status::kOk) notify_security_boundary();
+            return result;
         });
         response = status == vault_runtime::Status::kOk
             ? empty_success(id)
@@ -644,11 +687,17 @@ std::string CanonicalProtocolV2Handler::handle_line(
             vault_runtime::Status vault_status = vault_runtime::Status::kIo;
             registration::Status registration_clear_status = registration::Status::kIo;
             time_service_.with_secret_boundary([&]() {
-                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                vault_status = runtime_.factory_reset();
-                registration_clear_status = vault_status == vault_runtime::Status::kOk
-                    ? registration_.clear_registration()
-                    : registration::Status::kIo;
+                {
+                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                    vault_status = runtime_.factory_reset();
+                    registration_clear_status = vault_status == vault_runtime::Status::kOk
+                        ? registration_.clear_registration()
+                        : registration::Status::kIo;
+                }
+                if (vault_status == vault_runtime::Status::kOk &&
+                    registration_clear_status == registration::Status::kOk) {
+                    notify_security_boundary();
+                }
             });
             response = vault_status == vault_runtime::Status::kOk &&
                     registration_clear_status == registration::Status::kOk
