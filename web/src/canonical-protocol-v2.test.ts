@@ -23,6 +23,7 @@ function helloData() {
     build_commit: "synthetic",
     state: "locked",
     storage_ready: true,
+    recovery_reset_required: false,
     vault_present: true,
     vault_id: encodeBase64UrlCanonical(bytes(16, 0x10)),
     generation: "7",
@@ -41,16 +42,29 @@ describe("canonical Protocol v2 management", () => {
     expect(parsed.vaultFormat).toBe(1);
     expect(parsed.generation).toBe(7n);
     expect(parsed.registrationEpoch).toBe(4);
+    expect(parsed.recoveryResetRequired).toBe(false);
     expect(parsed.vaultId).toEqual(bytes(16, 0x10));
   });
 
-  it("rejects partial Vault / registration state", () => {
-    expect(() => parseCanonicalHelloData({ ...helloData(), registration_present: false, registration_id: null, registration_epoch: 0, brk_public_key: null }))
-      .toThrow(/partial Vault\/registration/);
+  it("rejects partial Vault / registration state unless Device exposes bounded recovery reset", () => {
+    const partial = {
+      ...helloData(),
+      registration_present: false,
+      registration_id: null,
+      registration_epoch: 0,
+      brk_public_key: null,
+    };
+    expect(() => parseCanonicalHelloData(partial)).toThrow(/partial Vault\/registration/);
+
+    const recovery = parseCanonicalHelloData({ ...partial, recovery_reset_required: true });
+    expect(recovery.recoveryResetRequired).toBe(true);
+    expect(recovery.vaultPresent).toBe(true);
+    expect(recovery.registrationPresent).toBe(false);
   });
 
   it("uses correlated v2 request IDs and remote rejection errors", () => {
     expect(buildCanonicalV2Request(9, "device.lock")).toBe('{"v":2,"id":9,"op":"device.lock","params":{}}\n');
+    expect(buildCanonicalV2Request(10, "factory_reset.recovery_begin")).toContain('"factory_reset.recovery_begin"');
     expect(parseCanonicalV2Response('{"v":2,"id":9,"ok":true,"data":{}}', 9)).toEqual({});
     expect(() => parseCanonicalV2Response('{"v":2,"id":9,"ok":false,"error":{"code":"invalid_state"}}', 9))
       .toThrow(/invalid_state/);
