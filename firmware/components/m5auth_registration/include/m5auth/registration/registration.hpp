@@ -59,8 +59,15 @@ public:
     );
 
     // Factory Reset removes the active Trusted Browser registration but keeps
-    // the stable, non-secret Device ID in the reg2 namespace.
+    // the stable, non-secret Device ID in the registration namespace.
     Status clear_registration();
+
+    // Explicit recovery only: when initialize() proved that the stable Device
+    // ID is valid but the registration blob is structurally corrupt, erase only
+    // the M5Authenticator-owned active registration and restore a ready,
+    // unregistered state. Generic NVS I/O failures never enable this path.
+    bool recovery_reset_available() const { return recovery_reset_available_; }
+    Status clear_corrupt_registration_for_recovery();
 
     // Used only after the auth_nvs partition has been explicitly erased/formatted.
     Status reinitialize_after_partition_reset();
@@ -78,6 +85,7 @@ private:
     );
 
     bool ready_{false};
+    bool recovery_reset_available_{false};
     Snapshot snapshot_{};
 };
 
