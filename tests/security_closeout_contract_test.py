@@ -13,6 +13,7 @@ import validate_release
 CANONICAL_PROTOCOL = ROOT / "firmware/components/m5auth_provisioning/canonical_protocol_v2.cpp"
 BROWSER_VAULT = ROOT / "web/src/security/browser-vault.ts"
 PROVISIONER_HTML = ROOT / "web/index.html"
+QR_IMAGE_DECODER = ROOT / "web/src/import/qr.ts"
 SECRET_VAULT_DOC = ROOT / "docs/SECRET_VAULT.md"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
@@ -99,6 +100,16 @@ class SecurityCloseoutContractTest(unittest.TestCase):
 
     def test_provisioner_csp_forbids_network_connections(self) -> None:
         html = PROVISIONER_HTML.read_text(encoding="utf-8")
+        self.assertIn("connect-src 'none'", html)
+        self.assertIn("form-action 'none'", html)
+        self.assertIn("object-src 'none'", html)
+
+    def test_qr_object_url_is_allowed_only_as_local_image_input(self) -> None:
+        html = PROVISIONER_HTML.read_text(encoding="utf-8")
+        decoder = QR_IMAGE_DECODER.read_text(encoding="utf-8")
+        self.assertIn("URL.createObjectURL(file)", decoder)
+        self.assertIn("URL.revokeObjectURL(objectUrl)", decoder)
+        self.assertIn("img-src 'self' data: blob:", html)
         self.assertIn("connect-src 'none'", html)
         self.assertIn("form-action 'none'", html)
         self.assertIn("object-src 'none'", html)
