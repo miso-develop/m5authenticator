@@ -1,5 +1,6 @@
 import "./style.css";
 import { CanonicalDeviceManagement, type CanonicalDeviceSnapshot } from "./canonical-management";
+import { CanonicalRecoveryResetController } from "./canonical-recovery-reset";
 import { decodeQrImage } from "./import/qr";
 import { ImportSession, type ImportSessionUpdate } from "./import/session";
 import { ImportError, type ImportedAccountPreview } from "./import/types";
@@ -83,7 +84,11 @@ app.innerHTML = `
       <p class="hint">Deletes the encrypted canonical Vault and active Trusted Browser registration from the Device and removes this browser's matching canonical state. The stable non-secret Device ID is preserved.</p>
       <label for="reset-confirmation">Type RESET to enable</label>
       <input id="reset-confirmation" type="text" autocomplete="off" disabled />
-      <button id="factory-reset" class="danger-button" type="button" disabled>Factory Reset</button>
+      <div class="actions">
+        <button id="factory-reset" class="danger-button" type="button" disabled>Factory Reset</button>
+        <button id="recovery-factory-reset" class="danger-button" type="button" hidden disabled>Recovery Factory Reset</button>
+      </div>
+      <p id="recovery-reset-hint" class="hint" hidden>Canonical Vault/registration ownership is inconsistent. Normal unlock and Vault access are blocked. Recovery Factory Reset requires a fresh physical confirmation on M5StickS3, deletes only this Device's local canonical state, and does not delete external Recovery Packages.</p>
     </section>
   </main>
 `;
@@ -115,10 +120,13 @@ const rekeyPassphrase = queryRequired<HTMLInputElement>("#rekey-recovery-passphr
 const rotateVmkButton = queryRequired<HTMLButtonElement>("#rotate-vmk", "VMK rotation button is missing");
 const resetConfirmation = queryRequired<HTMLInputElement>("#reset-confirmation", "Reset confirmation is missing");
 const factoryResetButton = queryRequired<HTMLButtonElement>("#factory-reset", "Factory reset button is missing");
+const recoveryFactoryResetButton = queryRequired<HTMLButtonElement>("#recovery-factory-reset", "Recovery Factory Reset button is missing");
+const recoveryResetHint = queryRequired<HTMLElement>("#recovery-reset-hint", "Recovery Factory Reset hint is missing");
 
 const importSession = new ImportSession();
 let serialSession: SerialSession | null = null;
 let management: CanonicalDeviceManagement | null = null;
+let recoveryReset: CanonicalRecoveryResetController | null = null;
 let snapshot: CanonicalDeviceSnapshot | null = null;
 let deviceActionInProgress = false;
 
@@ -152,11 +160,20 @@ clearImportButton.addEventListener("click", () => {
 });
 
 connectButton.addEventListener("click", async () => {
-  if (deviceActionInProgress || management) return;
+  if (deviceActionInProgress || management || recoveryReset) return;
   setDeviceBusy(true, "Connecting…");
   try {
     const connected = await SerialSession.connect();
     serialSession = connected.session;
+    if (connected.hello.recoveryResetRequired === true) {
+      recoveryReset = new CanonicalRecoveryResetController(connected.session, connected.hello);
+      snapshot = null;
+      deviceNotice.textContent = "Canonical ownership state is inconsistent. Normal Vault access is blocked; use Recovery Factory Reset and confirm the dedicated request on M5StickS3.";
+      await recoveryReset.refresh();
+      renderDevice();
+      return;
+    }
+
     management = new CanonicalDeviceManagement(connected.session, connected.hello);
     deviceNotice.textContent = connected.hello.vaultPresent
       ? "Canonical Device found. Confirm the Trusted Browser request on M5StickS3 if prompted."
@@ -188,9 +205,12 @@ unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST —
 }));
 
 disconnectButton.addEventListener("click", async () => {
-  setDeviceBusy(true, "Locking and disconnecting…");
-  await disconnectDevice(true);
-  deviceNotice.textContent = "Device explicitly locked and disconnected.";
+  const recoveryMode = recoveryReset !== null;
+  setDeviceBusy(true, recoveryMode ? "Disconnecting recovery session…" : "Locking and disconnecting…");
+  await disconnectDevice(!recoveryMode);
+  deviceNotice.textContent = recoveryMode
+    ? "Recovery session disconnected without changing Device state."
+    : "Device explicitly locked and disconnected.";
   setDeviceBusy(false);
 });
 
@@ -271,22 +291,55 @@ factoryResetButton.addEventListener("click", () => {
   });
 });
 
+recoveryFactoryResetButton.addEventListener("click", () => {
+  if (!recoveryReset) return;
+  if (!window.confirm("Recovery Factory Reset is only for a broken Vault/registration ownership state. It will delete this Device's encrypted Vault and registration plus matching local browser state. External Recovery Packages are not deleted. Continue?")) return;
+  void runDeviceAction("RECOVERY RESET REQUEST — confirm on M5StickS3…", async () => {
+    const controller = requireRecoveryReset();
+    const nextHello = await controller.perform(() => {
+      deviceNotice.textContent = "RECOVERY RESET REQUEST — press A on M5StickS3 to confirm this destructive recovery action.";
+    });
+    const session = serialSession;
+    if (!session) throw new Error("Device disconnected after Recovery Factory Reset");
+    recoveryReset = null;
+    management = new CanonicalDeviceManagement(session, nextHello);
+    await management.initialize();
+    resetConfirmation.value = "";
+    wifiPassword.value = "";
+    rekeyPassphrase.value = "";
+    deviceNotice.textContent = "Recovery Factory Reset completed. Device canonical state is unprovisioned; external Recovery Packages were not changed.";
+    await refreshDevice();
+  });
+});
+
 window.addEventListener("pagehide", () => {
   importSession.clear();
   wifiPassword.value = "";
   rekeyPassphrase.value = "";
   clearInitialPassphrase();
-  if (management) void management.disconnectTransport();
+  if (management) {
+    void management.disconnectTransport();
+  } else if (serialSession) {
+    void serialSession.close();
+  }
 });
 
 async function refreshDevice(): Promise<void> {
+  if (recoveryReset) {
+    await recoveryReset.refresh();
+    snapshot = null;
+    renderDevice();
+    return;
+  }
   snapshot = await requireManagement().refresh();
   renderDevice();
 }
 
 async function disconnectDevice(lockDevice = true): Promise<void> {
   const current = management;
+  const currentSession = serialSession;
   management = null;
+  recoveryReset = null;
   serialSession = null;
   snapshot = null;
   wifiPassword.value = "";
@@ -300,12 +353,18 @@ async function disconnectDevice(lockDevice = true): Promise<void> {
       // Do not reinterpret transport lifecycle as an implicit Device Lock.
       // Explicit Lock is attempted only for the Lock & Disconnect action.
     }
+  } else if (currentSession) {
+    try {
+      await currentSession.close();
+    } catch {
+      // Recovery mode has no authenticated VMK to lock. Transport close only.
+    }
   }
   renderDevice();
 }
 
 async function runDeviceAction(message: string, action: () => Promise<void>): Promise<void> {
-  if (deviceActionInProgress || !management) return;
+  if (deviceActionInProgress || (!management && !recoveryReset)) return;
   setDeviceBusy(true, message);
   try {
     await action();
@@ -329,16 +388,20 @@ function canWriteCanonical(): boolean {
 }
 
 function updateControls(): void {
-  const connected = management !== null;
-  const writable = connected && canWriteCanonical();
-  const initial = connected && snapshot !== null && !snapshot.hello.vaultPresent;
-  const unlockable = connected && snapshot?.browserOwnership === "active" && snapshot.hello.state === "locked";
+  const recoveryMode = recoveryReset !== null;
+  const normalConnected = management !== null;
+  const connected = normalConnected || recoveryMode;
+  const writable = normalConnected && canWriteCanonical();
+  const initial = normalConnected && snapshot !== null && !snapshot.hello.vaultPresent;
+  const unlockable = normalConnected && snapshot?.browserOwnership === "active" && snapshot.hello.state === "locked";
   connectButton.disabled = deviceActionInProgress || connected;
   unlockButton.disabled = deviceActionInProgress || !unlockable;
   disconnectButton.disabled = deviceActionInProgress || !connected;
+  disconnectButton.textContent = recoveryMode ? "Disconnect" : "Lock & Disconnect";
   refreshButton.disabled = deviceActionInProgress || !connected;
   syncTimeButton.disabled = deviceActionInProgress || !writable;
-  provisionButton.disabled = deviceActionInProgress || !connected || !importSession.hasCompleteAccounts() || (!initial && !writable);
+  qrFileInput.disabled = deviceActionInProgress || recoveryMode;
+  provisionButton.disabled = deviceActionInProgress || !normalConnected || !importSession.hasCompleteAccounts() || (!initial && !writable);
   clearImportButton.disabled = !importSession.hasSensitiveState();
   initialPassphrase.disabled = deviceActionInProgress || !initial;
   initialPassphraseConfirm.disabled = deviceActionInProgress || !initial;
@@ -350,12 +413,37 @@ function updateControls(): void {
   rotateVmkButton.disabled = deviceActionInProgress || !writable || rekeyPassphrase.value.length === 0;
   resetConfirmation.disabled = deviceActionInProgress || !writable;
   factoryResetButton.disabled = deviceActionInProgress || !writable || resetConfirmation.value !== "RESET";
+  recoveryFactoryResetButton.hidden = !recoveryMode;
+  recoveryResetHint.hidden = !recoveryMode;
+  recoveryFactoryResetButton.disabled = deviceActionInProgress || !recoveryMode;
 }
 
 function renderDevice(): void {
-  const connected = management !== null;
+  const connected = management !== null || recoveryReset !== null;
   connectionState.textContent = connected ? "Connected" : "Disconnected";
   deviceStatus.replaceChildren();
+
+  if (recoveryReset) {
+    const hello = recoveryReset.currentHello();
+    appendStatus("Device", hello.device);
+    appendStatus("Device ID", hello.deviceId);
+    appendStatus("Firmware", hello.firmware);
+    appendStatus("Protocol", String(hello.protocol));
+    appendStatus("Storage schema", String(hello.storageSchema));
+    appendStatus("Vault format", String(hello.vaultFormat));
+    appendStatus("Build", hello.buildCommit);
+    appendStatus("Runtime", hello.state);
+    appendStatus("Recovery reset", hello.recoveryResetRequired === true ? "Required" : "No longer required");
+    appendStatus("Vault present", hello.vaultPresent ? "Yes" : "No");
+    appendStatus("Registration present", hello.registrationPresent ? "Yes" : "No");
+    appendStatus("Generation", hello.generation.toString(10));
+    storedAccountList.replaceChildren();
+    accountsEmpty.textContent = "Vault-private account metadata is not decrypted in Recovery Factory Reset mode.";
+    wifiStatus.textContent = "Vault-private Wi-Fi metadata is not decrypted in Recovery Factory Reset mode.";
+    wifiSsid.value = "";
+    updateControls();
+    return;
+  }
 
   if (!snapshot) {
     appendStatus("Status", connected ? "Connected; canonical status not loaded" : "Not connected");
@@ -496,8 +584,13 @@ function clearInitialPassphrase(): void {
 }
 
 function requireManagement(): CanonicalDeviceManagement {
-  if (!management) throw new Error("Device is not connected");
+  if (!management) throw new Error("Device is not connected in canonical management mode");
   return management;
+}
+
+function requireRecoveryReset(): CanonicalRecoveryResetController {
+  if (!recoveryReset) throw new Error("Device is not connected in Recovery Factory Reset mode");
+  return recoveryReset;
 }
 
 function userFacingError(error: unknown, fallback: string): string {
