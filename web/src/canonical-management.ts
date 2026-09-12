@@ -25,6 +25,7 @@ import {
   PendingBrowserTransactionError,
   type BrowserPendingTransaction,
 } from "./security/browser-transaction-journal";
+import { IndexedDbBrowserResetIntentStore } from "./security/browser-reset-intent";
 import { rekeyTrustedBrowserState } from "./security/browser-vmk-rekey";
 import { deliverVmkOverSessionV2, absentBrkIdentity, registrationMatches } from "./security/session-flow-v2";
 import {
@@ -164,6 +165,7 @@ export class CanonicalDeviceManagement {
     initialHello: CanonicalHelloData,
     private readonly store = new IndexedDbBrowserVaultStore(),
     private readonly journal = new IndexedDbBrowserTransactionJournal(),
+    private readonly resetIntents = new IndexedDbBrowserResetIntentStore(),
   ) {
     this.hello = initialHello;
   }
@@ -202,8 +204,6 @@ export class CanonicalDeviceManagement {
           await this.quickUnlock();
           this.unlockRequired = false;
         } catch {
-          // Fresh user-presence rejection/expiry is not an ownership conflict.
-          // Keep the valid Trusted Browser active-but-LOCKED so the user can retry.
           this.ownership = "active";
           this.unlockRequired = true;
         }
@@ -295,43 +295,50 @@ export class CanonicalDeviceManagement {
       const existingPending = await this.journal.get(state.vault.vaultId);
       if (existingPending) throw new PendingBrowserTransactionError();
       const vmk = await unwrapVmkForTrustedBrowser(state);
-      const candidate = sanitizeBrowserCanonicalState({
-        ...state,
-        trustedBrowser: {
-          ...state.trustedBrowser,
-          epoch: 1,
-          status: "active",
-        },
-        deviceMetadata: { deviceId: this.hello.deviceId },
-      });
-      const pending: BrowserPendingTransaction = {
-        kind: "recovery-provisioning",
-        expectedGeneration: state.vault.generation,
-        candidate,
-      };
-      await this.journal.stage(pending);
-
-      let operationError: unknown = null;
+      let candidate: BrowserCanonicalState | null = null;
       try {
-        await deliverVmkOverSessionV2({
-          transport: this.transport,
-          operation: "recovery",
-          deviceId: this.hello.deviceId,
-          vaultId: state.vault.vaultId,
-          expectedGeneration: state.vault.generation,
-          registrationId: candidate.trustedBrowser.registrationId,
-          registrationEpoch: 1,
-          currentBrkPublicKey: absentBrkIdentity(),
-          proposedBrkPublicKey: candidate.trustedBrowser.brkPublicKeyRaw,
+        // A clean replacement Device starts a new registration lifetime at epoch 1.
+        // BUK wrapping AAD binds registration ID + epoch, so never rewrite the
+        // imported epoch in-place: generate fresh BUK/BRK/registration and wrap
+        // the recovered VMK again under the new epoch-1 identity.
+        candidate = await createBrowserCanonicalState({
+          vault: state.vault,
+          recoveryWrappedVmk: state.recoveryWrappedVmk,
           vmk,
+          registrationEpoch: 1,
+          status: "active",
+          deviceMetadata: { deviceId: this.hello.deviceId },
         });
-        await this.transport.requestCanonicalV2("vault.install", encryptedVaultParams(state.vault));
-      } catch (error) {
-        operationError = error;
+        const pending: BrowserPendingTransaction = {
+          kind: "recovery-provisioning",
+          expectedGeneration: state.vault.generation,
+          candidate,
+        };
+        await this.journal.stage(pending);
+
+        let operationError: unknown = null;
+        try {
+          await deliverVmkOverSessionV2({
+            transport: this.transport,
+            operation: "recovery",
+            deviceId: this.hello.deviceId,
+            vaultId: state.vault.vaultId,
+            expectedGeneration: state.vault.generation,
+            registrationId: candidate.trustedBrowser.registrationId,
+            registrationEpoch: 1,
+            currentBrkPublicKey: absentBrkIdentity(),
+            proposedBrkPublicKey: candidate.trustedBrowser.brkPublicKeyRaw,
+            vmk,
+          });
+          await this.transport.requestCanonicalV2("vault.install", encryptedVaultParams(state.vault));
+        } catch (error) {
+          operationError = error;
+        }
+        await this.resolvePendingOperation(pending, operationError);
       } finally {
         vmk.fill(0);
+        candidate = null;
       }
-      await this.resolvePendingOperation(pending, operationError);
     });
   }
 
@@ -511,12 +518,10 @@ export class CanonicalDeviceManagement {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
       const state = this.state!;
-      const pending: BrowserPendingTransaction = {
-        kind: "factory-reset",
-        expectedGeneration: state.vault.generation,
-        candidate: state,
-      };
-      await this.journal.stage(pending);
+      await this.resetIntents.stage({
+        deviceId: this.hello.deviceId,
+        affectedVaults: [{ vaultId: state.vault.vaultId.slice(), generation: state.vault.generation }],
+      });
 
       let operationError: unknown = null;
       try {
@@ -524,7 +529,7 @@ export class CanonicalDeviceManagement {
       } catch (error) {
         operationError = error;
       }
-      await this.resolveFactoryReset(pending, operationError);
+      await this.resolveFactoryReset(this.hello.deviceId, operationError);
     });
   }
 
@@ -555,12 +560,53 @@ export class CanonicalDeviceManagement {
     return (await this.store.list()).filter((state) => state.trustedBrowser.status === "replacement-pending");
   }
 
+  private async reconcileResetIntentForHello(): Promise<void> {
+    const intent = await this.resetIntents.get(this.hello.deviceId);
+    if (!intent) return;
+
+    if (!this.hello.vaultPresent && !this.hello.registrationPresent && this.hello.state === "unprovisioned") {
+      for (const affected of intent.affectedVaults) {
+        const current = await this.store.get(affected.vaultId);
+        if (current) {
+          if (current.vault.generation !== affected.generation) {
+            this.ownership = "conflict";
+            throw new GenerationConflictError("Browser canonical state changed while Device reset was pending");
+          }
+          await this.store.delete(affected.vaultId, affected.generation);
+        }
+        await this.journal.delete(affected.vaultId);
+      }
+      await this.resetIntents.delete(intent.deviceId);
+      notifyCanonicalBrowserStateChanged();
+      return;
+    }
+
+    if (intent.affectedVaults.length === 1) {
+      const affected = intent.affectedVaults[0]!;
+      const current = await this.store.get(affected.vaultId);
+      if (current && current.vault.generation === affected.generation && exactBindingMatches(current, this.hello)) {
+        // Exact old binding proves the reset did not commit; the canonical state
+        // is still valid, so clear only the durable reset intent.
+        await this.resetIntents.delete(intent.deviceId);
+        return;
+      }
+    }
+
+    this.ownership = "conflict";
+    throw new PendingBrowserTransactionError(
+      "A Device reset outcome is not yet provable. Canonical writes remain blocked until the durable reset intent reconciles.",
+    );
+  }
+
   private async reconcilePendingForHello(): Promise<void> {
+    await this.reconcileResetIntentForHello();
+
     if (!this.hello.vaultPresent || this.hello.vaultId === null) {
       if (this.hello.state === "unprovisioned" && !this.hello.registrationPresent) {
         const pendingForDevice = await this.journal.listForDevice(this.hello.deviceId);
         for (const pending of pendingForDevice) {
           if (pending.kind === "factory-reset") {
+            // Backward-compatible cleanup for pre-reset-intent builds.
             const current = await this.store.get(pending.candidate.vault.vaultId);
             if (current) {
               if (current.vault.generation !== pending.expectedGeneration) {
@@ -575,9 +621,6 @@ export class CanonicalDeviceManagement {
             (pending.kind === "initial-provisioning" && pending.expectedGeneration === 0n) ||
             pending.kind === "recovery-provisioning"
           ) {
-            // A reconnect that proves the same Device is still clean proves the
-            // provisioning operation did not commit. Keep any imported Recovery
-            // Package browser state, but clear the in-flight intent so retry is safe.
             await this.journal.delete(pending.candidate.vault.vaultId);
           }
         }
@@ -597,8 +640,6 @@ export class CanonicalDeviceManagement {
     const current = await this.store.get(this.hello.vaultId);
     if (pending.kind === "factory-reset") {
       if (current && exactBindingMatches(candidate, this.hello) && exactBindingMatches(current, this.hello)) {
-        // Reconnect proves the destructive operation did not commit. The active
-        // canonical state remains valid; clear only the reset intent.
         await this.journal.delete(candidate.vault.vaultId);
         return;
       }
@@ -672,28 +713,23 @@ export class CanonicalDeviceManagement {
     throw new Error("Device did not commit the staged canonical transaction");
   }
 
-  private async resolveFactoryReset(
-    pending: BrowserPendingTransaction,
-    operationError: unknown,
-  ): Promise<void> {
+  private async resolveFactoryReset(deviceId: string, operationError: unknown): Promise<void> {
     try {
       this.hello = parseCanonicalHelloData(await this.transport.requestCanonicalV2("hello"));
       await this.reconcilePendingForHello();
       await this.reloadBrowserState();
     } catch (error) {
-      const stillPending = await this.journal.get(pending.candidate.vault.vaultId);
-      if (stillPending) {
+      if (await this.resetIntents.get(deviceId)) {
         this.ownership = "conflict";
         this.unlockRequired = false;
         throw new PendingBrowserTransactionError(
-          "Factory Reset outcome is not yet provable. The reset intent remains durably journaled; reconnect to reconcile before any further write.",
+          "Factory Reset outcome is not yet provable. The durable reset intent is retained; reconnect to reconcile before any further write.",
         );
       }
       throw error;
     }
 
-    const stillPending = await this.journal.get(pending.candidate.vault.vaultId);
-    if (stillPending) throw new PendingBrowserTransactionError();
+    if (await this.resetIntents.get(deviceId)) throw new PendingBrowserTransactionError();
     if (!this.hello.vaultPresent && !this.hello.registrationPresent && this.hello.state === "unprovisioned") {
       this.state = null;
       this.ownership = "none";
