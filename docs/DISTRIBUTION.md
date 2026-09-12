@@ -4,25 +4,43 @@ M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware
 
 ## Release gate
 
-`firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage constants and `firmware/partitions.csv`.
+`firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage/Vault constants, the canonical firmware bootstrap, and `firmware/partitions.csv`.
 
-The current main profile is intentionally development-only with `production_release_allowed: false`. Decision #40 superseded the former Production HMAC/eFuse backend. Until the replacement V1 Vault implementation and security closeout complete:
+After Task #55, current `main` already runs the canonical Protocol 2 / Storage Schema 2 / Vault Format 1 application. Task #56 replaces the former development-synthetic release profile with the V1 security contract while deliberately leaving the final publication switch disabled.
 
-- ordinary CI may build/validate a non-published development package;
-- GitHub Pages may show the Firmware Flash surface but must not expose a production firmware manifest/binary;
-- a `v*.*.*` Release workflow fails closed before publication;
-- a public/synthetic development storage key must never be accepted as production credential protection;
+Release-profile format 2 requires:
+
+- `PROTOCOL_VERSION = 2`
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
+- security profile `encrypted-vault-ram-only-vmk`, version 1
+- credential-bearing Flash persistence only as an authenticated Encrypted Vault
+- VMK persistence `ram-only`
+- no public/synthetic Flash credential key
+- no M5Authenticator-specific eFuse requirement
+- post-update runtime state `LOCKED`
+
+The repository profile remains `production_release_allowed: false` until Task #15 completes the final cross-surface security closeout. This separates two questions that must not be conflated:
+
+1. **Does the build satisfy the V1 release security contract?** — checked now on every Foundation/release-profile validation run.
+2. **Has the exact final implementation completed security closeout and may it be published as production?** — only Task #15 may flip `production_release_allowed` to `true`.
+
+Accordingly:
+
+- ordinary CI validates and packages the exact V1 contract without publishing it;
+- GitHub Pages must not expose a production firmware manifest/binary while eligibility is false;
+- a `v*.*.*` Release workflow fails closed before publication while eligibility is false;
+- changing only a tag cannot bypass the gate;
+- changing the eligibility bit cannot bypass the V1 contract checks: Protocol/Storage/Vault/security-profile/bootstrap/layout validation still runs;
 - M5Authenticator-specific eFuse programming is not a release prerequisite or supported V1 security path.
 
-The current prerequisite chain is:
+The remaining release chain is:
 
 ```text
-#58 -> #51 -> +-> #52 -+
-              +-> #53 -+-> #54 -> #55 -> #56 -> #15
-#44 (code merged; physical re-test pending) -----> #56
+#56 -> #15 -> #16
 ```
 
-#58 is repository-scanner hardening required before #51 introduces structured cryptographic fixtures. #44's code is already in main, but its remaining non-destructive StickS3 physical validation is an independent release-contract blocker. Task #56 may begin only after both #44 and #55 are complete. Task #15 performs the final security closeout and is the only stage that may enable production release eligibility after the exact implementation is validated. Changing only a tag does not bypass the gate.
+Task #15 is the security closeout gate and is the only stage that may enable production release eligibility.
 
 ## Canonical firmware package
 
@@ -47,7 +65,7 @@ release-metadata.json
 SHA256SUMS
 ```
 
-`release-metadata.json` contains only non-secret build/device/version/security-profile metadata. Target V1 metadata includes independent Firmware / Protocol / Storage Schema / Vault Format versions. `SHA256SUMS` covers downloadable package files.
+`release-metadata.json` contains only non-secret build/device/release-contract metadata, including independent Firmware / Protocol / Storage Schema / Vault Format versions, security profile/version, VMK persistence mode, post-update state, and production-eligibility state. `SHA256SUMS` covers downloadable package files.
 
 There is no separately rebuilt M5Burner package. M5Burner `USER CUSTOM` publication uses the same merged `.bin` used by GitHub Releases and Web Flasher.
 
@@ -70,24 +88,19 @@ The merged image is generated without `--pad-to-size`, so its normal write range
 - **First install:** erase Flash, then flash merged image at `0x0`.
 - **Normal update:** do not erase Flash; flash the same merged image at `0x0`, preserving `auth_nvs`.
 
-Preserving `auth_nvs` preserves only the authenticated Encrypted Vault and approved non-secret state. VMK remains RAM-only and is lost on update/reboot, so a provisioned Device returns `LOCKED` after update.
+Preserving `auth_nvs` preserves the authenticated Encrypted Vault and registration/non-secret runtime state. VMK is not persisted there or anywhere else in Device Flash. Firmware update/reboot therefore preserves the encrypted Vault but destroys the RAM-only VMK, and a provisioned Device returns `LOCKED` after update.
 
 Factory Reset is not an update mechanism. It explicitly erases M5Authenticator Vault/user/registration state; normal update must not expose or invoke a full-Flash erase path.
 
 The pre-release move of `auth_nvs` from `0x12000` to `0x7d0000` is a development-only one-time transition. Existing development data from the old layout may require reprovisioning.
 
-## Security profile transition
+## V1 security profile
 
-Current development builds may still use Protocol 1 / Storage Schema 1 with deliberately public synthetic encrypted-NVS material. They are release-ineligible.
+The release gate does not rely on encrypted NVS protected by a public development key, a universal production key, or a project-specific HMAC/eFuse root. User credential material is persisted only in the application-level authenticated Encrypted Vault. Its random 256-bit VMK exists on Device only while the runtime is UNLOCKED and is held in RAM only.
 
-Target V1 production metadata is:
+`scripts/validate_release.py` fails closed if the canonical production bootstrap regresses to the legacy `DevSecurityBackend` / plaintext storage/provisioning path, if release-profile security fields no longer describe the V1 Vault contract, or if Firmware/Protocol/Storage/Vault metadata diverges.
 
-- `PROTOCOL_VERSION = 2`
-- `STORAGE_SCHEMA_VERSION = 2`
-- `VAULT_FORMAT_VERSION = 1`
-- security profile representing application-level Encrypted Vault + Device RAM-only VMK
-
-Task #55 activates the target runtime tuple only when complete end-to-end semantics are implemented. Task #56 replaces development release-profile assumptions after #44/#55 are complete. Task #15 performs final security verification and is the gate for enabling production eligibility.
+Legacy implementation code may remain in repository history or non-production test/support surfaces, but production eligibility must never be satisfied by a bootstrap that can use public/synthetic credential-protection material.
 
 No release validation path depends on HMAC eFuse initialization.
 
@@ -104,7 +117,7 @@ When production eligibility is enabled, CI places package binary/manifests under
 
 ### First install — destructive
 
-Uses standard ESP Web Tools install with `factory-manifest.json`. This is explicitly for a new Device or intentional clean installation and performs full-Flash erase before installation.
+Uses standard ESP Web Tools install with `factory-manifest.json`. This is explicitly for a new Device or intentional clean installation and performs the installation semantics documented by the Flasher UI.
 
 ### Update — preserve authenticator state
 
@@ -127,11 +140,13 @@ Until Task #15 enables production eligibility, the Flasher remains fail closed w
 
 `.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags. It:
 
-1. requires a production-eligible release profile;
+1. requires the exact V1 security contract and production eligibility;
 2. verifies tag equals `v<firmware_version>`;
 3. builds/merges firmware in pinned ESP-IDF 5.5.5;
 4. packages that exact CI-built image;
 5. uploads package files directly to the GitHub Release.
+
+The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
 
 GitHub Actions Artifact is not used as an intermediate or long-term firmware store.
 

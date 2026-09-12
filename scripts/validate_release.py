@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate M5Authenticator release metadata and the fixed V1 flash layout."""
+"""Validate M5Authenticator release metadata and the fixed V1 flash/security contract."""
 
 from __future__ import annotations
 
@@ -14,8 +14,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = REPO_ROOT / "firmware" / "release-profile.json"
 DEFAULT_METADATA = REPO_ROOT / "firmware" / "components" / "m5auth_core" / "include" / "m5auth" / "core" / "metadata.hpp"
 DEFAULT_PARTITIONS = REPO_ROOT / "firmware" / "partitions.csv"
+DEFAULT_BOOTSTRAP = REPO_ROOT / "firmware" / "main" / "app_main.cpp"
 
 REQUIRED_PARTITIONS = ("nvs", "otadata", "phy_init", "ota_0", "ota_1", "auth_nvs")
+V1_SECURITY_PROFILE = "encrypted-vault-ram-only-vmk"
+V1_SECURITY_PROFILE_VERSION = 1
+V1_CREDENTIAL_FLASH_STORAGE = "encrypted-vault-only"
+V1_VMK_PERSISTENCE = "ram-only"
+V1_POST_UPDATE_STATE = "locked"
 
 
 class ReleaseValidationError(RuntimeError):
@@ -45,13 +51,16 @@ def parse_metadata(path: Path = DEFAULT_METADATA) -> dict[str, Any]:
     version = re.search(r'kFirmwareVersion\[\]\s*=\s*"([^"]+)"', source)
     protocol = re.search(r"kProtocolVersion\s*=\s*(\d+)", source)
     storage = re.search(r"kStorageSchemaVersion\s*=\s*(\d+)", source)
+    vault = re.search(r"kVaultFormatVersion\s*=\s*(\d+)", source)
     _require(version is not None, "firmware version constant not found")
     _require(protocol is not None, "protocol version constant not found")
     _require(storage is not None, "storage schema constant not found")
+    _require(vault is not None, "Vault format constant not found")
     return {
         "firmware_version": version.group(1),
         "protocol_version": int(protocol.group(1)),
         "storage_schema_version": int(storage.group(1)),
+        "vault_format_version": int(vault.group(1)),
     }
 
 
@@ -81,23 +90,63 @@ def parse_partitions(path: Path = DEFAULT_PARTITIONS) -> dict[str, dict[str, int
     return partitions
 
 
+def validate_canonical_bootstrap(path: Path = DEFAULT_BOOTSTRAP) -> None:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReleaseValidationError(f"cannot read firmware bootstrap: {exc}") from exc
+
+    required = (
+        "m5auth::vault_runtime::CompatibleNvsPersistence",
+        "m5auth::vault_runtime::Runtime runtime",
+        "m5auth::provisioning::CanonicalProtocolV2Handler protocol",
+    )
+    for token in required:
+        _require(token in source, f"canonical V1 bootstrap missing: {token}")
+
+    forbidden = (
+        "DevSecurityBackend",
+        "m5auth::storage::Store",
+        "m5auth::provisioning::Session provisioning",
+    )
+    for token in forbidden:
+        _require(token not in source, f"legacy/synthetic credential bootstrap is release-ineligible: {token}")
+
+
 def validate_release(
     profile_path: Path = DEFAULT_PROFILE,
     metadata_path: Path = DEFAULT_METADATA,
     partitions_path: Path = DEFAULT_PARTITIONS,
     require_production: bool = False,
+    bootstrap_path: Path = DEFAULT_BOOTSTRAP,
 ) -> dict[str, Any]:
     profile = load_profile(profile_path)
     metadata = parse_metadata(metadata_path)
     partitions = parse_partitions(partitions_path)
 
-    _require(profile.get("format") == 1, "unsupported release profile format")
+    _require(profile.get("format") == 2, "unsupported release profile format")
     _require(profile.get("device") == "M5StickS3", "V1 release device must be M5StickS3")
     _require(profile.get("chip_family") == "ESP32-S3", "V1 chip family must be ESP32-S3")
     _require(profile.get("flash_size_bytes") == 8 * 1024 * 1024, "V1 flash size must be 8 MiB")
 
-    for key in ("firmware_version", "protocol_version", "storage_schema_version"):
+    for key in ("firmware_version", "protocol_version", "storage_schema_version", "vault_format_version"):
         _require(profile.get(key) == metadata[key], f"{key} does not match firmware metadata")
+
+    _require(profile.get("protocol_version") == 2, "V1 production contract requires Protocol 2")
+    _require(profile.get("storage_schema_version") == 2, "V1 production contract requires Storage Schema 2")
+    _require(profile.get("vault_format_version") == 1, "V1 production contract requires Vault Format 1")
+    _require(profile.get("security_profile") == V1_SECURITY_PROFILE, "unexpected V1 security profile")
+    _require(profile.get("security_profile_version") == V1_SECURITY_PROFILE_VERSION, "unexpected security profile version")
+    _require(profile.get("credential_flash_storage") == V1_CREDENTIAL_FLASH_STORAGE, "credential Flash storage must be encrypted Vault only")
+    _require(profile.get("vmk_persistence") == V1_VMK_PERSISTENCE, "VMK must be RAM-only")
+    _require(profile.get("public_synthetic_flash_key_allowed") is False, "public/synthetic Flash credential key is forbidden")
+    _require(profile.get("project_specific_efuse_required") is False, "project-specific eFuse must not be a V1 release requirement")
+    _require(profile.get("post_update_state") == V1_POST_UPDATE_STATE, "post-update state must be LOCKED")
+
+    eligible = profile.get("production_release_allowed")
+    _require(isinstance(eligible, bool), "production_release_allowed must be boolean")
+
+    validate_canonical_bootstrap(bootstrap_path)
 
     for name in REQUIRED_PARTITIONS:
         _require(name in partitions, f"missing required partition: {name}")
@@ -129,15 +178,8 @@ def validate_release(
     ota1 = partitions["ota_1"]
     _require(int(ota1["offset"]) + int(ota1["size"]) == auth_start, "ota_1 must end exactly where auth_nvs begins")
 
-    security_backend = profile.get("security_backend")
-    eligible = profile.get("production_release_allowed")
-    _require(isinstance(security_backend, str) and security_backend, "security_backend must be a non-empty string")
-    _require(isinstance(eligible, bool), "production_release_allowed must be boolean")
-    if security_backend == "development-synthetic":
-        _require(eligible is False, "development synthetic backend cannot be production eligible")
     if require_production:
-        _require(eligible is True, "production release is blocked by release profile")
-        _require(security_backend != "development-synthetic", "development security backend cannot be released")
+        _require(eligible is True, "production release is blocked pending V1 security closeout")
 
     return {
         "profile": profile,
@@ -151,21 +193,30 @@ def main() -> int:
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--metadata", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--partitions", type=Path, default=DEFAULT_PARTITIONS)
+    parser.add_argument("--bootstrap", type=Path, default=DEFAULT_BOOTSTRAP)
     parser.add_argument("--require-production", action="store_true")
     args = parser.parse_args()
     try:
-        result = validate_release(args.profile, args.metadata, args.partitions, args.require_production)
+        result = validate_release(
+            args.profile,
+            args.metadata,
+            args.partitions,
+            args.require_production,
+            args.bootstrap,
+        )
     except ReleaseValidationError as exc:
         print(f"release validation failed: {exc}")
         return 1
 
     profile = result["profile"]
-    state = "production-eligible" if profile["production_release_allowed"] else "development-only"
+    eligibility = "production-eligible" if profile["production_release_allowed"] else "security-closeout-pending"
     print(
         "release validation OK: "
         f"{profile['device']} v{profile['firmware_version']} "
         f"protocol={profile['protocol_version']} storage={profile['storage_schema_version']} "
-        f"profile={state}"
+        f"vault={profile['vault_format_version']} "
+        f"security={profile['security_profile']}/v{profile['security_profile_version']} "
+        f"eligibility={eligibility}"
     )
     return 0
 

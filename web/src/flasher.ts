@@ -27,7 +27,7 @@ if (!flashEnabled) {
   heading.textContent = "Production flashing is not enabled yet";
   const explanation = document.createElement("p");
   explanation.className = "hint";
-  explanation.textContent = "This build still uses the development-only synthetic storage security backend. Production firmware publishing stays fail-closed until the dedicated production eFuse-backed security task is complete.";
+  explanation.textContent = "The V1 Encrypted Vault / RAM-only VMK release contract is active, but production firmware publishing remains fail-closed until the final V1 security closeout explicitly enables release eligibility.";
   status.append(heading, explanation);
 } else {
   status.append(
@@ -38,7 +38,7 @@ if (!flashEnabled) {
     ),
     updateChoice(
       "Update — keep authenticator data",
-      "Normal updates never request a full-flash erase. Accounts, TOTP secrets, Wi-Fi settings, and UI settings in auth_nvs stay outside the firmware write range. Use the Provisioner Factory Reset action when you intentionally need to erase user state.",
+      "Normal updates never request a full-flash erase. The authenticated Encrypted Vault and registration state in auth_nvs stay outside the firmware write range. The RAM-only VMK is lost on reboot, so a provisioned device returns LOCKED after the update.",
       `${base}firmware/update-manifest.json`,
     ),
   );

@@ -23,18 +23,13 @@ The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG 
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
 
-### Current development security state
+### Current V1 security runtime
 
-The current pre-V1 implementation still uses the development-era `DevSecurityBackend`, `PROTOCOL_VERSION = 1`, and `STORAGE_SCHEMA_VERSION = 1`. It exercises encrypted `auth_nvs` with deliberately public synthetic XTS key material and **must not burn, read for provisioning, or modify project-specific eFuse security state**. Its firmware reports `security_profile: development` and `production_release_allowed: false`.
+Task #55 activated the V1 runtime on the canonical executable path. Current firmware uses:
 
-This development backend is intentionally not a production credential-protection boundary: a public/synthetic storage key cannot protect a captured Flash image from an attacker who has the same public source material.
-
-Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26 and PR #39 are historical/superseded and must not be revived as the V1 production path.
-
-### Target V1 security transition
-
-The target V1 architecture is defined by `docs/SECRET_VAULT.md` and settled Decisions #40/#45-#49:
-
+- `PROTOCOL_VERSION = 2`
+- `STORAGE_SCHEMA_VERSION = 2`
+- `VAULT_FORMAT_VERSION = 1`
 - application-level authenticated Encrypted Vault in `auth_nvs`
 - one AES-256-GCM ciphertext per Vault generation
 - random 256-bit Vault Master Key (VMK)
@@ -43,43 +38,46 @@ The target V1 architecture is defined by `docs/SECRET_VAULT.md` and settled Deci
 - browser-local non-extractable Browser Unlock Key (BUK) for quick-unlock wrapping
 - separate browser-local non-extractable ECDSA P-256 Browser Registration Key (BRK) for the single active Trusted Browser registration
 - fresh P-256 ECDH + HKDF-SHA-256 + AES-256-GCM Web-to-Device unlock session with Device user presence
-- no M5Authenticator-specific eFuse burn
+- no M5Authenticator-specific eFuse burn or HMAC-root provisioning requirement
 
-The transition is intentionally breaking and must not silently reinterpret development protocol/storage v1. The target boundaries are:
+The canonical `app_main` bootstrap uses the Vault runtime and Protocol v2 management path. The superseded `DevSecurityBackend` / Protocol 1 plaintext-management path is not the production executable bootstrap and must not be restored as a release path.
 
-- `PROTOCOL_VERSION = 2`
-- `STORAGE_SCHEMA_VERSION = 2`
-- `VAULT_FORMAT_VERSION = 1`
+Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26 and PR #39 are historical/superseded and must not be revived as the V1 production path.
 
-The former catch-all Task #41 was closed as not planned because it mixed security decisions with an oversized implementation surface. Decisions #45-#49 are settled and promoted into Spec #7 and the durable architecture documents.
+### V1 release transition
 
-The current dependency/implementation graph is:
+`firmware/release-profile.json` format 2 describes the V1 production contract independently from the final publication switch. It requires:
+
+- Protocol 2 / Storage Schema 2 / Vault Format 1
+- security profile `encrypted-vault-ram-only-vmk`, version 1
+- credential-bearing Flash persistence only as authenticated Encrypted Vault data
+- VMK persistence `ram-only`
+- no public/synthetic Flash credential key
+- no M5Authenticator-specific eFuse requirement
+- post-update state `LOCKED`
+
+`scripts/validate_release.py` verifies those fields against firmware metadata, the canonical bootstrap, and the fixed Flash layout. It rejects a regression to the legacy synthetic credential bootstrap even when `production_release_allowed` is changed.
+
+The release implementation chain is now:
 
 ```text
-#43 (completed)
-#58 -> #51 -> +-> #52 -+
-              +-> #53 -+-> #54 -> #55 -> #56 -> #15 -> #16
-#44 (code merged; physical re-test pending) -----> #56
+#43 / #44 / #58 / #51 / #52 / #53 / #54 / #55  completed
+#56  V1 release contract
+  ↓
+#15  final security closeout + production eligibility flip
+  ↓
+#16  durable documentation closeout
 ```
 
-- #43 reconciled repository truth and security enforcement in PR #50 and is complete.
-- #58 hardens repository scanning for quoted sensitive JSON/JSONC property assignments and is an explicit prerequisite for #51.
-- #44 preserves the non-eFuse StickS3 runtime fixes discovered in superseded PR #39. Its code was merged in PR #57; the remaining non-destructive physical validation is outside the repository-spec consistency audit and still blocks #56.
-- #51 implements the Vault crypto format and interoperability vectors without activating v2 runtime semantics.
-- #52 and #53 implement Web canonical-state/Trusted-Browser ownership and Device RAM-only-VMK runtime respectively; they may proceed in parallel after #51.
-- #54 implements the fresh Protocol v2 unlock/session primitives.
-- #55 is the only Task that activates the complete Protocol 2 / Storage Schema 2 / Vault Format 1 tuple in the canonical application.
-- #56 replaces the development release gate with the V1 Vault production contract after both #44 and #55 are complete.
-- #15 performs final security closeout; #16 completes durable documentation closeout.
+Task #56 deliberately leaves `production_release_allowed: false`. Task #15 is the only stage that may set it to `true` after the exact final implementation passes security closeout. This means ordinary CI can validate the real V1 security contract without prematurely publishing production firmware.
 
-Until that replacement implementation and validation chain is complete and release validation explicitly permits production distribution, do not:
+Until Task #15 completes, do not:
 
 - enable `production_release_allowed`
-- treat the synthetic development storage key as production protection
-- add an eFuse burn/provisioning path
-- change the settled KDF/AEAD/session parameters inside an implementation Task without a new Decision
-- advertise protocol/storage/Vault versions that are not actually implemented
-- begin #51 while #58 remains open
+- introduce a public/synthetic or universal credential-decryption key into the production path
+- add an M5Authenticator-specific eFuse burn/provisioning dependency
+- change settled KDF/AEAD/session parameters without a new Decision
+- weaken Protocol/Storage/Vault/security-profile validation to make a release pass
 
 The native state-codec check can be run from the repository root with:
 
@@ -93,7 +91,16 @@ g++ -std=c++20 -Wall -Wextra -Werror \
 /tmp/m5auth-storage-state-test
 ```
 
-See `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, and `docs/PROVISIONING_PROTOCOL.md` for the persistence, key, and protocol boundaries.
+Release-contract checks can be run with:
+
+```text
+python scripts/validate_release.py
+python -m unittest tests/release_package_test.py
+```
+
+`python scripts/validate_release.py --require-production` is expected to fail until Task #15 enables final production eligibility.
+
+See `docs/STORAGE.md`, `docs/SECRET_VAULT.md`, `docs/PROVISIONING_PROTOCOL.md`, and `docs/DISTRIBUTION.md` for the persistence, key, protocol, and release boundaries.
 
 ## Web App
 
