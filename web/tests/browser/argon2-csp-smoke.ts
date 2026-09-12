@@ -79,7 +79,9 @@ export async function runArgon2CspSmoke(): Promise<void> {
   clearImportButton.click();
   await flushMutations();
   assertCondition(provisionError.textContent === "", "Clearing the import session did not clear the stale provisioning error");
+}
 
+export async function runProductionArgon2Smoke(): Promise<void> {
   // The existing Linux browser smoke has a 5-second virtual-time budget, which
   // is intentionally too short for the production 32 MiB / t=3 Argon2id KDF on
   // hosted runners. The release-blocking platform is Desktop Chrome on Windows,
