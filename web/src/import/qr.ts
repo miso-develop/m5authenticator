@@ -19,15 +19,15 @@ function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   const luminances = new Uint8ClampedArray(width * height);
 
   for (let source = 0, target = 0; source < data.length; source += 4, target += 1) {
-    const alpha = data[source + 3];
+    const alpha = data[source + 3]!;
     if (alpha === 0) {
       luminances[target] = 0xff;
       continue;
     }
 
-    let red = data[source];
-    let green = data[source + 1];
-    let blue = data[source + 2];
+    let red = data[source]!;
+    let green = data[source + 1]!;
+    let blue = data[source + 2]!;
 
     if (alpha !== 0xff) {
       red = Math.round((red * alpha + 0xff * (0xff - alpha)) / 0xff);
