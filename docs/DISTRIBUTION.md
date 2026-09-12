@@ -4,9 +4,9 @@ M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware
 
 ## Release gate
 
-`firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage/Vault constants, the canonical firmware bootstrap, and `firmware/partitions.csv`.
+`firmware/release-profile.json` is the machine-readable distribution contract. `scripts/validate_release.py` cross-checks it against firmware version/protocol/storage/Vault constants, the canonical firmware bootstrap, the release component surface/core-dump policy, and `firmware/partitions.csv`.
 
-After Task #55, current `main` already runs the canonical Protocol 2 / Storage Schema 2 / Vault Format 1 application. Task #56 replaces the former development-synthetic release profile with the V1 security contract while deliberately leaving the final publication switch disabled.
+Current V1 runs the canonical Protocol 2 / Storage Schema 2 / Vault Format 1 application. Task #56 replaced the former development-synthetic release profile with the V1 security contract, and Task #15 completed the cross-surface security closeout before enabling the final publication eligibility switch.
 
 Release-profile format 2 requires:
 
@@ -19,28 +19,25 @@ Release-profile format 2 requires:
 - no public/synthetic Flash credential key
 - no M5Authenticator-specific eFuse requirement
 - post-update runtime state `LOCKED`
+- `production_release_allowed: true` only after the V1 security closeout is green
 
-The repository profile remains `production_release_allowed: false` until Task #15 completes the final cross-surface security closeout. This separates two questions that must not be conflated:
+The final repository profile is production-eligible. Eligibility does not bypass any underlying security contract: Protocol/Storage/Vault/security-profile/bootstrap/component-surface/core-dump/layout checks remain mandatory, and Release/Pages workflows invoke `--require-production` fail closed.
 
-1. **Does the build satisfy the V1 release security contract?** — checked now on every Foundation/release-profile validation run.
-2. **Has the exact final implementation completed security closeout and may it be published as production?** — only Task #15 may flip `production_release_allowed` to `true`.
+Task #15 closeout additionally pins that:
 
-Accordingly:
+- ESP-IDF core dumps are explicitly disabled for the release firmware so credential-bearing RAM is not persisted through crash capture;
+- retired Protocol 1 / Storage Schema 1 credential-management sources are absent from the release component surface;
+- the actual merged firmware image is scanned for retired credential-management markers before packaging/publication;
+- a synthetic full Vault ciphertext inspection verifies that TOTP secret material, issuer/account/display-name, SSID/password, and VMK do not appear verbatim in the credential-bearing persisted ciphertext;
+- project repository security scanning remains an independent blocking layer.
 
-- ordinary CI validates and packages the exact V1 contract without publishing it;
-- GitHub Pages must not expose a production firmware manifest/binary while eligibility is false;
-- a `v*.*.*` Release workflow fails closed before publication while eligibility is false;
-- changing only a tag cannot bypass the gate;
-- changing the eligibility bit cannot bypass the V1 contract checks: Protocol/Storage/Vault/security-profile/bootstrap/layout validation still runs;
-- M5Authenticator-specific eFuse programming is not a release prerequisite or supported V1 security path.
-
-The remaining release chain is:
+The remaining release chain after security eligibility is:
 
 ```text
-#56 -> #15 -> #16
+#56 -> #15 completed -> #16
 ```
 
-Task #15 is the security closeout gate and is the only stage that may enable production release eligibility.
+Task #16 owns the subsequent durable documentation closeout; it does not weaken or replace the production security gate established here.
 
 ## Canonical firmware package
 
@@ -98,9 +95,9 @@ The pre-release move of `auth_nvs` from `0x12000` to `0x7d0000` is a development
 
 The release gate does not rely on encrypted NVS protected by a public development key, a universal production key, or a project-specific HMAC/eFuse root. User credential material is persisted only in the application-level authenticated Encrypted Vault. Its random 256-bit VMK exists on Device only while the runtime is UNLOCKED and is held in RAM only.
 
-`scripts/validate_release.py` fails closed if the canonical production bootstrap regresses to the legacy `DevSecurityBackend` / plaintext storage/provisioning path, if release-profile security fields no longer describe the V1 Vault contract, or if Firmware/Protocol/Storage/Vault metadata diverges.
+`scripts/validate_release.py` fails closed if the canonical production bootstrap regresses to the legacy `DevSecurityBackend` / plaintext storage/provisioning path, if retired Schema 1 release components are restored, if core-dump persistence is re-enabled, if release-profile security fields no longer describe the V1 Vault contract, or if Firmware/Protocol/Storage/Vault metadata diverges.
 
-Legacy implementation code may remain in repository history or non-production test/support surfaces, but production eligibility must never be satisfied by a bootstrap that can use public/synthetic credential-protection material.
+Legacy implementation code may remain in repository history or non-release test/support surfaces, but production eligibility must never be satisfied by a release image that exposes public/synthetic credential-protection or retired plaintext-management material.
 
 No release validation path depends on HMAC eFuse initialization.
 
@@ -113,7 +110,7 @@ The Pages site contains:
 
 No runtime CDN is used. The Provisioner retains `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so same-origin firmware assets can be fetched.
 
-When production eligibility is enabled, CI places package binary/manifests under `/firmware/`.
+With production eligibility enabled, CI may place the exact validated package binary/manifests under `/firmware/` only after the same V1 release/profile and merged-image security checks pass.
 
 ### First install — destructive
 
@@ -134,8 +131,6 @@ The update path requires:
 
 `update-manifest.json` may retain the generic erase prompt as defense-in-depth if opened outside the M5Authenticator UI; it is not the normal execution path.
 
-Until Task #15 enables production eligibility, the Flasher remains fail closed with no production manifest offered.
-
 ## GitHub Releases
 
 `.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags. It:
@@ -143,8 +138,9 @@ Until Task #15 enables production eligibility, the Flasher remains fail closed w
 1. requires the exact V1 security contract and production eligibility;
 2. verifies tag equals `v<firmware_version>`;
 3. builds/merges firmware in pinned ESP-IDF 5.5.5;
-4. packages that exact CI-built image;
-5. uploads package files directly to the GitHub Release.
+4. verifies the actual merged firmware security surface;
+5. packages that exact CI-built image;
+6. uploads package files directly to the GitHub Release.
 
 The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
 
