@@ -54,6 +54,27 @@ describe("clean replacement Device browser registration", () => {
 
         replacementVmk = await unwrapVmkForTrustedBrowser(safe);
         expect(replacementVmk).toEqual(vmk);
+        replacementVmk.fill(0);
+        replacementVmk = null;
+
+        const tamperedRegistration = sanitizeBrowserCanonicalState({
+          ...safe,
+          trustedBrowser: {
+            ...safe.trustedBrowser,
+            registrationId: safe.trustedBrowser.registrationId.slice(),
+          },
+        });
+        tamperedRegistration.trustedBrowser.registrationId[0] ^= 0x01;
+        await expect(unwrapVmkForTrustedBrowser(tamperedRegistration)).rejects.toThrow();
+
+        const tamperedEpoch = sanitizeBrowserCanonicalState({
+          ...safe,
+          trustedBrowser: {
+            ...safe.trustedBrowser,
+            epoch: 2,
+          },
+        });
+        await expect(unwrapVmkForTrustedBrowser(tamperedEpoch)).rejects.toThrow();
       } finally {
         replacementVmk?.fill(0);
         recoveredVmk.fill(0);
