@@ -64,7 +64,8 @@ describe("clean replacement Device browser registration", () => {
             registrationId: safe.trustedBrowser.registrationId.slice(),
           },
         });
-        tamperedRegistration.trustedBrowser.registrationId[0] ^= 0x01;
+        tamperedRegistration.trustedBrowser.registrationId[0] =
+          (tamperedRegistration.trustedBrowser.registrationId[0] ?? 0) ^ 0x01;
         await expect(unwrapVmkForTrustedBrowser(tamperedRegistration)).rejects.toThrow();
 
         const tamperedEpoch = sanitizeBrowserCanonicalState({
