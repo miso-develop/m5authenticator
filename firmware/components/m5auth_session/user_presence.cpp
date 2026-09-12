@@ -56,11 +56,22 @@ bool UserPresenceGate::begin(
     return true;
 }
 
+void UserPresenceGate::observe_input_state(bool pressed) {
+    if (state_ != PresenceState::kAwaiting || input_armed_) return;
+    if (pressed) {
+        neutral_samples_ = 0;
+        return;
+    }
+    if (neutral_samples_ < 2) ++neutral_samples_;
+    if (neutral_samples_ >= 2) input_armed_ = true;
+}
+
 bool UserPresenceGate::confirm_current(
     std::uint64_t now_ms,
     std::uint64_t input_generation
 ) {
     if (expire(now_ms) || state_ != PresenceState::kAwaiting) return false;
+    if (!input_armed_) return false;
     // A button event observed before the request cannot authorize it.
     if (input_generation <= input_generation_at_start_) return false;
     state_ = PresenceState::kConfirmed;
@@ -102,6 +113,10 @@ bool UserPresenceGate::active() const {
     return state_ != PresenceState::kIdle;
 }
 
+bool UserPresenceGate::input_armed() const {
+    return input_armed_;
+}
+
 std::uint64_t UserPresenceGate::expires_at_ms() const {
     return expires_at_ms_;
 }
@@ -112,6 +127,46 @@ void UserPresenceGate::clear() {
     attempt_id_.fill(0);
     expires_at_ms_ = 0;
     input_generation_at_start_ = 0;
+    neutral_samples_ = 0;
+    input_armed_ = false;
+}
+
+void PresenceGestureQuarantine::begin(
+    std::uint64_t now_ms,
+    std::uint32_t click_decision_timeout_ms
+) {
+    active_ = true;
+    release_observed_ = false;
+    release_observed_at_ms_ = now_ms;
+    click_decision_timeout_ms_ = click_decision_timeout_ms;
+}
+
+void PresenceGestureQuarantine::observe(
+    bool pressed,
+    bool deciding_click_count,
+    std::uint64_t now_ms
+) {
+    if (!active_) return;
+    if (pressed) {
+        release_observed_ = false;
+        return;
+    }
+    if (!release_observed_) {
+        release_observed_ = true;
+        release_observed_at_ms_ = now_ms;
+        return;
+    }
+    if (deciding_click_count) return;
+    if (now_ms < release_observed_at_ms_) return;
+    if (now_ms - release_observed_at_ms_ <= click_decision_timeout_ms_) return;
+    cancel();
+}
+
+void PresenceGestureQuarantine::cancel() {
+    active_ = false;
+    release_observed_ = false;
+    release_observed_at_ms_ = 0;
+    click_decision_timeout_ms_ = 0;
 }
 
 }  // namespace m5auth::session
