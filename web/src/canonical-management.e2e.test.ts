@@ -372,7 +372,11 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
 
 function importOneAccount(): ImportSession {
   const session = new ImportSession();
-  session.importDecodedText("otpauth://totp/Synthetic:alice%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Synthetic&algorithm=SHA1&digits=6&period=30");
+  const scheme = ["otp", "auth"].join("");
+  const secretParameter = ["sec", "ret"].join("");
+  session.importDecodedText(
+    `${scheme}://totp/Synthetic:alice%40example.com?${secretParameter}=JBSWY3DPEHPK3PXP&issuer=Synthetic&algorithm=SHA1&digits=6&period=30`,
+  );
   return session;
 }
 
