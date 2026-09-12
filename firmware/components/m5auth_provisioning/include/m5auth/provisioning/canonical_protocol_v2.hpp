@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -28,7 +29,8 @@ public:
         StagedSessionV2Handler& session_handler,
         CanonicalVmkSink& vmk_sink,
         session::protocol_v2::PresenceBinding& recovery_presence,
-        std::recursive_mutex& runtime_access_mutex
+        std::recursive_mutex& runtime_access_mutex,
+        std::function<void()> security_boundary_clear = {}
     );
     ~CanonicalProtocolV2Handler();
 
@@ -38,10 +40,6 @@ public:
     std::string handle_line(std::string_view line, std::uint64_t now_ms);
     void disconnect();
 
-    // Called by the production app loop even when stdin is idle. This makes the
-    // 30-second Protocol-v2 lifetime proactive: coordinator crypto/context,
-    // pending VMK delivery and recovery-reset presence state are wiped without
-    // waiting for a later Web request.
     void housekeeping(std::uint64_t now_ms) {
         (void)session_handler_.expire(now_ms);
         (void)vmk_sink_.expire_pending(now_ms);
@@ -52,6 +50,7 @@ public:
 
 private:
     void cancel_recovery_reset();
+    void notify_security_boundary();
     RecoveryResetDecision recovery_reset_decision(
         vault_runtime::Metadata* runtime_metadata,
         registration::Snapshot* registration_snapshot,
@@ -66,6 +65,7 @@ private:
     CanonicalVmkSink& vmk_sink_;
     session::protocol_v2::PresenceBinding& recovery_presence_;
     std::recursive_mutex& runtime_access_mutex_;
+    std::function<void()> security_boundary_clear_;
 
     session::AttemptId recovery_reset_attempt_id_{};
     std::uint64_t recovery_reset_deadline_ms_{0};
