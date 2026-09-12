@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CanonicalRecoveryResetController } from "./canonical-recovery-reset";
 import { parseCanonicalHelloData, type CanonicalHelloData, type CanonicalWireOperation } from "./canonical-protocol-v2";
 import type { BrowserCanonicalState } from "./security/browser-vault";
+import type { BrowserResetIntent } from "./security/browser-reset-intent";
 import { encodeBase64UrlCanonical, type SessionWireOperation } from "./security/session-protocol-v2";
 import type { CanonicalV2Transport } from "./serial";
 
@@ -88,6 +89,35 @@ class FakeRecoveryTransport implements CanonicalV2Transport {
   async close(): Promise<void> {}
 }
 
+class MemoryResetIntents {
+  current: BrowserResetIntent | null = null;
+  lastStaged: BrowserResetIntent | null = null;
+
+  async get(deviceId: string): Promise<BrowserResetIntent | null> {
+    return this.current?.deviceId === deviceId ? this.clone(this.current) : null;
+  }
+
+  async stage(intent: BrowserResetIntent): Promise<void> {
+    const safe = this.clone(intent);
+    this.current = safe;
+    this.lastStaged = this.clone(safe);
+  }
+
+  async delete(deviceId: string): Promise<void> {
+    if (this.current?.deviceId === deviceId) this.current = null;
+  }
+
+  private clone(intent: BrowserResetIntent): BrowserResetIntent {
+    return {
+      deviceId: intent.deviceId,
+      affectedVaults: intent.affectedVaults.map((item) => ({
+        vaultId: item.vaultId.slice(),
+        generation: item.generation,
+      })),
+    };
+  }
+}
+
 function cleanupState(deviceId: string, vaultId: Uint8Array, generation: bigint): BrowserCanonicalState {
   return {
     deviceMetadata: { deviceId },
@@ -154,5 +184,43 @@ describe("Recovery Factory Reset isolation", () => {
       encodeBase64UrlCanonical(orphanVaultId),
     ]);
     expect(deletedVaults.some((value) => value.startsWith(encodeBase64UrlCanonical(otherVaultId)))).toBe(false);
+  });
+
+  it("cleans the exact hello Vault even when Device-ID corruption replaced the old browser Device ID", async () => {
+    const initial = parseCanonicalHelloData(recoveryHelloRaw());
+    const transport = new FakeRecoveryTransport();
+    const exactVaultId = bytes(16, 0x10);
+    const oldDeviceState = cleanupState("ffeeddccbbaa00998877665544332211", exactVaultId, 4n);
+    const deletedVaults: string[] = [];
+    const resetIntents = new MemoryResetIntents();
+
+    const store = {
+      async list() { return [oldDeviceState]; },
+      async delete(vaultId: Uint8Array, expectedGeneration?: bigint) {
+        deletedVaults.push(`${encodeBase64UrlCanonical(vaultId)}:${expectedGeneration?.toString() ?? "none"}`);
+      },
+    };
+    const journal = {
+      async listForDevice(_deviceId: string) { return []; },
+      async delete(_vaultId: Uint8Array) {},
+    };
+
+    const controller = new CanonicalRecoveryResetController(
+      transport,
+      initial,
+      store,
+      journal,
+      resetIntents,
+    );
+    await controller.perform(undefined, 0);
+
+    expect(resetIntents.lastStaged?.deviceId).toBe(initial.deviceId);
+    expect(resetIntents.lastStaged?.affectedVaults).toHaveLength(1);
+    expect(resetIntents.lastStaged?.affectedVaults[0]?.vaultId).toEqual(exactVaultId);
+    expect(resetIntents.lastStaged?.affectedVaults[0]?.generation).toBe(4n);
+    expect(deletedVaults).toEqual([
+      `${encodeBase64UrlCanonical(exactVaultId)}:4`,
+    ]);
+    expect(resetIntents.current).toBeNull();
   });
 });
