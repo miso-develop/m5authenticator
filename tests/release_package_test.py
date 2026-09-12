@@ -15,8 +15,8 @@ import validate_release
 
 
 class ReleasePackagingTest(unittest.TestCase):
-    def test_repository_release_profile_is_v1_contract_but_not_yet_production_eligible(self) -> None:
-        result = validate_release.validate_release()
+    def test_repository_release_profile_is_v1_contract_and_production_eligible(self) -> None:
+        result = validate_release.validate_release(require_production=True)
         profile = result["profile"]
         self.assertEqual(profile["format"], 2)
         self.assertEqual(profile["protocol_version"], 2)
@@ -29,21 +29,19 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertIs(profile["public_synthetic_flash_key_allowed"], False)
         self.assertIs(profile["project_specific_efuse_required"], False)
         self.assertEqual(profile["post_update_state"], "locked")
-        self.assertFalse(profile["production_release_allowed"])
-        with self.assertRaises(validate_release.ReleaseValidationError):
-            validate_release.validate_release(require_production=True)
+        self.assertTrue(profile["production_release_allowed"])
 
-    def test_security_closeout_can_flip_only_final_eligibility_gate(self) -> None:
+    def test_production_validation_fails_closed_when_eligibility_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = validate_release.load_profile()
-            profile["production_release_allowed"] = True
+            profile["production_release_allowed"] = False
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
-            result = validate_release.validate_release(
-                profile_path=profile_path,
-                require_production=True,
-            )
-            self.assertTrue(result["profile"]["production_release_allowed"])
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                validate_release.validate_release(
+                    profile_path=profile_path,
+                    require_production=True,
+                )
 
     def test_release_contract_rejects_public_synthetic_flash_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -103,7 +101,7 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(metadata["security_profile_version"], 1)
             self.assertEqual(metadata["vmk_persistence"], "ram-only")
             self.assertEqual(metadata["post_update_state"], "locked")
-            self.assertFalse(metadata["production_release_allowed"])
+            self.assertTrue(metadata["production_release_allowed"])
             self.assertNotIn("security_backend", metadata)
             serialized = json.dumps(metadata).lower()
             self.assertNotIn("totp_secret", serialized)
