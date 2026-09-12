@@ -20,6 +20,8 @@ import {
 
 const MAX_RESPONSE_BYTES = 4096;
 const RESPONSE_TIMEOUT_MS = 5000;
+const MAX_STARTUP_NOISE_LINES = 64;
+const MAX_STARTUP_NOISE_BYTES = 8192;
 
 interface SerialPortOptions {
   baudRate: number;
@@ -96,7 +98,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
 
     const session = new SerialSession(port, port.readable.getReader(), port.writable.getWriter());
     try {
-      const data = await session.requestCanonicalV2("hello");
+      const data = await session.requestInitialHello();
       return { session, hello: parseCanonicalHelloData(data) };
     } catch (error) {
       await session.closeSilently();
@@ -165,10 +167,20 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     await this.port.close();
   }
 
+  private async requestInitialHello(): Promise<Record<string, unknown>> {
+    return this.exchange(
+      (id) => buildCanonicalV2Request(id, "hello", {}),
+      parseCanonicalV2Response,
+      (error) => error instanceof CanonicalProtocolV2Error,
+      true,
+    );
+  }
+
   private async exchange(
     build: (id: number) => string,
     parse: (raw: string, expectedId: number) => Record<string, unknown>,
     isDeviceRejection: (error: unknown) => boolean,
+    allowInitialStartupNoise = false,
   ): Promise<Record<string, unknown>> {
     if (this.closed) throw new Error("Device is not connected");
     if (this.inFlight) throw new Error("Another device request is already in progress");
@@ -183,7 +195,11 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       } finally {
         payload.fill(0);
       }
-      const line = await this.readLine();
+
+      const deadlineMs = Date.now() + RESPONSE_TIMEOUT_MS;
+      const line = allowInitialStartupNoise
+        ? await this.readInitialProtocolLine(deadlineMs)
+        : await this.readLine(deadlineMs, MAX_RESPONSE_BYTES);
       return parse(line, id);
     } catch (error) {
       if (!isDeviceRejection(error)) await this.closeSilently();
@@ -199,8 +215,29 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     return id;
   }
 
-  private async readLine(): Promise<string> {
-    while (this.pendingBytes <= MAX_RESPONSE_BYTES) {
+  private async readInitialProtocolLine(deadlineMs: number): Promise<string> {
+    let skippedLines = 0;
+    let skippedBytes = 0;
+    const encoder = new TextEncoder();
+
+    while (true) {
+      const line = await this.readLine(deadlineMs, MAX_STARTUP_NOISE_BYTES);
+      const lineBytes = encoder.encode(line).byteLength;
+      if (line.trimStart().startsWith("{")) {
+        if (lineBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
+        return line;
+      }
+
+      skippedLines += 1;
+      skippedBytes += lineBytes + 1;
+      if (skippedLines > MAX_STARTUP_NOISE_LINES || skippedBytes > MAX_STARTUP_NOISE_BYTES) {
+        throw new Error("Device startup output exceeded synchronization limits");
+      }
+    }
+  }
+
+  private async readLine(deadlineMs: number, maxBufferedBytes: number): Promise<string> {
+    while (this.pendingBytes <= maxBufferedBytes) {
       const newline = this.pending.indexOf("\n");
       if (newline >= 0) {
         const line = this.pending.slice(0, newline).replace(/\r$/, "");
@@ -209,16 +246,19 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
         return line;
       }
 
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) throw new Error("Device response timed out");
+
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error("Device response timed out")), RESPONSE_TIMEOUT_MS);
+        timeoutHandle = setTimeout(() => reject(new Error("Device response timed out")), remainingMs);
       });
       try {
         const { value, done } = await Promise.race([this.reader.read(), timeout]);
         if (done) throw new Error("Device disconnected before responding");
         if (value) {
           this.pendingBytes += value.byteLength;
-          if (this.pendingBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
+          if (this.pendingBytes > maxBufferedBytes) throw new Error("Device response was too large");
           this.pending += this.decoder.decode(value, { stream: true });
         }
       } finally {
