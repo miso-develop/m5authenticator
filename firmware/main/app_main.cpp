@@ -42,11 +42,6 @@ void write_response(const std::string& response) {
     std::fflush(stdout);
 }
 
-void discard_line_remainder() {
-    int ch = 0;
-    do { ch = std::fgetc(stdin); } while (ch != '\n' && ch != EOF);
-}
-
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
     return microseconds <= 0
@@ -367,42 +362,87 @@ extern "C" void app_main(void) {
         m5auth::provisioning::kMaxCanonicalV2MessageBytes + 2,
         '\0'
     );
+    std::size_t buffered_input = 0;
+    bool discard_oversized_input = false;
 
     while (true) {
         protocol.housekeeping(monotonic_ms());
 
+        if (discard_oversized_input) {
+            if (std::fgets(
+                    input.data(),
+                    static_cast<int>(input.size()),
+                    stdin
+                ) == nullptr) {
+                if (!usb_serial_jtag_is_connected()) {
+                    teardown_transport_session(protocol);
+                    discard_oversized_input = false;
+                }
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                std::clearerr(stdin);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            const std::size_t discarded_length = std::strlen(input.data());
+            const bool discarded_complete_line =
+                discarded_length > 0 && input[discarded_length - 1] == '\n';
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            std::clearerr(stdin);
+            if (discarded_complete_line) {
+                discard_oversized_input = false;
+            }
+            continue;
+        }
+
         if (std::fgets(
-                input.data(),
-                static_cast<int>(input.size()),
+                input.data() + buffered_input,
+                static_cast<int>(input.size() - buffered_input),
                 stdin
             ) == nullptr) {
             if (!usb_serial_jtag_is_connected()) {
                 teardown_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                buffered_input = 0;
             }
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
             std::clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        std::size_t length = std::strlen(input.data());
-        const bool complete_line = length > 0 && input[length - 1] == '\n';
+        buffered_input += std::strlen(input.data() + buffered_input);
+        const bool complete_line =
+            buffered_input > 0 && input[buffered_input - 1] == '\n';
         if (!complete_line) {
-            const bool overflow = length == input.size() - 1;
-            if (overflow) discard_line_remainder();
-            teardown_transport_session(protocol);
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            if (overflow) {
+            std::clearerr(stdin);
+            if (buffered_input > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+                teardown_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                buffered_input = 0;
+                discard_oversized_input = true;
                 write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
+            } else {
+                // USB Serial/JTAG VFS reads are non-blocking. A valid JSON line can
+                // arrive in multiple reads, so keep the bounded fragment in RAM
+                // until the newline arrives. Disconnect handling above wipes it.
+                vTaskDelay(pdMS_TO_TICKS(1));
             }
             continue;
         }
 
+        std::size_t length = buffered_input;
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
+        if (length > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+            teardown_transport_session(protocol);
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
+            continue;
+        }
         const std::string_view request(input.data(), length);
 
         if (is_timing_diagnostics_query(request)) {
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
             write_response(timing_diagnostics_response());
             continue;
         }
@@ -426,6 +466,7 @@ extern "C" void app_main(void) {
         }
 
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
+        buffered_input = 0;
         write_response(response);
     }
 }
