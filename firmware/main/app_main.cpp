@@ -27,6 +27,10 @@
 #define M5AUTH_BUILD_COMMIT "unknown"
 #endif
 
+#ifndef M5AUTH_TIMING_DIAGNOSTICS
+#define M5AUTH_TIMING_DIAGNOSTICS 0
+#endif
+
 namespace {
 
 void write_response(const std::string& response) {
@@ -53,7 +57,7 @@ void teardown_transport_session(
     protocol.disconnect();
 }
 
-#ifdef M5AUTH_TIMING_DIAGNOSTICS
+constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
 
 enum class TimingOperation {
     kNone,
@@ -141,8 +145,6 @@ std::string timing_diagnostics_response() {
     }
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
-
-#endif
 
 }  // namespace
 
@@ -248,26 +250,26 @@ extern "C" void app_main(void) {
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
         const std::string_view request(input.data(), length);
 
-#ifdef M5AUTH_TIMING_DIAGNOSTICS
-        if (request == kTimingDiagnosticsQuery) {
+        if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery) {
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             write_response(timing_diagnostics_response());
             continue;
         }
-        const TimingOperation timing_operation = classify_timing_operation(request);
+        const TimingOperation timing_operation = kTimingDiagnosticsEnabled
+            ? classify_timing_operation(request)
+            : TimingOperation::kNone;
         const std::int64_t timing_started_us = timing_operation == TimingOperation::kNone
             ? 0
             : esp_timer_get_time();
-#endif
 
         const std::string response = protocol.handle_line(
             request,
             monotonic_ms()
         );
 
-#ifdef M5AUTH_TIMING_DIAGNOSTICS
-        record_timing(timing_operation, timing_started_us);
-#endif
+        if (kTimingDiagnosticsEnabled) {
+            record_timing(timing_operation, timing_started_us);
+        }
 
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
         write_response(response);
