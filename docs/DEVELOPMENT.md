@@ -108,7 +108,33 @@ Pinned runtime/tooling:
 - Vite `8.2.2`
 - Vitest `5.0.0`
 
-Canonical commands:
+The repository root contains `.node-version` with the canonical Node.js version. Version managers such as `fnm` can use this file to select the repository-local runtime without changing the user's persistent default Node.js version. `fnm default` is the operation that changes fnm's persistent default; repository-local selection is separate.
+
+In a shell already initialized for fnm, run from the repository root:
+
+```text
+fnm install
+fnm use
+node --version
+npm --version
+```
+
+With fnm `--use-on-cd` configured in a supported shell, entering the repository can automatically select the version from `.node-version`.
+
+If you do not want to change even the current shell's selected Node.js version, run Web commands inside an isolated fnm execution context from the repository root. On Windows, use `npm.cmd` explicitly because `fnm exec` does not resolve the `.cmd` extension the same way `cmd.exe` does:
+
+```text
+fnm exec --using=.node-version node --version
+fnm exec --using=.node-version npm.cmd --prefix web --version
+fnm exec --using=.node-version npm.cmd --prefix web ci
+fnm exec --using=.node-version npm.cmd --prefix web test
+fnm exec --using=.node-version npm.cmd --prefix web run build
+fnm exec --using=.node-version npm.cmd --prefix web run dev -- --host 127.0.0.1
+```
+
+On POSIX shells, `npm` may be used instead of `npm.cmd`.
+
+Canonical commands after selecting the pinned runtime:
 
 ```text
 cd web
