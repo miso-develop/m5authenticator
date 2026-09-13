@@ -10,6 +10,7 @@ SDKCONFIG = ROOT / "firmware" / "sdkconfig.defaults"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
+APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
 
 
@@ -87,6 +88,31 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());", text)
         self.assertIn("M5.BtnA.wasDecideClickCount()", text)
         self.assertIn("!presence_gesture_quarantine_.active()", text)
+
+    def test_issue_86_timing_diagnostics_are_compiled_but_runtime_gated_and_default_off(self) -> None:
+        cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        option = re.search(
+            r"option\(\s*M5AUTH_TIMING_DIAGNOSTICS[\s\S]+?OFF\s*\)",
+            cmake,
+        )
+        self.assertIsNotNone(option)
+        self.assertIn(
+            "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)",
+            cmake,
+        )
+        self.assertIn("#define M5AUTH_TIMING_DIAGNOSTICS 0", app)
+        self.assertIn("constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;", app)
+        self.assertIn("if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery)", app)
+        self.assertIn("diagnostics.timing", app)
+        self.assertIn("session.complete", app)
+        self.assertIn("vault.install", app)
+        self.assertIn("hello", app)
+        self.assertIn("last_us", app)
+        self.assertIn("max_us", app)
+        self.assertNotIn("ESP_LOG", app)
+        self.assertNotIn("timing_diagnostics_response(request", app)
 
 
 if __name__ == "__main__":

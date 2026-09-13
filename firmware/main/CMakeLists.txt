@@ -14,6 +14,15 @@ idf_component_register(
         m5auth_vault_runtime
 )
 
+option(
+    M5AUTH_TIMING_DIAGNOSTICS
+    "Enable RAM-only Device operation timing diagnostics for #86"
+    OFF
+)
+if(M5AUTH_TIMING_DIAGNOSTICS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)
+endif()
+
 execute_process(
     COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../.."
