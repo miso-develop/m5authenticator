@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -6,6 +9,8 @@
 #include <vector>
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,18 +30,11 @@
 #define M5AUTH_BUILD_COMMIT "unknown"
 #endif
 
+#ifndef M5AUTH_TIMING_DIAGNOSTICS
+#define M5AUTH_TIMING_DIAGNOSTICS 0
+#endif
+
 namespace {
-
-void write_response(const std::string& response) {
-    std::fwrite(response.data(), 1, response.size(), stdout);
-    std::fputc('\n', stdout);
-    std::fflush(stdout);
-}
-
-void discard_line_remainder() {
-    int ch = 0;
-    do { ch = std::fgetc(stdin); } while (ch != '\n' && ch != EOF);
-}
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -49,6 +47,333 @@ void teardown_transport_session(
     m5auth::provisioning::CanonicalProtocolV2Handler& protocol
 ) {
     protocol.disconnect();
+}
+
+constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
+constexpr std::uint32_t kTimingRtcMagic = 0x4d354438U;  // "M5D8"
+constexpr std::size_t kTimingBuildBytes = 16;
+
+enum class TimingOperation {
+    kNone,
+    kSessionBegin,
+    kSessionAuthorize,
+    kSessionStatus,
+    kSessionComplete,
+    kVaultInstall,
+    kHello,
+};
+
+struct TimingSample {
+    std::uint64_t count{0};
+    std::uint64_t last_us{0};
+    std::uint64_t max_us{0};
+};
+
+struct ResponseWriteDiagnostics {
+    std::uint64_t count{0};
+    std::uint64_t last_us{0};
+    std::uint64_t max_us{0};
+    std::uint64_t operation{0};
+    std::uint64_t response_bytes{0};
+    std::uint64_t fwrite_ok{0};
+    std::uint64_t newline_ok{0};
+    std::uint64_t fflush_ok{0};
+    std::uint64_t ferror_value{0};
+};
+
+struct TimingDiagnostics {
+    TimingSample session_begin{};
+    TimingSample session_authorize{};
+    TimingSample session_status{};
+    TimingSample session_complete{};
+    TimingSample vault_install{};
+    TimingSample hello{};
+    ResponseWriteDiagnostics response_write{};
+};
+
+struct RtcTimingDiagnostics {
+    std::uint32_t magic;
+    char build[kTimingBuildBytes];
+    std::uint64_t values[27];
+    std::uint32_t magic_tail;
+};
+
+RTC_NOINIT_ATTR RtcTimingDiagnostics g_rtc_timing_diagnostics;
+TimingDiagnostics g_timing_diagnostics{};
+
+bool timing_rtc_build_matches() {
+    if (g_rtc_timing_diagnostics.magic != kTimingRtcMagic ||
+        g_rtc_timing_diagnostics.magic_tail != ~kTimingRtcMagic) {
+        return false;
+    }
+    std::array<char, kTimingBuildBytes> expected{};
+    std::snprintf(expected.data(), expected.size(), "%s", M5AUTH_BUILD_COMMIT);
+    return std::memcmp(
+        g_rtc_timing_diagnostics.build,
+        expected.data(),
+        expected.size()
+    ) == 0;
+}
+
+void persist_timing_diagnostics_to_rtc() {
+    if (!kTimingDiagnosticsEnabled) return;
+
+    g_rtc_timing_diagnostics.magic = kTimingRtcMagic;
+    std::memset(
+        g_rtc_timing_diagnostics.build,
+        0,
+        sizeof(g_rtc_timing_diagnostics.build)
+    );
+    std::snprintf(
+        g_rtc_timing_diagnostics.build,
+        sizeof(g_rtc_timing_diagnostics.build),
+        "%s",
+        M5AUTH_BUILD_COMMIT
+    );
+
+    const std::array<std::uint64_t, 27> values{
+        g_timing_diagnostics.session_begin.count,
+        g_timing_diagnostics.session_begin.last_us,
+        g_timing_diagnostics.session_begin.max_us,
+        g_timing_diagnostics.session_authorize.count,
+        g_timing_diagnostics.session_authorize.last_us,
+        g_timing_diagnostics.session_authorize.max_us,
+        g_timing_diagnostics.session_status.count,
+        g_timing_diagnostics.session_status.last_us,
+        g_timing_diagnostics.session_status.max_us,
+        g_timing_diagnostics.session_complete.count,
+        g_timing_diagnostics.session_complete.last_us,
+        g_timing_diagnostics.session_complete.max_us,
+        g_timing_diagnostics.vault_install.count,
+        g_timing_diagnostics.vault_install.last_us,
+        g_timing_diagnostics.vault_install.max_us,
+        g_timing_diagnostics.hello.count,
+        g_timing_diagnostics.hello.last_us,
+        g_timing_diagnostics.hello.max_us,
+        g_timing_diagnostics.response_write.count,
+        g_timing_diagnostics.response_write.last_us,
+        g_timing_diagnostics.response_write.max_us,
+        g_timing_diagnostics.response_write.operation,
+        g_timing_diagnostics.response_write.response_bytes,
+        g_timing_diagnostics.response_write.fwrite_ok,
+        g_timing_diagnostics.response_write.newline_ok,
+        g_timing_diagnostics.response_write.fflush_ok,
+        g_timing_diagnostics.response_write.ferror_value,
+    };
+    std::copy(values.begin(), values.end(), g_rtc_timing_diagnostics.values);
+    g_rtc_timing_diagnostics.magic_tail = ~kTimingRtcMagic;
+}
+
+void initialize_timing_diagnostics_persistence() {
+    if (!kTimingDiagnosticsEnabled) return;
+
+    if (!timing_rtc_build_matches()) {
+        g_timing_diagnostics = TimingDiagnostics{};
+        std::memset(&g_rtc_timing_diagnostics, 0, sizeof(g_rtc_timing_diagnostics));
+        persist_timing_diagnostics_to_rtc();
+        return;
+    }
+
+    g_timing_diagnostics.session_begin = TimingSample{
+        g_rtc_timing_diagnostics.values[0],
+        g_rtc_timing_diagnostics.values[1],
+        g_rtc_timing_diagnostics.values[2],
+    };
+    g_timing_diagnostics.session_authorize = TimingSample{
+        g_rtc_timing_diagnostics.values[3],
+        g_rtc_timing_diagnostics.values[4],
+        g_rtc_timing_diagnostics.values[5],
+    };
+    g_timing_diagnostics.session_status = TimingSample{
+        g_rtc_timing_diagnostics.values[6],
+        g_rtc_timing_diagnostics.values[7],
+        g_rtc_timing_diagnostics.values[8],
+    };
+    g_timing_diagnostics.session_complete = TimingSample{
+        g_rtc_timing_diagnostics.values[9],
+        g_rtc_timing_diagnostics.values[10],
+        g_rtc_timing_diagnostics.values[11],
+    };
+    g_timing_diagnostics.vault_install = TimingSample{
+        g_rtc_timing_diagnostics.values[12],
+        g_rtc_timing_diagnostics.values[13],
+        g_rtc_timing_diagnostics.values[14],
+    };
+    g_timing_diagnostics.hello = TimingSample{
+        g_rtc_timing_diagnostics.values[15],
+        g_rtc_timing_diagnostics.values[16],
+        g_rtc_timing_diagnostics.values[17],
+    };
+    g_timing_diagnostics.response_write = ResponseWriteDiagnostics{
+        g_rtc_timing_diagnostics.values[18],
+        g_rtc_timing_diagnostics.values[19],
+        g_rtc_timing_diagnostics.values[20],
+        g_rtc_timing_diagnostics.values[21],
+        g_rtc_timing_diagnostics.values[22],
+        g_rtc_timing_diagnostics.values[23],
+        g_rtc_timing_diagnostics.values[24],
+        g_rtc_timing_diagnostics.values[25],
+        g_rtc_timing_diagnostics.values[26],
+    };
+}
+
+bool is_timing_diagnostics_query(std::string_view line) {
+    if (!kTimingDiagnosticsEnabled || line.size() > 160) return false;
+    return line.find("\"v\":2") != std::string_view::npos &&
+        line.find("\"id\":9001") != std::string_view::npos &&
+        line.find("\"op\":\"diagnostics.timing\"") != std::string_view::npos &&
+        line.find("\"params\":{}") != std::string_view::npos;
+}
+
+TimingOperation classify_timing_operation(std::string_view line) {
+    if (line.find("\"op\":\"session.begin\"") != std::string_view::npos) {
+        return TimingOperation::kSessionBegin;
+    }
+    if (line.find("\"op\":\"session.authorize\"") != std::string_view::npos) {
+        return TimingOperation::kSessionAuthorize;
+    }
+    if (line.find("\"op\":\"session.status\"") != std::string_view::npos) {
+        return TimingOperation::kSessionStatus;
+    }
+    if (line.find("\"op\":\"session.complete\"") != std::string_view::npos) {
+        return TimingOperation::kSessionComplete;
+    }
+    if (line.find("\"op\":\"vault.install\"") != std::string_view::npos) {
+        return TimingOperation::kVaultInstall;
+    }
+    if (line.find("\"op\":\"hello\"") != std::string_view::npos) {
+        return TimingOperation::kHello;
+    }
+    return TimingOperation::kNone;
+}
+
+const char* timing_operation_name(TimingOperation operation) {
+    switch (operation) {
+        case TimingOperation::kSessionBegin: return "session.begin";
+        case TimingOperation::kSessionAuthorize: return "session.authorize";
+        case TimingOperation::kSessionStatus: return "session.status";
+        case TimingOperation::kSessionComplete: return "session.complete";
+        case TimingOperation::kVaultInstall: return "vault.install";
+        case TimingOperation::kHello: return "hello";
+        case TimingOperation::kNone: return "none";
+    }
+    return "none";
+}
+
+TimingSample* timing_sample(TimingOperation operation) {
+    switch (operation) {
+        case TimingOperation::kSessionBegin:
+            return &g_timing_diagnostics.session_begin;
+        case TimingOperation::kSessionAuthorize:
+            return &g_timing_diagnostics.session_authorize;
+        case TimingOperation::kSessionStatus:
+            return &g_timing_diagnostics.session_status;
+        case TimingOperation::kSessionComplete:
+            return &g_timing_diagnostics.session_complete;
+        case TimingOperation::kVaultInstall:
+            return &g_timing_diagnostics.vault_install;
+        case TimingOperation::kHello:
+            return &g_timing_diagnostics.hello;
+        case TimingOperation::kNone:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+bool record_timing(TimingOperation operation, std::int64_t started_us) {
+    TimingSample* sample = timing_sample(operation);
+    if (sample == nullptr || started_us <= 0) return false;
+    const std::int64_t finished_us = esp_timer_get_time();
+    if (finished_us < started_us) return false;
+    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    ++sample->count;
+    sample->last_us = elapsed_us;
+    sample->max_us = std::max(sample->max_us, elapsed_us);
+    return true;
+}
+
+void write_response(
+    const std::string& response,
+    TimingOperation operation = TimingOperation::kNone
+) {
+    const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
+    const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
+
+    const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
+    const int newline_result = std::fputc('\n', stdout);
+    const int fflush_result = std::fflush(stdout);
+    const int ferror_value = std::ferror(stdout);
+
+    if (!measure || started_us <= 0) return;
+    const std::int64_t finished_us = esp_timer_get_time();
+    if (finished_us < started_us) return;
+
+    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    auto& sample = g_timing_diagnostics.response_write;
+    ++sample.count;
+    sample.last_us = elapsed_us;
+    sample.max_us = std::max(sample.max_us, elapsed_us);
+    sample.operation = static_cast<std::uint64_t>(operation);
+    sample.response_bytes = response.size();
+    sample.fwrite_ok = fwrite_bytes == response.size() ? 1 : 0;
+    sample.newline_ok = newline_result == '\n' ? 1 : 0;
+    sample.fflush_ok = fflush_result == 0 ? 1 : 0;
+    sample.ferror_value = ferror_value == 0 ? 0 : 1;
+    persist_timing_diagnostics_to_rtc();
+}
+
+std::string timing_diagnostics_response() {
+    std::array<char, 1400> buffer{};
+    const auto response_operation = static_cast<TimingOperation>(
+        g_timing_diagnostics.response_write.operation
+    );
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
+        "\"session_begin\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"session_authorize\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"session_status\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"session_complete\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"vault_install\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"tx_write\":{\"count\":%llu,\"op\":\"%s\",\"response_bytes\":%llu,"
+        "\"fwrite_ok\":%llu,\"newline_ok\":%llu,\"fflush_ok\":%llu,"
+        "\"ferror\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"reset_reason\":%d}}",
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.count),
+        timing_operation_name(response_operation),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.response_bytes),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.fwrite_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.newline_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.fflush_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.ferror_value),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.max_us),
+        static_cast<int>(esp_reset_reason())
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
+        return R"({"v":2,"id":9001,"ok":false,"error":{"code":"internal_error"}})";
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
 }  // namespace
@@ -64,6 +389,7 @@ extern "C" void app_main(void) {
 
     m5auth::registration::Store registration;
     (void)registration.initialize();
+    initialize_timing_diagnostics_persistence();
 
     m5auth::vault_runtime::CompatibleNvsPersistence persistence;
     m5auth::vault_runtime::Runtime runtime(persistence);
@@ -121,43 +447,111 @@ extern "C" void app_main(void) {
         m5auth::provisioning::kMaxCanonicalV2MessageBytes + 2,
         '\0'
     );
+    std::size_t buffered_input = 0;
+    bool discard_oversized_input = false;
 
     while (true) {
         protocol.housekeeping(monotonic_ms());
 
+        if (discard_oversized_input) {
+            if (std::fgets(
+                    input.data(),
+                    static_cast<int>(input.size()),
+                    stdin
+                ) == nullptr) {
+                if (!usb_serial_jtag_is_connected()) {
+                    teardown_transport_session(protocol);
+                    discard_oversized_input = false;
+                }
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                std::clearerr(stdin);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            const std::size_t discarded_length = std::strlen(input.data());
+            const bool discarded_complete_line =
+                discarded_length > 0 && input[discarded_length - 1] == '\n';
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            std::clearerr(stdin);
+            if (discarded_complete_line) {
+                discard_oversized_input = false;
+            }
+            continue;
+        }
+
         if (std::fgets(
-                input.data(),
-                static_cast<int>(input.size()),
+                input.data() + buffered_input,
+                static_cast<int>(input.size() - buffered_input),
                 stdin
             ) == nullptr) {
             if (!usb_serial_jtag_is_connected()) {
                 teardown_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                buffered_input = 0;
             }
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
             std::clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        std::size_t length = std::strlen(input.data());
-        const bool complete_line = length > 0 && input[length - 1] == '\n';
+        buffered_input += std::strlen(input.data() + buffered_input);
+        const bool complete_line =
+            buffered_input > 0 && input[buffered_input - 1] == '\n';
         if (!complete_line) {
-            const bool overflow = length == input.size() - 1;
-            if (overflow) discard_line_remainder();
-            teardown_transport_session(protocol);
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            if (overflow) {
+            std::clearerr(stdin);
+            if (buffered_input > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+                teardown_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                buffered_input = 0;
+                discard_oversized_input = true;
                 write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
+            } else {
+                // USB Serial/JTAG VFS reads are non-blocking. A valid JSON line can
+                // arrive in multiple reads, so keep the bounded fragment in RAM
+                // until the newline arrives. Disconnect handling above wipes it.
+                vTaskDelay(pdMS_TO_TICKS(1));
             }
             continue;
         }
 
+        std::size_t length = buffered_input;
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
+        if (length > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+            teardown_transport_session(protocol);
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
+            continue;
+        }
+        const std::string_view request(input.data(), length);
+
+        if (is_timing_diagnostics_query(request)) {
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            write_response(timing_diagnostics_response());
+            continue;
+        }
+        const TimingOperation timing_operation = kTimingDiagnosticsEnabled
+            ? classify_timing_operation(request)
+            : TimingOperation::kNone;
+        const std::int64_t timing_started_us = timing_operation == TimingOperation::kNone
+            ? 0
+            : esp_timer_get_time();
+
         const std::string response = protocol.handle_line(
-            std::string_view(input.data(), length),
+            request,
             monotonic_ms()
         );
+
+        const bool timing_recorded = kTimingDiagnosticsEnabled
+            ? record_timing(timing_operation, timing_started_us)
+            : false;
+        if (timing_recorded) {
+            persist_timing_diagnostics_to_rtc();
+        }
+
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
-        write_response(response);
+        buffered_input = 0;
+        write_response(response, timing_operation);
     }
 }

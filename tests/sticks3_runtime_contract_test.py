@@ -10,6 +10,7 @@ SDKCONFIG = ROOT / "firmware" / "sdkconfig.defaults"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
+APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
 
 
@@ -81,12 +82,103 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("if (!usb_serial_jtag_is_connected())", idle_branch.group(1))
         self.assertIn("teardown_transport_session(protocol);", idle_branch.group(1))
 
+    def test_usb_serial_fragments_are_buffered_until_newline_and_wiped_on_disconnect(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("std::size_t buffered_input = 0;", app)
+        self.assertIn("bool discard_oversized_input = false;", app)
+        self.assertIn("input.data() + buffered_input", app)
+        self.assertIn("input.size() - buffered_input", app)
+        self.assertIn("buffered_input += std::strlen(input.data() + buffered_input);", app)
+        self.assertIn("buffered_input > 0 && input[buffered_input - 1] == '\\n'", app)
+        self.assertIn("USB Serial/JTAG VFS reads are non-blocking", app)
+        self.assertIn("discard_oversized_input = true;", app)
+        self.assertRegex(
+            app,
+            r"if \(!usb_serial_jtag_is_connected\(\)\) \{\s*"
+            r"teardown_transport_session\(protocol\);\s*"
+            r"m5auth::vault_runtime::secure_zero\(input\.data\(\), input\.size\(\)\);\s*"
+            r"buffered_input = 0;\s*\}",
+        )
+        self.assertNotIn("discard_line_remainder", app)
+
     def test_canonical_presence_requires_neutral_and_quarantines_authorizing_gesture(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertIn("presence_.observe_button_state(M5.BtnA.isPressed());", text)
         self.assertIn("presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());", text)
         self.assertIn("M5.BtnA.wasDecideClickCount()", text)
         self.assertIn("!presence_gesture_quarantine_.active()", text)
+
+    def test_issue_86_timing_diagnostics_are_compiled_but_runtime_gated_and_default_off(self) -> None:
+        cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        option = re.search(
+            r"option\(\s*M5AUTH_TIMING_DIAGNOSTICS[\s\S]+?OFF\s*\)",
+            cmake,
+        )
+        self.assertIsNotNone(option)
+        self.assertIn(
+            "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)",
+            cmake,
+        )
+        self.assertNotIn("nvs_flash", cmake)
+        self.assertIn("#define M5AUTH_TIMING_DIAGNOSTICS 0", app)
+        self.assertIn("constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;", app)
+        self.assertIn("is_timing_diagnostics_query(request)", app)
+        self.assertIn("diagnostics.timing", app)
+        self.assertIn("session.begin", app)
+        self.assertIn("session.authorize", app)
+        self.assertIn("session.status", app)
+        self.assertIn("session.complete", app)
+        self.assertIn("vault.install", app)
+        self.assertIn("hello", app)
+        self.assertIn("session_begin", app)
+        self.assertIn("session_authorize", app)
+        self.assertIn("session_status", app)
+        self.assertIn("last_us", app)
+        self.assertIn("max_us", app)
+        self.assertIn("tx_write", app)
+        self.assertIn("fwrite_ok", app)
+        self.assertIn("newline_ok", app)
+        self.assertIn("fflush_ok", app)
+        self.assertIn("ferror", app)
+        self.assertIn("reset_reason", app)
+        self.assertNotIn("ESP_LOG", app)
+        self.assertNotIn("timing_diagnostics_response(request", app)
+
+    def test_issue_86_response_write_diagnostics_do_not_overwrite_themselves(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("const std::size_t fwrite_bytes = std::fwrite", app)
+        self.assertIn("const int newline_result = std::fputc", app)
+        self.assertIn("const int fflush_result = std::fflush(stdout);", app)
+        self.assertIn("const int ferror_value = std::ferror(stdout);", app)
+        self.assertIn("write_response(response, timing_operation);", app)
+        self.assertIn("write_response(timing_diagnostics_response());", app)
+        self.assertIn(
+            "const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;",
+            app,
+        )
+        self.assertIn('case TimingOperation::kSessionStatus: return "session.status";', app)
+
+    def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("RTC_NOINIT_ATTR RtcTimingDiagnostics g_rtc_timing_diagnostics;", app)
+        self.assertIn("persist_timing_diagnostics_to_rtc();", app)
+        self.assertIn("initialize_timing_diagnostics_persistence();", app)
+        self.assertIn("kTimingRtcMagic", app)
+        self.assertIn("M5AUTH_BUILD_COMMIT", app)
+        self.assertIn("std::uint64_t values[27];", app)
+        self.assertNotIn("nvs_open", app)
+        self.assertNotIn("nvs_set_blob", app)
+        self.assertNotIn("nvs_commit", app)
+        self.assertRegex(
+            app,
+            r"if \(timing_recorded\) \{\s*persist_timing_diagnostics_to_rtc\(\);\s*\}\s*\n\s*m5auth::vault_runtime::secure_zero",
+        )
+        self.assertNotIn("request.data()", app)
 
 
 if __name__ == "__main__":
