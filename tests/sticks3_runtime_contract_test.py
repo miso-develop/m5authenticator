@@ -89,7 +89,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.BtnA.wasDecideClickCount()", text)
         self.assertIn("!presence_gesture_quarantine_.active()", text)
 
-    def test_issue_86_timing_diagnostics_are_compile_gated_and_default_off(self) -> None:
+    def test_issue_86_timing_diagnostics_are_compiled_but_runtime_gated_and_default_off(self) -> None:
         cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
         app = APP_MAIN.read_text(encoding="utf-8")
 
@@ -102,7 +102,9 @@ class StickS3RuntimeContractTests(unittest.TestCase):
             "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)",
             cmake,
         )
-        self.assertIn("#ifdef M5AUTH_TIMING_DIAGNOSTICS", app)
+        self.assertIn("#define M5AUTH_TIMING_DIAGNOSTICS 0", app)
+        self.assertIn("constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;", app)
+        self.assertIn("if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery)", app)
         self.assertIn("diagnostics.timing", app)
         self.assertIn("session.complete", app)
         self.assertIn("vault.install", app)
