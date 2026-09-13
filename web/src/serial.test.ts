@@ -5,6 +5,8 @@ import { SerialSession } from "./serial";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+type MockResponse = string | { value: string; delayMs: number };
+
 function helloResponse(id = 1): string {
   return JSON.stringify({
     v: 2,
@@ -36,7 +38,7 @@ function response(id: number, data: Record<string, unknown> = {}): string {
   return JSON.stringify({ v: 2, id, ok: true, data }) + "\n";
 }
 
-function makeMockPort(startup: string, responses: string[]) {
+function makeMockPort(startup: string, responses: MockResponse[]) {
   let readableController: ReadableStreamDefaultController<Uint8Array> | undefined;
   const writes: string[] = [];
 
@@ -47,11 +49,24 @@ function makeMockPort(startup: string, responses: string[]) {
     },
   });
 
+  function enqueue(value: string): void {
+    try {
+      readableController?.enqueue(encoder.encode(value));
+    } catch {
+      // A timed-out transport may close/cancel the stream before a synthetic late response arrives.
+    }
+  }
+
   const writable = new WritableStream<Uint8Array>({
     write(chunk) {
       writes.push(decoder.decode(chunk));
       const next = responses.shift();
-      if (next !== undefined) readableController?.enqueue(encoder.encode(next));
+      if (next === undefined) return;
+      if (typeof next === "string") {
+        enqueue(next);
+      } else {
+        setTimeout(() => enqueue(next.value), next.delayMs);
+      }
     },
   });
 
@@ -74,6 +89,7 @@ function installSerial(port: ReturnType<typeof makeMockPort>["port"]): void {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -96,6 +112,33 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     await session.close();
   });
 
+  it("allows a boot-delayed initial hello beyond the established-session 5 second deadline", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [{ value: helloResponse(), delayMs: 6000 }]);
+    installSerial(port);
+
+    const connecting = SerialSession.connect();
+    await vi.advanceTimersByTimeAsync(6000);
+    const { session, hello } = await connecting;
+
+    expect(hello.state).toBe("unprovisioned");
+    expect(writes).toHaveLength(1);
+    expect(session.isClosed()).toBe(false);
+    await session.close();
+  });
+
+  it("fails closed when the bounded 15 second initial readiness window expires", async () => {
+    vi.useFakeTimers();
+    const { port } = makeMockPort("", [{ value: helloResponse(), delayMs: 16_000 }]);
+    installSerial(port);
+
+    const assertion = expect(SerialSession.connect()).rejects.toThrow("Device response timed out");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
   it("does not skip a JSON candidate with the wrong request id", async () => {
     const { port } = makeMockPort("I (18) boot: startup\n", [helloResponse(99)]);
     installSerial(port);
@@ -115,6 +158,29 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
 
     await expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device returned invalid JSON");
     expect(session.isClosed()).toBe(true);
+  });
+
+  it("keeps established-session requests on the strict 5 second response deadline", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [
+      helloResponse(),
+      { value: response(2), delayMs: 6000 },
+    ]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    const assertion = expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device response timed out");
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+
+    expect(writes).toHaveLength(2);
+    expect(session.isClosed()).toBe(true);
+    expect(port.close).toHaveBeenCalledOnce();
+
+    // The late response arrives after reader cancellation and must not escape or
+    // become available to a future request on the closed transport.
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device is not connected");
   });
 
   it("fails closed when startup noise exceeds the bounded line count", async () => {
