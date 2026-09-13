@@ -175,9 +175,12 @@ SerialSession.prototype.close = async function issue86TracedClose(): Promise<voi
 };
 
 if (typeof window !== "undefined") {
+  // Capture phase is intentional. Production main.ts registered its normal
+  // pagehide cleanup earlier, so capture lets measurement classify page
+  // lifecycle before that cleanup can call transport.close().
   window.addEventListener("pagehide", () => {
     appendTrace("• lifecycle.pagehide");
-  });
+  }, { capture: true });
 }
 
 if (typeof document !== "undefined") {
