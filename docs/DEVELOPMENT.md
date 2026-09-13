@@ -121,15 +121,18 @@ npm --version
 
 With fnm `--use-on-cd` configured in a supported shell, entering the repository can automatically select the version from `.node-version`.
 
-If you do not want to change even the current shell's selected Node.js version, run Web commands inside an isolated fnm execution context from the repository root:
+If you do not want to change even the current shell's selected Node.js version, run Web commands inside an isolated fnm execution context from the repository root. On Windows, use `npm.cmd` explicitly because `fnm exec` does not resolve the `.cmd` extension the same way `cmd.exe` does:
 
 ```text
 fnm exec --using=.node-version node --version
-fnm exec --using=.node-version npm --prefix web ci
-fnm exec --using=.node-version npm --prefix web test
-fnm exec --using=.node-version npm --prefix web run build
-fnm exec --using=.node-version npm --prefix web run dev -- --host 127.0.0.1
+fnm exec --using=.node-version npm.cmd --prefix web --version
+fnm exec --using=.node-version npm.cmd --prefix web ci
+fnm exec --using=.node-version npm.cmd --prefix web test
+fnm exec --using=.node-version npm.cmd --prefix web run build
+fnm exec --using=.node-version npm.cmd --prefix web run dev -- --host 127.0.0.1
 ```
+
+On POSIX shells, `npm` may be used instead of `npm.cmd`.
 
 Canonical commands after selecting the pinned runtime:
 
