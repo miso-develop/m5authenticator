@@ -21,8 +21,16 @@ import {
 const MAX_RESPONSE_BYTES = 4096;
 const RESPONSE_TIMEOUT_MS = 5000;
 const INITIAL_HELLO_RESPONSE_TIMEOUT_MS = 15_000;
+const INITIAL_HELLO_RETRY_INTERVAL_MS = 1000;
 const MAX_STARTUP_NOISE_LINES = 64;
 const MAX_STARTUP_NOISE_BYTES = 8192;
+
+class DeviceResponseTimeoutError extends Error {
+  public constructor() {
+    super("Device response timed out");
+    this.name = "DeviceResponseTimeoutError";
+  }
+}
 
 interface SerialPortOptions {
   baudRate: number;
@@ -63,6 +71,17 @@ function browserSerial(): SerialLike | undefined {
   return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
 }
 
+function responseIdCandidate(raw: string): number | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const id = (parsed as { id?: unknown }).id;
+    return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class SerialSession implements DeviceTransport, CanonicalV2Transport {
   private readonly port: SerialPortLike;
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -70,9 +89,12 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
   private readonly decoder = new TextDecoder();
   private pending = "";
   private pendingBytes = 0;
+  private pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | undefined;
   private nextId = 1;
   private inFlight = false;
   private closed = false;
+  private staleInitialHelloResponseId: number | undefined;
+  private staleInitialHelloResponsesRemaining = 0;
 
   private constructor(
     port: SerialPortLike,
@@ -149,12 +171,15 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     this.closed = true;
     this.pending = "";
     this.pendingBytes = 0;
+    this.staleInitialHelloResponseId = undefined;
+    this.staleInitialHelloResponsesRemaining = 0;
 
     try {
       await this.reader.cancel();
     } catch {
       // Best-effort cancellation before releasing the lock.
     }
+    this.pendingRead = undefined;
     try {
       this.reader.releaseLock();
     } catch {
@@ -169,21 +194,68 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
   }
 
   private async requestInitialHello(): Promise<Record<string, unknown>> {
-    return this.exchange(
-      (id) => buildCanonicalV2Request(id, "hello", {}),
-      parseCanonicalV2Response,
-      (error) => error instanceof CanonicalProtocolV2Error,
-      true,
-      INITIAL_HELLO_RESPONSE_TIMEOUT_MS,
-    );
+    if (this.closed) throw new Error("Device is not connected");
+    if (this.inFlight) throw new Error("Another device request is already in progress");
+
+    this.inFlight = true;
+    const id = this.allocateRequestId();
+    const request = buildCanonicalV2Request(id, "hello", {});
+    const deadlineMs = Date.now() + INITIAL_HELLO_RESPONSE_TIMEOUT_MS;
+    let nextRetryMs = Date.now();
+    let attempts = 0;
+    let skippedLines = 0;
+    let skippedBytes = 0;
+    const encoder = new TextEncoder();
+
+    try {
+      while (true) {
+        const now = Date.now();
+        if (now >= deadlineMs) throw new DeviceResponseTimeoutError();
+
+        if (attempts === 0 || now >= nextRetryMs) {
+          await this.writeRequest(request);
+          attempts += 1;
+          nextRetryMs = Math.min(deadlineMs, Date.now() + INITIAL_HELLO_RETRY_INTERVAL_MS);
+        }
+
+        const readDeadlineMs = Math.min(deadlineMs, nextRetryMs);
+        let line: string;
+        try {
+          line = await this.readLine(readDeadlineMs, MAX_STARTUP_NOISE_BYTES);
+        } catch (error) {
+          if (error instanceof DeviceResponseTimeoutError && readDeadlineMs < deadlineMs) {
+            continue;
+          }
+          throw error;
+        }
+
+        const lineBytes = encoder.encode(line).byteLength;
+        if (!line.trimStart().startsWith("{")) {
+          skippedLines += 1;
+          skippedBytes += lineBytes + 1;
+          if (skippedLines > MAX_STARTUP_NOISE_LINES || skippedBytes > MAX_STARTUP_NOISE_BYTES) {
+            throw new Error("Device startup output exceeded synchronization limits");
+          }
+          continue;
+        }
+
+        if (lineBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
+        const data = parseCanonicalV2Response(line, id);
+        if (attempts > 1) {
+          this.staleInitialHelloResponseId = id;
+          this.staleInitialHelloResponsesRemaining = attempts - 1;
+        }
+        return data;
+      }
+    } finally {
+      this.inFlight = false;
+    }
   }
 
   private async exchange(
     build: (id: number) => string,
     parse: (raw: string, expectedId: number) => Record<string, unknown>,
     isDeviceRejection: (error: unknown) => boolean,
-    allowInitialStartupNoise = false,
-    responseTimeoutMs = RESPONSE_TIMEOUT_MS,
   ): Promise<Record<string, unknown>> {
     if (this.closed) throw new Error("Device is not connected");
     if (this.inFlight) throw new Error("Another device request is already in progress");
@@ -191,18 +263,10 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     this.inFlight = true;
     const id = this.allocateRequestId();
     try {
-      const request = build(id);
-      const payload = new TextEncoder().encode(request);
-      try {
-        await this.writer.write(payload);
-      } finally {
-        payload.fill(0);
-      }
+      await this.writeRequest(build(id));
 
-      const deadlineMs = Date.now() + responseTimeoutMs;
-      const line = allowInitialStartupNoise
-        ? await this.readInitialProtocolLine(deadlineMs)
-        : await this.readLine(deadlineMs, MAX_RESPONSE_BYTES);
+      const deadlineMs = Date.now() + RESPONSE_TIMEOUT_MS;
+      const line = await this.readResponseLine(deadlineMs);
       return parse(line, id);
     } catch (error) {
       if (!isDeviceRejection(error)) await this.closeSilently();
@@ -212,29 +276,36 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     }
   }
 
+  private async writeRequest(request: string): Promise<void> {
+    const payload = new TextEncoder().encode(request);
+    try {
+      await this.writer.write(payload);
+    } finally {
+      payload.fill(0);
+    }
+  }
+
   private allocateRequestId(): number {
     const id = this.nextId;
     this.nextId = this.nextId >= Number.MAX_SAFE_INTEGER ? 1 : this.nextId + 1;
     return id;
   }
 
-  private async readInitialProtocolLine(deadlineMs: number): Promise<string> {
-    let skippedLines = 0;
-    let skippedBytes = 0;
-    const encoder = new TextEncoder();
-
+  private async readResponseLine(deadlineMs: number): Promise<string> {
     while (true) {
-      const line = await this.readLine(deadlineMs, MAX_STARTUP_NOISE_BYTES);
-      const lineBytes = encoder.encode(line).byteLength;
-      if (line.trimStart().startsWith("{")) {
-        if (lineBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
-        return line;
-      }
+      const line = await this.readLine(deadlineMs, MAX_RESPONSE_BYTES);
+      const staleId = this.staleInitialHelloResponseId;
+      if (staleId === undefined || this.staleInitialHelloResponsesRemaining <= 0) return line;
+      if (!line.trimStart().startsWith("{")) return line;
+      if (responseIdCandidate(line) !== staleId) return line;
 
-      skippedLines += 1;
-      skippedBytes += lineBytes + 1;
-      if (skippedLines > MAX_STARTUP_NOISE_LINES || skippedBytes > MAX_STARTUP_NOISE_BYTES) {
-        throw new Error("Device startup output exceeded synchronization limits");
+      // Initial hello is the only retried operation. A late duplicate may arrive
+      // after synchronization, so fully validate and quarantine at most the
+      // number of extra hello writes that were actually issued.
+      parseCanonicalV2Response(line, staleId);
+      this.staleInitialHelloResponsesRemaining -= 1;
+      if (this.staleInitialHelloResponsesRemaining <= 0) {
+        this.staleInitialHelloResponseId = undefined;
       }
     }
   }
@@ -249,26 +320,45 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
         return line;
       }
 
-      const remainingMs = deadlineMs - Date.now();
-      if (remainingMs <= 0) throw new Error("Device response timed out");
-
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error("Device response timed out")), remainingMs);
-      });
-      try {
-        const { value, done } = await Promise.race([this.reader.read(), timeout]);
-        if (done) throw new Error("Device disconnected before responding");
-        if (value) {
-          this.pendingBytes += value.byteLength;
-          if (this.pendingBytes > maxBufferedBytes) throw new Error("Device response was too large");
-          this.pending += this.decoder.decode(value, { stream: true });
-        }
-      } finally {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      const { value, done } = await this.readChunkUntil(deadlineMs);
+      if (done) throw new Error("Device disconnected before responding");
+      if (value) {
+        this.pendingBytes += value.byteLength;
+        if (this.pendingBytes > maxBufferedBytes) throw new Error("Device response was too large");
+        this.pending += this.decoder.decode(value, { stream: true });
       }
     }
     throw new Error("Device response was too large");
+  }
+
+  private async readChunkUntil(
+    deadlineMs: number,
+  ): Promise<ReadableStreamReadResult<Uint8Array>> {
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) throw new DeviceResponseTimeoutError();
+
+    const readPromise = this.pendingRead ?? this.reader.read();
+    this.pendingRead = readPromise;
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new DeviceResponseTimeoutError()), remainingMs);
+    });
+
+    try {
+      const result = await Promise.race([readPromise, timeout]);
+      if (this.pendingRead === readPromise) this.pendingRead = undefined;
+      return result;
+    } catch (error) {
+      // A retry timer must never abandon reader.read(). Keep the same pending
+      // read Promise so the next bounded wait observes the eventual chunk.
+      if (!(error instanceof DeviceResponseTimeoutError) && this.pendingRead === readPromise) {
+        this.pendingRead = undefined;
+      }
+      throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   }
 
   private async closeSilently(): Promise<void> {
