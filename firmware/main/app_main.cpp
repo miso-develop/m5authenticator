@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -8,6 +9,8 @@
 #include <vector>
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,7 +25,6 @@
 #include "m5auth/time/trusted_time.hpp"
 #include "m5auth/totp/generator.hpp"
 #include "m5auth/vault_runtime/runtime.hpp"
-#include "nvs.h"
 
 #ifndef M5AUTH_BUILD_COMMIT
 #define M5AUTH_BUILD_COMMIT "unknown"
@@ -59,9 +61,8 @@ void teardown_transport_session(
 }
 
 constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
-constexpr char kTimingDiagnosticsNamespace[] = "m5diag86";
-constexpr char kTimingDiagnosticsBuildKey[] = "build";
-constexpr char kTimingDiagnosticsSnapshotKey[] = "snapshot";
+constexpr std::uint32_t kTimingRtcMagic = 0x4d354438U;  // "M5D8"
+constexpr std::size_t kTimingBuildBytes = 16;
 
 enum class TimingOperation {
     kNone,
@@ -82,15 +83,47 @@ struct TimingDiagnostics {
     TimingSample hello{};
 };
 
-using TimingSnapshotBlob = std::array<std::uint64_t, 9>;
+struct RtcTimingDiagnostics {
+    std::uint32_t magic;
+    char build[kTimingBuildBytes];
+    std::uint64_t values[9];
+    std::uint32_t magic_tail;
+};
 
+RTC_NOINIT_ATTR RtcTimingDiagnostics g_rtc_timing_diagnostics;
 TimingDiagnostics g_timing_diagnostics{};
 
-constexpr std::string_view kTimingDiagnosticsQuery =
-    R"({"v":2,"id":9001,"op":"diagnostics.timing","params":{}})";
+bool timing_rtc_build_matches() {
+    if (g_rtc_timing_diagnostics.magic != kTimingRtcMagic ||
+        g_rtc_timing_diagnostics.magic_tail != ~kTimingRtcMagic) {
+        return false;
+    }
+    std::array<char, kTimingBuildBytes> expected{};
+    std::snprintf(expected.data(), expected.size(), "%s", M5AUTH_BUILD_COMMIT);
+    return std::memcmp(
+        g_rtc_timing_diagnostics.build,
+        expected.data(),
+        expected.size()
+    ) == 0;
+}
 
-TimingSnapshotBlob timing_snapshot_blob() {
-    return TimingSnapshotBlob{
+void persist_timing_diagnostics_to_rtc() {
+    if (!kTimingDiagnosticsEnabled) return;
+
+    g_rtc_timing_diagnostics.magic = kTimingRtcMagic;
+    std::memset(
+        g_rtc_timing_diagnostics.build,
+        0,
+        sizeof(g_rtc_timing_diagnostics.build)
+    );
+    std::snprintf(
+        g_rtc_timing_diagnostics.build,
+        sizeof(g_rtc_timing_diagnostics.build),
+        "%s",
+        M5AUTH_BUILD_COMMIT
+    );
+
+    const std::array<std::uint64_t, 9> values{
         g_timing_diagnostics.session_complete.count,
         g_timing_diagnostics.session_complete.last_us,
         g_timing_diagnostics.session_complete.max_us,
@@ -101,89 +134,43 @@ TimingSnapshotBlob timing_snapshot_blob() {
         g_timing_diagnostics.hello.last_us,
         g_timing_diagnostics.hello.max_us,
     };
+    std::copy(values.begin(), values.end(), std::begin(g_rtc_timing_diagnostics.values));
+    g_rtc_timing_diagnostics.magic_tail = ~kTimingRtcMagic;
 }
 
-void restore_timing_snapshot(const TimingSnapshotBlob& values) {
-    g_timing_diagnostics.session_complete = TimingSample{values[0], values[1], values[2]};
-    g_timing_diagnostics.vault_install = TimingSample{values[3], values[4], values[5]};
-    g_timing_diagnostics.hello = TimingSample{values[6], values[7], values[8]};
-}
+void initialize_timing_diagnostics_persistence() {
+    if (!kTimingDiagnosticsEnabled) return;
 
-bool reset_timing_diagnostics_persistence(nvs_handle_t handle) {
-    g_timing_diagnostics = TimingDiagnostics{};
-    esp_err_t result = nvs_erase_all(handle);
-    if (result == ESP_OK) {
-        result = nvs_set_str(handle, kTimingDiagnosticsBuildKey, M5AUTH_BUILD_COMMIT);
-    }
-    if (result == ESP_OK) result = nvs_commit(handle);
-    return result == ESP_OK;
-}
-
-bool initialize_timing_diagnostics_persistence() {
-    if (!kTimingDiagnosticsEnabled) return true;
-
-    nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(kTimingDiagnosticsNamespace, NVS_READWRITE, &handle);
-    if (result != ESP_OK) return false;
-
-    std::array<char, 64> persisted_build{};
-    std::size_t build_size = persisted_build.size();
-    result = nvs_get_str(
-        handle,
-        kTimingDiagnosticsBuildKey,
-        persisted_build.data(),
-        &build_size
-    );
-    if (result != ESP_OK || std::strcmp(persisted_build.data(), M5AUTH_BUILD_COMMIT) != 0) {
-        const bool reset_ok = reset_timing_diagnostics_persistence(handle);
-        nvs_close(handle);
-        return reset_ok;
-    }
-
-    TimingSnapshotBlob values{};
-    std::size_t snapshot_size = sizeof(values);
-    result = nvs_get_blob(
-        handle,
-        kTimingDiagnosticsSnapshotKey,
-        values.data(),
-        &snapshot_size
-    );
-    if (result == ESP_ERR_NVS_NOT_FOUND) {
+    if (!timing_rtc_build_matches()) {
         g_timing_diagnostics = TimingDiagnostics{};
-        nvs_close(handle);
-        return true;
-    }
-    if (result != ESP_OK || snapshot_size != sizeof(values)) {
-        g_timing_diagnostics = TimingDiagnostics{};
-        esp_err_t erase_result = nvs_erase_key(handle, kTimingDiagnosticsSnapshotKey);
-        if (erase_result == ESP_ERR_NVS_NOT_FOUND) erase_result = ESP_OK;
-        if (erase_result == ESP_OK) erase_result = nvs_commit(handle);
-        nvs_close(handle);
-        return erase_result == ESP_OK;
+        std::memset(&g_rtc_timing_diagnostics, 0, sizeof(g_rtc_timing_diagnostics));
+        persist_timing_diagnostics_to_rtc();
+        return;
     }
 
-    restore_timing_snapshot(values);
-    nvs_close(handle);
-    return true;
+    g_timing_diagnostics.session_complete = TimingSample{
+        g_rtc_timing_diagnostics.values[0],
+        g_rtc_timing_diagnostics.values[1],
+        g_rtc_timing_diagnostics.values[2],
+    };
+    g_timing_diagnostics.vault_install = TimingSample{
+        g_rtc_timing_diagnostics.values[3],
+        g_rtc_timing_diagnostics.values[4],
+        g_rtc_timing_diagnostics.values[5],
+    };
+    g_timing_diagnostics.hello = TimingSample{
+        g_rtc_timing_diagnostics.values[6],
+        g_rtc_timing_diagnostics.values[7],
+        g_rtc_timing_diagnostics.values[8],
+    };
 }
 
-bool persist_timing_diagnostics() {
-    if (!kTimingDiagnosticsEnabled) return true;
-
-    nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(kTimingDiagnosticsNamespace, NVS_READWRITE, &handle);
-    if (result != ESP_OK) return false;
-
-    const TimingSnapshotBlob values = timing_snapshot_blob();
-    result = nvs_set_blob(
-        handle,
-        kTimingDiagnosticsSnapshotKey,
-        values.data(),
-        sizeof(values)
-    );
-    if (result == ESP_OK) result = nvs_commit(handle);
-    nvs_close(handle);
-    return result == ESP_OK;
+bool is_timing_diagnostics_query(std::string_view line) {
+    if (!kTimingDiagnosticsEnabled || line.size() > 160) return false;
+    return line.find("\"v\":2") != std::string_view::npos &&
+        line.find("\"id\":9001") != std::string_view::npos &&
+        line.find("\"op\":\"diagnostics.timing\"") != std::string_view::npos &&
+        line.find("\"params\":{}") != std::string_view::npos;
 }
 
 TimingOperation classify_timing_operation(std::string_view line) {
@@ -226,14 +213,15 @@ bool record_timing(TimingOperation operation, std::int64_t started_us) {
 }
 
 std::string timing_diagnostics_response() {
-    std::array<char, 512> buffer{};
+    std::array<char, 560> buffer{};
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
         "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
         "\"session_complete\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"vault_install\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
-        "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu}}}",
+        "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"reset_reason\":%d}}",
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.count),
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.last_us),
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.max_us),
@@ -242,7 +230,8 @@ std::string timing_diagnostics_response() {
         static_cast<unsigned long long>(g_timing_diagnostics.vault_install.max_us),
         static_cast<unsigned long long>(g_timing_diagnostics.hello.count),
         static_cast<unsigned long long>(g_timing_diagnostics.hello.last_us),
-        static_cast<unsigned long long>(g_timing_diagnostics.hello.max_us)
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.max_us),
+        static_cast<int>(esp_reset_reason())
     );
     if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
         return R"({"v":2,"id":9001,"ok":false,"error":{"code":"internal_error"}})";
@@ -263,9 +252,7 @@ extern "C" void app_main(void) {
 
     m5auth::registration::Store registration;
     (void)registration.initialize();
-    if (kTimingDiagnosticsEnabled) {
-        (void)initialize_timing_diagnostics_persistence();
-    }
+    initialize_timing_diagnostics_persistence();
 
     m5auth::vault_runtime::CompatibleNvsPersistence persistence;
     m5auth::vault_runtime::Runtime runtime(persistence);
@@ -357,7 +344,7 @@ extern "C" void app_main(void) {
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
         const std::string_view request(input.data(), length);
 
-        if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery) {
+        if (is_timing_diagnostics_query(request)) {
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             write_response(timing_diagnostics_response());
             continue;
@@ -377,11 +364,11 @@ extern "C" void app_main(void) {
         const bool timing_recorded = kTimingDiagnosticsEnabled
             ? record_timing(timing_operation, timing_started_us)
             : false;
+        if (timing_recorded) {
+            persist_timing_diagnostics_to_rtc();
+        }
 
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
         write_response(response);
-        if (timing_recorded) {
-            (void)persist_timing_diagnostics();
-        }
     }
 }
