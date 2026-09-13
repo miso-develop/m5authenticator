@@ -12,11 +12,12 @@ idf_component_register(
         m5auth_totp
         m5auth_vault
         m5auth_vault_runtime
+        nvs_flash
 )
 
 option(
     M5AUTH_TIMING_DIAGNOSTICS
-    "Enable RAM-only Device operation timing diagnostics for #86"
+    "Enable reboot-persistent Device operation timing diagnostics for #86"
     OFF
 )
 if(M5AUTH_TIMING_DIAGNOSTICS)
