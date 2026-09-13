@@ -127,6 +127,18 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     await session.close();
   });
 
+  it("fails closed when the bounded 15 second initial readiness window expires", async () => {
+    vi.useFakeTimers();
+    const { port } = makeMockPort("", [{ value: helloResponse(), delayMs: 16_000 }]);
+    installSerial(port);
+
+    const assertion = expect(SerialSession.connect()).rejects.toThrow("Device response timed out");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
   it("does not skip a JSON candidate with the wrong request id", async () => {
     const { port } = makeMockPort("I (18) boot: startup\n", [helloResponse(99)]);
     installSerial(port);
@@ -146,6 +158,29 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
 
     await expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device returned invalid JSON");
     expect(session.isClosed()).toBe(true);
+  });
+
+  it("keeps established-session requests on the strict 5 second response deadline", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [
+      helloResponse(),
+      { value: response(2), delayMs: 6000 },
+    ]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    const assertion = expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device response timed out");
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+
+    expect(writes).toHaveLength(2);
+    expect(session.isClosed()).toBe(true);
+    expect(port.close).toHaveBeenCalledOnce();
+
+    // The late response arrives after reader cancellation and must not escape or
+    // become available to a future request on the closed transport.
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device is not connected");
   });
 
   it("fails closed when startup noise exceeds the bounded line count", async () => {
