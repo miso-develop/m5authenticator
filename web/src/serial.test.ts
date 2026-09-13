@@ -5,7 +5,7 @@ import { SerialSession } from "./serial";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-type MockResponse = string | { value: string; delayMs: number };
+type MockResponse = string | { value: string; delayMs: number } | null;
 
 function helloResponse(id = 1): string {
   return JSON.stringify({
@@ -61,7 +61,7 @@ function makeMockPort(startup: string, responses: MockResponse[]) {
     write(chunk) {
       writes.push(decoder.decode(chunk));
       const next = responses.shift();
-      if (next === undefined) return;
+      if (next === undefined || next === null) return;
       if (typeof next === "string") {
         enqueue(next);
       } else {
@@ -88,6 +88,10 @@ function installSerial(port: ReturnType<typeof makeMockPort>["port"]): void {
   });
 }
 
+function parsedWrites(writes: string[]): Array<Record<string, unknown>> {
+  return writes.map((write) => JSON.parse(write.trim()) as Record<string, unknown>);
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -106,9 +110,49 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     expect(hello.state).toBe("unprovisioned");
     expect(hello.firmware).toBe("0.1.0");
     expect(writes).toHaveLength(1);
-    const firstWrite = writes[0];
-    if (firstWrite === undefined) throw new Error("Serial hello request was not written");
-    expect(JSON.parse(firstWrite.trim())).toMatchObject({ v: 2, id: 1, op: "hello" });
+    expect(parsedWrites(writes)[0]).toMatchObject({ v: 2, id: 1, op: "hello" });
+    await session.close();
+  });
+
+  it("recovers when the first initial hello write is completely lost before Device RX readiness", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [null, helloResponse()]);
+    installSerial(port);
+
+    const connecting = SerialSession.connect();
+    await vi.advanceTimersByTimeAsync(1000);
+    const { session, hello } = await connecting;
+
+    expect(hello.state).toBe("unprovisioned");
+    expect(writes).toHaveLength(2);
+    expect(parsedWrites(writes)).toEqual([
+      expect.objectContaining({ v: 2, id: 1, op: "hello" }),
+      expect.objectContaining({ v: 2, id: 1, op: "hello" }),
+    ]);
+    expect(session.isClosed()).toBe(false);
+    await session.close();
+  });
+
+  it("reuses the same pending reader across retry timers and quarantines a late duplicate hello response", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [
+      { value: helloResponse(), delayMs: 1200 },
+      helloResponse(),
+      response(2, { readiness: "not_synced" }),
+    ]);
+    installSerial(port);
+
+    const connecting = SerialSession.connect();
+    await vi.advanceTimersByTimeAsync(1000);
+    const { session } = await connecting;
+
+    expect(writes).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const status = await session.requestCanonicalV2("time.status");
+    expect(status).toEqual({ readiness: "not_synced" });
+    expect(parsedWrites(writes)[2]).toMatchObject({ v: 2, id: 2, op: "time.status" });
+    expect(session.isClosed()).toBe(false);
     await session.close();
   });
 
@@ -122,28 +166,43 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     const { session, hello } = await connecting;
 
     expect(hello.state).toBe("unprovisioned");
-    expect(writes).toHaveLength(1);
+    expect(writes.length).toBeGreaterThan(1);
+    for (const write of parsedWrites(writes)) {
+      expect(write).toMatchObject({ v: 2, id: 1, op: "hello" });
+    }
     expect(session.isClosed()).toBe(false);
     await session.close();
   });
 
-  it("fails closed when the bounded 15 second initial readiness window expires", async () => {
+  it("fails closed when the bounded 15 second initial synchronization deadline expires", async () => {
     vi.useFakeTimers();
-    const { port } = makeMockPort("", [{ value: helloResponse(), delayMs: 16_000 }]);
+    const { port, writes } = makeMockPort("", []);
     installSerial(port);
 
     const assertion = expect(SerialSession.connect()).rejects.toThrow("Device response timed out");
     await vi.advanceTimersByTimeAsync(15_000);
     await assertion;
 
+    expect(writes).toHaveLength(15);
+    for (const write of parsedWrites(writes)) {
+      expect(write).toMatchObject({ v: 2, id: 1, op: "hello" });
+    }
     expect(port.close).toHaveBeenCalledOnce();
   });
 
-  it("does not skip a JSON candidate with the wrong request id", async () => {
+  it("fails closed on a response with an ID that was never issued", async () => {
     const { port } = makeMockPort("I (18) boot: startup\n", [helloResponse(99)]);
     installSerial(port);
 
     await expect(SerialSession.connect()).rejects.toThrow("Response id mismatch");
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on malformed JSON-looking startup output", async () => {
+    const { port } = makeMockPort("", ["{not-json}\n"]);
+    installSerial(port);
+
+    await expect(SerialSession.connect()).rejects.toThrow("Device returned invalid JSON");
     expect(port.close).toHaveBeenCalledOnce();
   });
 
@@ -181,6 +240,24 @@ describe("SerialSession initial Protocol 2 synchronization", () => {
     // become available to a future request on the closed transport.
     await vi.advanceTimersByTimeAsync(1000);
     await expect(session.requestCanonicalV2("time.status")).rejects.toThrow("Device is not connected");
+  });
+
+  it("never retries a state-changing operation after synchronization", async () => {
+    vi.useFakeTimers();
+    const { port, writes } = makeMockPort("", [helloResponse(), null]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    const assertion = expect(session.requestCanonicalV2("vault.install", {})).rejects.toThrow(
+      "Device response timed out",
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(writes).toHaveLength(2);
+    expect(parsedWrites(writes)[1]).toMatchObject({ v: 2, id: 2, op: "vault.install" });
+    expect(session.isClosed()).toBe(true);
   });
 
   it("fails closed when startup noise exceeds the bounded line count", async () => {
