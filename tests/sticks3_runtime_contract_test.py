@@ -102,34 +102,36 @@ class StickS3RuntimeContractTests(unittest.TestCase):
             "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)",
             cmake,
         )
-        self.assertIn("nvs_flash", cmake)
+        self.assertNotIn("nvs_flash", cmake)
         self.assertIn("#define M5AUTH_TIMING_DIAGNOSTICS 0", app)
         self.assertIn("constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;", app)
-        self.assertIn("if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery)", app)
+        self.assertIn("is_timing_diagnostics_query(request)", app)
         self.assertIn("diagnostics.timing", app)
         self.assertIn("session.complete", app)
         self.assertIn("vault.install", app)
         self.assertIn("hello", app)
         self.assertIn("last_us", app)
         self.assertIn("max_us", app)
+        self.assertIn("reset_reason", app)
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("timing_diagnostics_response(request", app)
 
-    def test_issue_86_timing_snapshot_survives_transport_reset_without_affecting_response_deadline(self) -> None:
+    def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
 
-        self.assertIn('constexpr char kTimingDiagnosticsNamespace[] = "m5diag86";', app)
-        self.assertIn("nvs_get_blob", app)
-        self.assertIn("nvs_set_blob", app)
-        self.assertIn("nvs_set_str(handle, kTimingDiagnosticsBuildKey, M5AUTH_BUILD_COMMIT)", app)
+        self.assertIn("RTC_NOINIT_ATTR RtcTimingDiagnostics g_rtc_timing_diagnostics;", app)
+        self.assertIn("persist_timing_diagnostics_to_rtc();", app)
         self.assertIn("initialize_timing_diagnostics_persistence();", app)
-        self.assertIn("persist_timing_diagnostics();", app)
+        self.assertIn("kTimingRtcMagic", app)
+        self.assertIn("M5AUTH_BUILD_COMMIT", app)
+        self.assertNotIn("nvs_open", app)
+        self.assertNotIn("nvs_set_blob", app)
+        self.assertNotIn("nvs_commit", app)
         self.assertRegex(
             app,
-            r"write_response\(response\);\s*if \(timing_recorded\) \{\s*\(void\)persist_timing_diagnostics\(\);",
+            r"if \(timing_recorded\) \{\s*persist_timing_diagnostics_to_rtc\(\);\s*\}\s*\n\s*m5auth::vault_runtime::secure_zero",
         )
         self.assertNotIn("request.data()", app)
-        self.assertNotIn("nvs_set_blob(\n        handle,\n        kTimingDiagnosticsSnapshotKey,\n        request", app)
 
 
 if __name__ == "__main__":
