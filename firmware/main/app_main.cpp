@@ -66,6 +66,9 @@ constexpr std::size_t kTimingBuildBytes = 16;
 
 enum class TimingOperation {
     kNone,
+    kSessionBegin,
+    kSessionAuthorize,
+    kSessionStatus,
     kSessionComplete,
     kVaultInstall,
     kHello,
@@ -78,6 +81,9 @@ struct TimingSample {
 };
 
 struct TimingDiagnostics {
+    TimingSample session_begin{};
+    TimingSample session_authorize{};
+    TimingSample session_status{};
     TimingSample session_complete{};
     TimingSample vault_install{};
     TimingSample hello{};
@@ -86,7 +92,7 @@ struct TimingDiagnostics {
 struct RtcTimingDiagnostics {
     std::uint32_t magic;
     char build[kTimingBuildBytes];
-    std::uint64_t values[9];
+    std::uint64_t values[18];
     std::uint32_t magic_tail;
 };
 
@@ -123,7 +129,16 @@ void persist_timing_diagnostics_to_rtc() {
         M5AUTH_BUILD_COMMIT
     );
 
-    const std::array<std::uint64_t, 9> values{
+    const std::array<std::uint64_t, 18> values{
+        g_timing_diagnostics.session_begin.count,
+        g_timing_diagnostics.session_begin.last_us,
+        g_timing_diagnostics.session_begin.max_us,
+        g_timing_diagnostics.session_authorize.count,
+        g_timing_diagnostics.session_authorize.last_us,
+        g_timing_diagnostics.session_authorize.max_us,
+        g_timing_diagnostics.session_status.count,
+        g_timing_diagnostics.session_status.last_us,
+        g_timing_diagnostics.session_status.max_us,
         g_timing_diagnostics.session_complete.count,
         g_timing_diagnostics.session_complete.last_us,
         g_timing_diagnostics.session_complete.max_us,
@@ -148,20 +163,35 @@ void initialize_timing_diagnostics_persistence() {
         return;
     }
 
-    g_timing_diagnostics.session_complete = TimingSample{
+    g_timing_diagnostics.session_begin = TimingSample{
         g_rtc_timing_diagnostics.values[0],
         g_rtc_timing_diagnostics.values[1],
         g_rtc_timing_diagnostics.values[2],
     };
-    g_timing_diagnostics.vault_install = TimingSample{
+    g_timing_diagnostics.session_authorize = TimingSample{
         g_rtc_timing_diagnostics.values[3],
         g_rtc_timing_diagnostics.values[4],
         g_rtc_timing_diagnostics.values[5],
     };
-    g_timing_diagnostics.hello = TimingSample{
+    g_timing_diagnostics.session_status = TimingSample{
         g_rtc_timing_diagnostics.values[6],
         g_rtc_timing_diagnostics.values[7],
         g_rtc_timing_diagnostics.values[8],
+    };
+    g_timing_diagnostics.session_complete = TimingSample{
+        g_rtc_timing_diagnostics.values[9],
+        g_rtc_timing_diagnostics.values[10],
+        g_rtc_timing_diagnostics.values[11],
+    };
+    g_timing_diagnostics.vault_install = TimingSample{
+        g_rtc_timing_diagnostics.values[12],
+        g_rtc_timing_diagnostics.values[13],
+        g_rtc_timing_diagnostics.values[14],
+    };
+    g_timing_diagnostics.hello = TimingSample{
+        g_rtc_timing_diagnostics.values[15],
+        g_rtc_timing_diagnostics.values[16],
+        g_rtc_timing_diagnostics.values[17],
     };
 }
 
@@ -174,6 +204,15 @@ bool is_timing_diagnostics_query(std::string_view line) {
 }
 
 TimingOperation classify_timing_operation(std::string_view line) {
+    if (line.find("\"op\":\"session.begin\"") != std::string_view::npos) {
+        return TimingOperation::kSessionBegin;
+    }
+    if (line.find("\"op\":\"session.authorize\"") != std::string_view::npos) {
+        return TimingOperation::kSessionAuthorize;
+    }
+    if (line.find("\"op\":\"session.status\"") != std::string_view::npos) {
+        return TimingOperation::kSessionStatus;
+    }
     if (line.find("\"op\":\"session.complete\"") != std::string_view::npos) {
         return TimingOperation::kSessionComplete;
     }
@@ -188,6 +227,12 @@ TimingOperation classify_timing_operation(std::string_view line) {
 
 TimingSample* timing_sample(TimingOperation operation) {
     switch (operation) {
+        case TimingOperation::kSessionBegin:
+            return &g_timing_diagnostics.session_begin;
+        case TimingOperation::kSessionAuthorize:
+            return &g_timing_diagnostics.session_authorize;
+        case TimingOperation::kSessionStatus:
+            return &g_timing_diagnostics.session_status;
         case TimingOperation::kSessionComplete:
             return &g_timing_diagnostics.session_complete;
         case TimingOperation::kVaultInstall:
@@ -213,15 +258,27 @@ bool record_timing(TimingOperation operation, std::int64_t started_us) {
 }
 
 std::string timing_diagnostics_response() {
-    std::array<char, 560> buffer{};
+    std::array<char, 1024> buffer{};
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
         "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
+        "\"session_begin\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"session_authorize\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"session_status\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"session_complete\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"vault_install\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"reset_reason\":%d}}",
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_begin.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_authorize.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_status.max_us),
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.count),
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.last_us),
         static_cast<unsigned long long>(g_timing_diagnostics.session_complete.max_us),
