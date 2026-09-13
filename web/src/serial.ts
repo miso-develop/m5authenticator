@@ -19,7 +19,13 @@ import {
 } from "./security/session-protocol-v2";
 
 const MAX_RESPONSE_BYTES = 4096;
-const RESPONSE_TIMEOUT_MS = 5000;
+const ESTABLISHED_RESPONSE_TIMEOUT_MS = 5000;
+const INITIAL_HELLO_RESPONSE_TIMEOUT_MS = 15_000;
+const SESSION_COMPLETE_RESPONSE_TIMEOUT_MS = 10_000;
+const VAULT_INSTALL_RESPONSE_TIMEOUT_MS = 20_000;
+const VAULT_UPDATE_RESPONSE_TIMEOUT_MS = 15_000;
+const VAULT_REKEY_RESPONSE_TIMEOUT_MS = 20_000;
+const FACTORY_RESET_RESPONSE_TIMEOUT_MS = 20_000;
 const MAX_STARTUP_NOISE_LINES = 64;
 const MAX_STARTUP_NOISE_BYTES = 8192;
 
@@ -36,6 +42,12 @@ interface SerialPortLike {
 
 interface SerialLike {
   requestPort(): Promise<SerialPortLike>;
+}
+
+interface ExchangeOptions {
+  timeoutMs?: number;
+  timeoutLabel?: string;
+  allowInitialStartupNoise?: boolean;
 }
 
 // Legacy Protocol 1 transport is retained only for isolated compatibility tests.
@@ -60,6 +72,26 @@ export interface CanonicalV2Transport extends SessionV2Transport {
 
 function browserSerial(): SerialLike | undefined {
   return (navigator as Navigator & { readonly serial?: SerialLike }).serial;
+}
+
+function sessionTimeoutMs(op: SessionWireOperation): number {
+  return op === "session.complete" ? SESSION_COMPLETE_RESPONSE_TIMEOUT_MS : ESTABLISHED_RESPONSE_TIMEOUT_MS;
+}
+
+function canonicalTimeoutMs(op: CanonicalWireOperation): number {
+  switch (op) {
+    case "vault.install":
+      return VAULT_INSTALL_RESPONSE_TIMEOUT_MS;
+    case "vault.update":
+      return VAULT_UPDATE_RESPONSE_TIMEOUT_MS;
+    case "vault.rekey":
+      return VAULT_REKEY_RESPONSE_TIMEOUT_MS;
+    case "factory_reset":
+    case "factory_reset.recovery_complete":
+      return FACTORY_RESET_RESPONSE_TIMEOUT_MS;
+    default:
+      return ESTABLISHED_RESPONSE_TIMEOUT_MS;
+  }
 }
 
 export class SerialSession implements DeviceTransport, CanonicalV2Transport {
@@ -118,6 +150,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       (id) => buildRequest(id, op, params),
       parseResponseData,
       (error) => error instanceof DeviceProtocolError,
+      { timeoutLabel: "legacy request" },
     );
   }
 
@@ -129,6 +162,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       (id) => buildSessionV2Request(id, op, params),
       parseSessionV2Response,
       (error) => error instanceof SessionProtocolV2Error,
+      { timeoutMs: sessionTimeoutMs(op), timeoutLabel: op },
     );
   }
 
@@ -140,6 +174,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       (id) => buildCanonicalV2Request(id, op, params),
       parseCanonicalV2Response,
       (error) => error instanceof CanonicalProtocolV2Error,
+      { timeoutMs: canonicalTimeoutMs(op), timeoutLabel: op },
     );
   }
 
@@ -172,7 +207,11 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       (id) => buildCanonicalV2Request(id, "hello", {}),
       parseCanonicalV2Response,
       (error) => error instanceof CanonicalProtocolV2Error,
-      true,
+      {
+        timeoutMs: INITIAL_HELLO_RESPONSE_TIMEOUT_MS,
+        timeoutLabel: "initial hello synchronization",
+        allowInitialStartupNoise: true,
+      },
     );
   }
 
@@ -180,10 +219,14 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     build: (id: number) => string,
     parse: (raw: string, expectedId: number) => Record<string, unknown>,
     isDeviceRejection: (error: unknown) => boolean,
-    allowInitialStartupNoise = false,
+    options: ExchangeOptions = {},
   ): Promise<Record<string, unknown>> {
     if (this.closed) throw new Error("Device is not connected");
     if (this.inFlight) throw new Error("Another device request is already in progress");
+
+    const timeoutMs = options.timeoutMs ?? ESTABLISHED_RESPONSE_TIMEOUT_MS;
+    const timeoutLabel = options.timeoutLabel ?? "device request";
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid serial response timeout");
 
     this.inFlight = true;
     const id = this.allocateRequestId();
@@ -196,10 +239,10 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
         payload.fill(0);
       }
 
-      const deadlineMs = Date.now() + RESPONSE_TIMEOUT_MS;
-      const line = allowInitialStartupNoise
-        ? await this.readInitialProtocolLine(deadlineMs)
-        : await this.readLine(deadlineMs, MAX_RESPONSE_BYTES);
+      const deadlineMs = Date.now() + timeoutMs;
+      const line = options.allowInitialStartupNoise === true
+        ? await this.readInitialProtocolLine(deadlineMs, timeoutLabel)
+        : await this.readLine(deadlineMs, MAX_RESPONSE_BYTES, timeoutLabel);
       return parse(line, id);
     } catch (error) {
       if (!isDeviceRejection(error)) await this.closeSilently();
@@ -215,13 +258,13 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     return id;
   }
 
-  private async readInitialProtocolLine(deadlineMs: number): Promise<string> {
+  private async readInitialProtocolLine(deadlineMs: number, timeoutLabel: string): Promise<string> {
     let skippedLines = 0;
     let skippedBytes = 0;
     const encoder = new TextEncoder();
 
     while (true) {
-      const line = await this.readLine(deadlineMs, MAX_STARTUP_NOISE_BYTES);
+      const line = await this.readLine(deadlineMs, MAX_STARTUP_NOISE_BYTES, timeoutLabel);
       const lineBytes = encoder.encode(line).byteLength;
       if (line.trimStart().startsWith("{")) {
         if (lineBytes > MAX_RESPONSE_BYTES) throw new Error("Device response was too large");
@@ -236,7 +279,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     }
   }
 
-  private async readLine(deadlineMs: number, maxBufferedBytes: number): Promise<string> {
+  private async readLine(deadlineMs: number, maxBufferedBytes: number, timeoutLabel: string): Promise<string> {
     while (this.pendingBytes <= maxBufferedBytes) {
       const newline = this.pending.indexOf("\n");
       if (newline >= 0) {
@@ -247,11 +290,14 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       }
 
       const remainingMs = deadlineMs - Date.now();
-      if (remainingMs <= 0) throw new Error("Device response timed out");
+      if (remainingMs <= 0) throw new Error(`Device response timed out during ${timeoutLabel}`);
 
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error("Device response timed out")), remainingMs);
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`Device response timed out during ${timeoutLabel}`)),
+          remainingMs,
+        );
       });
       try {
         const { value, done } = await Promise.race([this.reader.read(), timeout]);
