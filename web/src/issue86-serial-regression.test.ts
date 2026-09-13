@@ -182,7 +182,7 @@ describe("#86 established Web Serial regression boundaries", () => {
     const originalClose = SerialSession.prototype.close;
     const closeSnapshots: Array<{ inFlight: boolean; pendingRead: boolean; pendingBytes: number; closed: boolean }> = [];
 
-    vi.spyOn(SerialSession.prototype, "close").mockImplementation(async function observedClose() {
+    vi.spyOn(SerialSession.prototype, "close").mockImplementation(async function observedClose(this: SerialSession) {
       const internal = debugView(this);
       closeSnapshots.push({
         inFlight: internal.inFlight === true,
@@ -216,7 +216,7 @@ describe("#86 established Web Serial regression boundaries", () => {
 
     const originalClose = SerialSession.prototype.close;
     let pendingBytesAtClose = -1;
-    vi.spyOn(SerialSession.prototype, "close").mockImplementation(async function observedClose() {
+    vi.spyOn(SerialSession.prototype, "close").mockImplementation(async function observedClose(this: SerialSession) {
       const internal = debugView(this);
       pendingBytesAtClose = typeof internal.pendingBytes === "number" ? internal.pendingBytes : -1;
       await originalClose.call(this);
