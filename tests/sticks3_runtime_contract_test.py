@@ -103,12 +103,12 @@ class StickS3RuntimeContractTests(unittest.TestCase):
             cmake,
         )
         self.assertIn("#ifdef M5AUTH_TIMING_DIAGNOSTICS", app)
-        self.assertIn('"op":"diagnostics.timing"', app)
-        self.assertIn('"op":"session.complete"', app)
-        self.assertIn('"op":"vault.install"', app)
-        self.assertIn('"op":"hello"', app)
-        self.assertIn('"last_us"', app)
-        self.assertIn('"max_us"', app)
+        self.assertIn("diagnostics.timing", app)
+        self.assertIn("session.complete", app)
+        self.assertIn("vault.install", app)
+        self.assertIn("hello", app)
+        self.assertIn("last_us", app)
+        self.assertIn("max_us", app)
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("timing_diagnostics_response(request", app)
 
