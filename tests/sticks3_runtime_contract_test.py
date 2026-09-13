@@ -82,6 +82,26 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("if (!usb_serial_jtag_is_connected())", idle_branch.group(1))
         self.assertIn("teardown_transport_session(protocol);", idle_branch.group(1))
 
+    def test_usb_serial_fragments_are_buffered_until_newline_and_wiped_on_disconnect(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("std::size_t buffered_input = 0;", app)
+        self.assertIn("bool discard_oversized_input = false;", app)
+        self.assertIn("input.data() + buffered_input", app)
+        self.assertIn("input.size() - buffered_input", app)
+        self.assertIn("buffered_input += std::strlen(input.data() + buffered_input);", app)
+        self.assertIn("buffered_input > 0 && input[buffered_input - 1] == '\\n'", app)
+        self.assertIn("USB Serial/JTAG VFS reads are non-blocking", app)
+        self.assertIn("discard_oversized_input = true;", app)
+        self.assertRegex(
+            app,
+            r"if \(!usb_serial_jtag_is_connected\(\)\) \{\s*"
+            r"teardown_transport_session\(protocol\);\s*"
+            r"m5auth::vault_runtime::secure_zero\(input\.data\(\), input\.size\(\)\);\s*"
+            r"buffered_input = 0;\s*\}",
+        )
+        self.assertNotIn("discard_line_remainder", app)
+
     def test_canonical_presence_requires_neutral_and_quarantines_authorizing_gesture(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertIn("presence_.observe_button_state(M5.BtnA.isPressed());", text)
