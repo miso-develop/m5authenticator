@@ -102,6 +102,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
             "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)",
             cmake,
         )
+        self.assertIn("nvs_flash", cmake)
         self.assertIn("#define M5AUTH_TIMING_DIAGNOSTICS 0", app)
         self.assertIn("constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;", app)
         self.assertIn("if (kTimingDiagnosticsEnabled && request == kTimingDiagnosticsQuery)", app)
@@ -113,6 +114,22 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("max_us", app)
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("timing_diagnostics_response(request", app)
+
+    def test_issue_86_timing_snapshot_survives_transport_reset_without_affecting_response_deadline(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn('constexpr char kTimingDiagnosticsNamespace[] = "m5diag86";', app)
+        self.assertIn("nvs_get_blob", app)
+        self.assertIn("nvs_set_blob", app)
+        self.assertIn("nvs_set_str(handle, kTimingDiagnosticsBuildKey, M5AUTH_BUILD_COMMIT)", app)
+        self.assertIn("initialize_timing_diagnostics_persistence();", app)
+        self.assertIn("persist_timing_diagnostics();", app)
+        self.assertRegex(
+            app,
+            r"write_response\(response\);\s*if \(timing_recorded\) \{\s*\(void\)persist_timing_diagnostics\(\);",
+        )
+        self.assertNotIn("request.data()", app)
+        self.assertNotIn("nvs_set_blob(\n        handle,\n        kTimingDiagnosticsSnapshotKey,\n        request", app)
 
 
 if __name__ == "__main__":
