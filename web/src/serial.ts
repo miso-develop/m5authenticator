@@ -20,6 +20,7 @@ import {
 
 const MAX_RESPONSE_BYTES = 4096;
 const RESPONSE_TIMEOUT_MS = 5000;
+const INITIAL_HELLO_RESPONSE_TIMEOUT_MS = 15_000;
 const MAX_STARTUP_NOISE_LINES = 64;
 const MAX_STARTUP_NOISE_BYTES = 8192;
 
@@ -173,6 +174,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       parseCanonicalV2Response,
       (error) => error instanceof CanonicalProtocolV2Error,
       true,
+      INITIAL_HELLO_RESPONSE_TIMEOUT_MS,
     );
   }
 
@@ -181,6 +183,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     parse: (raw: string, expectedId: number) => Record<string, unknown>,
     isDeviceRejection: (error: unknown) => boolean,
     allowInitialStartupNoise = false,
+    responseTimeoutMs = RESPONSE_TIMEOUT_MS,
   ): Promise<Record<string, unknown>> {
     if (this.closed) throw new Error("Device is not connected");
     if (this.inFlight) throw new Error("Another device request is already in progress");
@@ -196,7 +199,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
         payload.fill(0);
       }
 
-      const deadlineMs = Date.now() + RESPONSE_TIMEOUT_MS;
+      const deadlineMs = Date.now() + responseTimeoutMs;
       const line = allowInitialStartupNoise
         ? await this.readInitialProtocolLine(deadlineMs)
         : await this.readLine(deadlineMs, MAX_RESPONSE_BYTES);
