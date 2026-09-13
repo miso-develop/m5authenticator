@@ -7,6 +7,16 @@ const MAX_TRACE_LINES = 64;
 const TRACED_CANONICAL_OPERATIONS = new Set<CanonicalWireOperation>(["hello", "vault.install"]);
 const SAFE_SESSION_STATES = new Set(["awaiting_presence", "confirmed", "rejected", "expired", "cancelled"]);
 
+interface SerialSessionDebugView {
+  pending?: unknown;
+  pendingBytes?: unknown;
+  pendingRead?: unknown;
+  inFlight?: unknown;
+  closed?: unknown;
+  staleInitialHelloResponseId?: unknown;
+  staleInitialHelloResponsesRemaining?: unknown;
+}
+
 export function sanitizeSessionState(value: unknown): string {
   return typeof value === "string" && SAFE_SESSION_STATES.has(value) ? value : "<invalid-state>";
 }
@@ -39,9 +49,37 @@ export function sanitizedTraceError(error: unknown): string {
   return "sanitized-error";
 }
 
+function booleanLabel(value: boolean): string {
+  return value ? "yes" : "no";
+}
+
+function boundedNonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : -1;
+}
+
+function transportState(session: SerialSession): string {
+  // Measurement-only branch: TypeScript `private` fields are read as non-secret
+  // transport metadata. No request/response body, IDs, Device identity, or
+  // credential/key material is accessed or rendered.
+  const internal = session as unknown as SerialSessionDebugView;
+  const pending = typeof internal.pending === "string" ? internal.pending : "";
+  const pendingBytes = boundedNonNegativeInteger(internal.pendingBytes);
+  const staleRemaining = boundedNonNegativeInteger(internal.staleInitialHelloResponsesRemaining);
+  return [
+    `closed=${booleanLabel(internal.closed === true)}`,
+    `in_flight=${booleanLabel(internal.inFlight === true)}`,
+    `pending_request=${internal.inFlight === true ? 1 : 0}`,
+    `pending_read=${booleanLabel(internal.pendingRead !== undefined)}`,
+    `pending_bytes=${pendingBytes}`,
+    `pending_newline=${booleanLabel(pending.includes("\n"))}`,
+    `stale_hello_remaining=${staleRemaining}`,
+    `stale_hello_id_present=${booleanLabel(internal.staleInitialHelloResponseId !== undefined)}`,
+  ].join(" ");
+}
+
 const traceLines: string[] = [
   "Issue #86 measurement-only Web trace",
-  "Logs only operation names, elapsed milliseconds, sanitized session state/errors, and transport close.",
+  "Logs only operation names, elapsed milliseconds, sanitized session state/errors, and non-secret transport lifecycle state.",
 ];
 let sequence = 0;
 let panel: HTMLPreElement | null = null;
@@ -96,17 +134,17 @@ SerialSession.prototype.requestV2 = async function issue86TracedRequestV2(
   params: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const started = performance.now();
-  appendTrace(`→ ${op}`);
+  appendTrace(`→ ${op} ${transportState(this)}`);
   try {
     const result = await originalRequestV2.call(this, op, params);
     if (op === "session.status") {
-      appendTrace(`← session.status state=${sanitizeSessionState(result.state)} ${elapsedMs(started)}ms`);
+      appendTrace(`← session.status state=${sanitizeSessionState(result.state)} ${elapsedMs(started)}ms ${transportState(this)}`);
     } else {
-      appendTrace(`← ${op} ok ${elapsedMs(started)}ms`);
+      appendTrace(`← ${op} ok ${elapsedMs(started)}ms ${transportState(this)}`);
     }
     return result;
   } catch (error) {
-    appendTrace(`× ${op} ${sanitizedTraceError(error)} ${elapsedMs(started)}ms`);
+    appendTrace(`× ${op} ${sanitizedTraceError(error)} ${elapsedMs(started)}ms ${transportState(this)}`);
     throw error;
   }
 };
@@ -118,22 +156,29 @@ SerialSession.prototype.requestCanonicalV2 = async function issue86TracedCanonic
 ): Promise<Record<string, unknown>> {
   if (!TRACED_CANONICAL_OPERATIONS.has(op)) return originalCanonical.call(this, op, params);
   const started = performance.now();
-  appendTrace(`→ ${op}`);
+  appendTrace(`→ ${op} ${transportState(this)}`);
   try {
     const result = await originalCanonical.call(this, op, params);
-    appendTrace(`← ${op} ok ${elapsedMs(started)}ms`);
+    appendTrace(`← ${op} ok ${elapsedMs(started)}ms ${transportState(this)}`);
     return result;
   } catch (error) {
-    appendTrace(`× ${op} ${sanitizedTraceError(error)} ${elapsedMs(started)}ms`);
+    appendTrace(`× ${op} ${sanitizedTraceError(error)} ${elapsedMs(started)}ms ${transportState(this)}`);
     throw error;
   }
 };
 
 const originalClose = SerialSession.prototype.close;
 SerialSession.prototype.close = async function issue86TracedClose(): Promise<void> {
-  appendTrace("• transport.close");
+  appendTrace(`• transport.close before ${transportState(this)}`);
   await originalClose.call(this);
+  appendTrace(`• transport.close after ${transportState(this)}`);
 };
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    appendTrace("• lifecycle.pagehide");
+  });
+}
 
 if (typeof document !== "undefined") {
   if (document.readyState === "loading") {
