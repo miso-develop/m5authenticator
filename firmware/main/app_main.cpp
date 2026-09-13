@@ -134,7 +134,7 @@ void persist_timing_diagnostics_to_rtc() {
         g_timing_diagnostics.hello.last_us,
         g_timing_diagnostics.hello.max_us,
     };
-    std::copy(values.begin(), values.end(), std::begin(g_rtc_timing_diagnostics.values));
+    std::copy(values.begin(), values.end(), g_rtc_timing_diagnostics.values);
     g_rtc_timing_diagnostics.magic_tail = ~kTimingRtcMagic;
 }
 
