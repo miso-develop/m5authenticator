@@ -138,9 +138,29 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("session_status", app)
         self.assertIn("last_us", app)
         self.assertIn("max_us", app)
+        self.assertIn("tx_write", app)
+        self.assertIn("fwrite_ok", app)
+        self.assertIn("newline_ok", app)
+        self.assertIn("fflush_ok", app)
+        self.assertIn("ferror", app)
         self.assertIn("reset_reason", app)
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("timing_diagnostics_response(request", app)
+
+    def test_issue_86_response_write_diagnostics_do_not_overwrite_themselves(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("const std::size_t fwrite_bytes = std::fwrite", app)
+        self.assertIn("const int newline_result = std::fputc", app)
+        self.assertIn("const int fflush_result = std::fflush(stdout);", app)
+        self.assertIn("const int ferror_value = std::ferror(stdout);", app)
+        self.assertIn("write_response(response, timing_operation);", app)
+        self.assertIn("write_response(timing_diagnostics_response());", app)
+        self.assertIn(
+            "const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;",
+            app,
+        )
+        self.assertIn('case TimingOperation::kSessionStatus: return "session.status";', app)
 
     def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
@@ -150,7 +170,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("initialize_timing_diagnostics_persistence();", app)
         self.assertIn("kTimingRtcMagic", app)
         self.assertIn("M5AUTH_BUILD_COMMIT", app)
-        self.assertIn("std::uint64_t values[18];", app)
+        self.assertIn("std::uint64_t values[27];", app)
         self.assertNotIn("nvs_open", app)
         self.assertNotIn("nvs_set_blob", app)
         self.assertNotIn("nvs_commit", app)
