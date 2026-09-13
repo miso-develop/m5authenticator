@@ -80,13 +80,13 @@ constexpr std::string_view kTimingDiagnosticsQuery =
     R"({"v":2,"id":9001,"op":"diagnostics.timing","params":{}})";
 
 TimingOperation classify_timing_operation(std::string_view line) {
-    if (line.find(R"("op":"session.complete")") != std::string_view::npos) {
+    if (line.find("\"op\":\"session.complete\"") != std::string_view::npos) {
         return TimingOperation::kSessionComplete;
     }
-    if (line.find(R"("op":"vault.install")") != std::string_view::npos) {
+    if (line.find("\"op\":\"vault.install\"") != std::string_view::npos) {
         return TimingOperation::kVaultInstall;
     }
-    if (line.find(R"("op":"hello")") != std::string_view::npos) {
+    if (line.find("\"op\":\"hello\"") != std::string_view::npos) {
         return TimingOperation::kHello;
     }
     return TimingOperation::kNone;
