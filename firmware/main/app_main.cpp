@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -50,6 +52,97 @@ void teardown_transport_session(
 ) {
     protocol.disconnect();
 }
+
+#ifdef M5AUTH_TIMING_DIAGNOSTICS
+
+enum class TimingOperation {
+    kNone,
+    kSessionComplete,
+    kVaultInstall,
+    kHello,
+};
+
+struct TimingSample {
+    std::uint64_t count{0};
+    std::uint64_t last_us{0};
+    std::uint64_t max_us{0};
+};
+
+struct TimingDiagnostics {
+    TimingSample session_complete{};
+    TimingSample vault_install{};
+    TimingSample hello{};
+};
+
+TimingDiagnostics g_timing_diagnostics{};
+
+constexpr std::string_view kTimingDiagnosticsQuery =
+    R"({"v":2,"id":9001,"op":"diagnostics.timing","params":{}})";
+
+TimingOperation classify_timing_operation(std::string_view line) {
+    if (line.find(R"("op":"session.complete")") != std::string_view::npos) {
+        return TimingOperation::kSessionComplete;
+    }
+    if (line.find(R"("op":"vault.install")") != std::string_view::npos) {
+        return TimingOperation::kVaultInstall;
+    }
+    if (line.find(R"("op":"hello")") != std::string_view::npos) {
+        return TimingOperation::kHello;
+    }
+    return TimingOperation::kNone;
+}
+
+TimingSample* timing_sample(TimingOperation operation) {
+    switch (operation) {
+        case TimingOperation::kSessionComplete:
+            return &g_timing_diagnostics.session_complete;
+        case TimingOperation::kVaultInstall:
+            return &g_timing_diagnostics.vault_install;
+        case TimingOperation::kHello:
+            return &g_timing_diagnostics.hello;
+        case TimingOperation::kNone:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+void record_timing(TimingOperation operation, std::int64_t started_us) {
+    TimingSample* sample = timing_sample(operation);
+    if (sample == nullptr || started_us <= 0) return;
+    const std::int64_t finished_us = esp_timer_get_time();
+    if (finished_us < started_us) return;
+    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    ++sample->count;
+    sample->last_us = elapsed_us;
+    sample->max_us = std::max(sample->max_us, elapsed_us);
+}
+
+std::string timing_diagnostics_response() {
+    std::array<char, 512> buffer{};
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
+        "\"session_complete\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"vault_install\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu}}}",
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.session_complete.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.vault_install.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.count),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.hello.max_us)
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
+        return R"({"v":2,"id":9001,"ok":false,"error":{"code":"internal_error"}})";
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
+}
+
+#endif
 
 }  // namespace
 
@@ -153,10 +246,29 @@ extern "C" void app_main(void) {
         }
 
         while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
+        const std::string_view request(input.data(), length);
+
+#ifdef M5AUTH_TIMING_DIAGNOSTICS
+        if (request == kTimingDiagnosticsQuery) {
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            write_response(timing_diagnostics_response());
+            continue;
+        }
+        const TimingOperation timing_operation = classify_timing_operation(request);
+        const std::int64_t timing_started_us = timing_operation == TimingOperation::kNone
+            ? 0
+            : esp_timer_get_time();
+#endif
+
         const std::string response = protocol.handle_line(
-            std::string_view(input.data(), length),
+            request,
             monotonic_ms()
         );
+
+#ifdef M5AUTH_TIMING_DIAGNOSTICS
+        record_timing(timing_operation, timing_started_us);
+#endif
+
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
         write_response(response);
     }
