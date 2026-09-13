@@ -36,12 +36,6 @@
 
 namespace {
 
-void write_response(const std::string& response) {
-    std::fwrite(response.data(), 1, response.size(), stdout);
-    std::fputc('\n', stdout);
-    std::fflush(stdout);
-}
-
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
     return microseconds <= 0
@@ -75,6 +69,18 @@ struct TimingSample {
     std::uint64_t max_us{0};
 };
 
+struct ResponseWriteDiagnostics {
+    std::uint64_t count{0};
+    std::uint64_t last_us{0};
+    std::uint64_t max_us{0};
+    std::uint64_t operation{0};
+    std::uint64_t response_bytes{0};
+    std::uint64_t fwrite_ok{0};
+    std::uint64_t newline_ok{0};
+    std::uint64_t fflush_ok{0};
+    std::uint64_t ferror_value{0};
+};
+
 struct TimingDiagnostics {
     TimingSample session_begin{};
     TimingSample session_authorize{};
@@ -82,12 +88,13 @@ struct TimingDiagnostics {
     TimingSample session_complete{};
     TimingSample vault_install{};
     TimingSample hello{};
+    ResponseWriteDiagnostics response_write{};
 };
 
 struct RtcTimingDiagnostics {
     std::uint32_t magic;
     char build[kTimingBuildBytes];
-    std::uint64_t values[18];
+    std::uint64_t values[27];
     std::uint32_t magic_tail;
 };
 
@@ -124,7 +131,7 @@ void persist_timing_diagnostics_to_rtc() {
         M5AUTH_BUILD_COMMIT
     );
 
-    const std::array<std::uint64_t, 18> values{
+    const std::array<std::uint64_t, 27> values{
         g_timing_diagnostics.session_begin.count,
         g_timing_diagnostics.session_begin.last_us,
         g_timing_diagnostics.session_begin.max_us,
@@ -143,6 +150,15 @@ void persist_timing_diagnostics_to_rtc() {
         g_timing_diagnostics.hello.count,
         g_timing_diagnostics.hello.last_us,
         g_timing_diagnostics.hello.max_us,
+        g_timing_diagnostics.response_write.count,
+        g_timing_diagnostics.response_write.last_us,
+        g_timing_diagnostics.response_write.max_us,
+        g_timing_diagnostics.response_write.operation,
+        g_timing_diagnostics.response_write.response_bytes,
+        g_timing_diagnostics.response_write.fwrite_ok,
+        g_timing_diagnostics.response_write.newline_ok,
+        g_timing_diagnostics.response_write.fflush_ok,
+        g_timing_diagnostics.response_write.ferror_value,
     };
     std::copy(values.begin(), values.end(), g_rtc_timing_diagnostics.values);
     g_rtc_timing_diagnostics.magic_tail = ~kTimingRtcMagic;
@@ -188,6 +204,17 @@ void initialize_timing_diagnostics_persistence() {
         g_rtc_timing_diagnostics.values[16],
         g_rtc_timing_diagnostics.values[17],
     };
+    g_timing_diagnostics.response_write = ResponseWriteDiagnostics{
+        g_rtc_timing_diagnostics.values[18],
+        g_rtc_timing_diagnostics.values[19],
+        g_rtc_timing_diagnostics.values[20],
+        g_rtc_timing_diagnostics.values[21],
+        g_rtc_timing_diagnostics.values[22],
+        g_rtc_timing_diagnostics.values[23],
+        g_rtc_timing_diagnostics.values[24],
+        g_rtc_timing_diagnostics.values[25],
+        g_rtc_timing_diagnostics.values[26],
+    };
 }
 
 bool is_timing_diagnostics_query(std::string_view line) {
@@ -218,6 +245,19 @@ TimingOperation classify_timing_operation(std::string_view line) {
         return TimingOperation::kHello;
     }
     return TimingOperation::kNone;
+}
+
+const char* timing_operation_name(TimingOperation operation) {
+    switch (operation) {
+        case TimingOperation::kSessionBegin: return "session.begin";
+        case TimingOperation::kSessionAuthorize: return "session.authorize";
+        case TimingOperation::kSessionStatus: return "session.status";
+        case TimingOperation::kSessionComplete: return "session.complete";
+        case TimingOperation::kVaultInstall: return "vault.install";
+        case TimingOperation::kHello: return "hello";
+        case TimingOperation::kNone: return "none";
+    }
+    return "none";
 }
 
 TimingSample* timing_sample(TimingOperation operation) {
@@ -252,8 +292,41 @@ bool record_timing(TimingOperation operation, std::int64_t started_us) {
     return true;
 }
 
+void write_response(
+    const std::string& response,
+    TimingOperation operation = TimingOperation::kNone
+) {
+    const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
+    const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
+
+    const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
+    const int newline_result = std::fputc('\n', stdout);
+    const int fflush_result = std::fflush(stdout);
+    const int ferror_value = std::ferror(stdout);
+
+    if (!measure || started_us <= 0) return;
+    const std::int64_t finished_us = esp_timer_get_time();
+    if (finished_us < started_us) return;
+
+    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    auto& sample = g_timing_diagnostics.response_write;
+    ++sample.count;
+    sample.last_us = elapsed_us;
+    sample.max_us = std::max(sample.max_us, elapsed_us);
+    sample.operation = static_cast<std::uint64_t>(operation);
+    sample.response_bytes = response.size();
+    sample.fwrite_ok = fwrite_bytes == response.size() ? 1 : 0;
+    sample.newline_ok = newline_result == '\n' ? 1 : 0;
+    sample.fflush_ok = fflush_result == 0 ? 1 : 0;
+    sample.ferror_value = ferror_value == 0 ? 0 : 1;
+    persist_timing_diagnostics_to_rtc();
+}
+
 std::string timing_diagnostics_response() {
-    std::array<char, 1024> buffer{};
+    std::array<char, 1400> buffer{};
+    const auto response_operation = static_cast<TimingOperation>(
+        g_timing_diagnostics.response_write.operation
+    );
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
@@ -264,6 +337,9 @@ std::string timing_diagnostics_response() {
         "\"session_complete\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"vault_install\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"hello\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
+        "\"tx_write\":{\"count\":%llu,\"op\":\"%s\",\"response_bytes\":%llu,"
+        "\"fwrite_ok\":%llu,\"newline_ok\":%llu,\"fflush_ok\":%llu,"
+        "\"ferror\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"reset_reason\":%d}}",
         static_cast<unsigned long long>(g_timing_diagnostics.session_begin.count),
         static_cast<unsigned long long>(g_timing_diagnostics.session_begin.last_us),
@@ -283,6 +359,15 @@ std::string timing_diagnostics_response() {
         static_cast<unsigned long long>(g_timing_diagnostics.hello.count),
         static_cast<unsigned long long>(g_timing_diagnostics.hello.last_us),
         static_cast<unsigned long long>(g_timing_diagnostics.hello.max_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.count),
+        timing_operation_name(response_operation),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.response_bytes),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.fwrite_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.newline_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.fflush_ok),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.ferror_value),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.last_us),
+        static_cast<unsigned long long>(g_timing_diagnostics.response_write.max_us),
         static_cast<int>(esp_reset_reason())
     );
     if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
@@ -467,6 +552,6 @@ extern "C" void app_main(void) {
 
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
         buffered_input = 0;
-        write_response(response);
+        write_response(response, timing_operation);
     }
 }
