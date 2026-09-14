@@ -6,6 +6,7 @@ on:
       - "firmware/main/CMakeLists.txt"
       - "firmware/main/app_main.cpp"
       - "tests/sticks3_runtime_contract_test.py"
+      - "tools/diagnostics/issue86_tx_boundary_probe.py"
       - ".github/workflows/issue86-device-tx-probe.yml"
 
 permissions:
@@ -21,13 +22,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify probe remains opt-in
+      - name: Verify probe remains opt-in and helper parses
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'M5AUTH_TX_BOUNDARY_DIAGNOSTICS' firmware/main/CMakeLists.txt
           grep -q 'M5AUTH_TX_BOUNDARY_DIAGNOSTICS' firmware/main/app_main.cpp
           grep -q 'OFF' firmware/main/CMakeLists.txt
+          python -m py_compile tools/diagnostics/issue86_tx_boundary_probe.py
       - name: Build measurement firmware with ESP-IDF 5.5.5
         run: >-
           docker run --rm
