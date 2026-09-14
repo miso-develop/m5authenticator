@@ -54,18 +54,23 @@ idf.py -B build-screen-snapshot -p COM8 flash
 
 Do not run `erase-flash`. This diagnostic does not require Factory Reset, re-Provisioning, browser site-data clearing, or eFuse operations.
 
-## 3. Release exclusive ownership of the serial port
+## 3. Understand serial ownership before collecting evidence
 
 The diagnostic uses the same USB Serial/JTAG transport as Protocol v2. Only one process can normally own the COM/serial port at a time.
 
-Before reading a snapshot:
+Before the helper can open the port, close any `idf.py monitor` session and release any Web Serial or other serial-terminal ownership. However, **disconnecting Chrome/Web Serial can itself cancel the active Protocol v2 transport session and its physical-presence attempt**. That means releasing the port is not observationally neutral during an active unlock flow.
 
-- close any `idf.py monitor` session;
-- close the Chrome tab or disconnect Web Serial if it owns the Device port;
-- close any other serial terminal using the same port;
-- do not unplug/reset the Device solely for the diagnostic.
+Consequently this diagnostic is appropriate for auxiliary checks such as:
 
-## 4. Read one sanitized snapshot
+- steady-state screen mode;
+- LOCKED display before a Web connection, or after the system has intentionally returned to a steady state;
+- account-view / OTP-revealed coarse modes when the serial port can safely be released.
+
+It may **not** be suitable for simultaneously observing an active `UNLOCK REQUEST` while the Web app still owns the serial transport. Do not disconnect Web Serial solely to capture an unlock-request snapshot and then treat the resulting state as evidence of what existed before the disconnect.
+
+No Factory Reset, re-Provisioning, site-data/IndexedDB clearing, `erase-flash`, or eFuse operation is needed to transfer port ownership.
+
+## 4. Read one fresh sanitized snapshot
 
 From the repository root, use the read-only helper. Run it from the activated ESP-IDF Python environment so `pyserial` is available.
 
@@ -73,21 +78,33 @@ From the repository root, use the read-only helper. Run it from the activated ES
 python tools\diagnostics\screen_snapshot.py --port COM8
 ```
 
-The helper sends exactly one request:
+For every invocation the helper generates a fresh positive request ID in the Device parser's safe integer range and sends exactly one request with that ID, conceptually:
 
 ```json
-{"v":2,"id":9002,"op":"diagnostics.screen_snapshot","params":{}}
+{"v":2,"id":182736451,"op":"diagnostics.screen_snapshot","params":{}}
 ```
 
-It prints exactly one validated JSON response line, for example:
+The numeric ID above is only an example; it is **not fixed**. The Device echoes the current request ID in its response. The helper accepts a success only when `response.id` exactly matches the fresh ID generated for that invocation.
+
+Delayed/stale responses from previous helper runs therefore cannot become current test evidence. The helper may purge the input buffer as defense-in-depth, but freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID.
+
+A successful response is one validated JSON line such as:
 
 ```json
-{"v":2,"id":9002,"ok":true,"data":{"runtime_state":"locked","trusted_time_readiness":"not_synced","presence":{"active":false,"confirmed":false,"operation":"none"},"screen_mode":"open_web"}}
+{"v":2,"id":182736451,"ok":true,"data":{"runtime_state":"locked","trusted_time_readiness":"not_synced","presence":{"active":false,"confirmed":false,"operation":"none"},"screen_mode":"open_web"}}
 ```
 
-The snapshot represents the **last sanitized state committed by the LCD render transaction**. Protocol-side presence/time changes that have not yet been rendered are intentionally not reported early.
+The snapshot represents the **last sanitized state committed by a completed LCD render transaction**. Protocol-side presence/time changes that have not yet been rendered are intentionally not reported early.
 
-Repeated requests are read-only and do not start/cancel sessions or presence attempts and do not modify Vault, trusted time, UI selection, reveal deadline, or persistent generation.
+Before the first render has completed, including a UI task that has not started or failed to start, the Device must fail closed rather than return the default cache. The expected error shape is:
+
+```json
+{"v":2,"id":182736451,"ok":false,"error":{"code":"snapshot_not_ready"}}
+```
+
+`snapshot_not_ready` is a **FAIL / re-check condition**, not evidence for `unprovisioned`, `not_synced`, `open_web`, or any other default-looking screen state. Do not record it as a successful snapshot.
+
+Repeated diagnostic requests are read-only and do not start/cancel sessions or presence attempts and do not modify Vault, trusted time, UI selection, reveal deadline, or persistent generation. Port ownership changes outside the diagnostic request itself can still affect the existing Protocol v2 transport/session as described above.
 
 ## 5. #75 release acceptance remains default-OFF only
 
