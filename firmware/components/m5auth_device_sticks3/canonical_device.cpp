@@ -153,6 +153,16 @@ void CanonicalUiController::security_boundary_clear() {
     render();
 }
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+bool CanonicalUiController::screen_snapshot(ScreenSnapshot* output) const {
+    if (output == nullptr) return false;
+    std::lock_guard<std::mutex> view(view_mutex_);
+    if (!rendered_snapshot_ready_) return false;
+    *output = last_rendered_snapshot_;
+    return true;
+}
+#endif
+
 void CanonicalUiController::task_entry(void* context) {
     auto* controller = static_cast<CanonicalUiController*>(context);
     controller->run();
@@ -326,8 +336,31 @@ void CanonicalUiController::reveal_selected(std::uint64_t now_ms) {
 }
 
 void CanonicalUiController::render() {
+    // render() is called only while view_mutex_ is held. Capture the live
+    // externally synchronized inputs exactly once, use those same values for the
+    // physical LCD draw, and publish the sanitized snapshot only after drawing.
     const time::Snapshot time_status = time_service_.status();
     const PresenceView presence = presence_.view();
+
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    ScreenSnapshot rendered_snapshot{};
+    rendered_snapshot.runtime_state = runtime_state_;
+    rendered_snapshot.trusted_time_readiness = time_status.readiness;
+    rendered_snapshot.presence = presence;
+    if (presence.active) {
+        rendered_snapshot.screen_mode = ScreenMode::kUnlockRequest;
+    } else if (storage_error_) {
+        rendered_snapshot.screen_mode = ScreenMode::kVaultUnavailable;
+    } else if (!vault_visible_) {
+        rendered_snapshot.screen_mode = ScreenMode::kOpenWeb;
+    } else if (credentials_.empty()) {
+        rendered_snapshot.screen_mode = ScreenMode::kNoAccounts;
+    } else if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
+        rendered_snapshot.screen_mode = ScreenMode::kOtpRevealed;
+    } else {
+        rendered_snapshot.screen_mode = ScreenMode::kAccountView;
+    }
+#endif
 
     M5.Display.clear();
     prepare_readable_display();
@@ -346,58 +379,58 @@ void CanonicalUiController::render() {
             M5.Display.println("Press A to confirm");
             M5.Display.println("Expires in 30 sec");
         }
-        return;
+    } else {
+        M5.Display.printf("State: %s\n", runtime_state_text(runtime_state_));
+        M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
+
+        if (storage_error_) {
+            M5.Display.println("Vault unavailable");
+        } else if (!vault_visible_) {
+            M5.Display.println("Open Web app");
+        } else if (credentials_.empty()) {
+            M5.Display.println("No accounts");
+        } else {
+            const CredentialView& selected = credentials_[selected_index_];
+            std::string label = display_label(selected);
+            M5.Display.printf(
+                "%u / %u\n",
+                static_cast<unsigned>(selected_index_ + 1),
+                static_cast<unsigned>(credentials_.size())
+            );
+            M5.Display.println(label.c_str());
+            wipe_text(&label);
+
+            if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
+                char otp[7]{};
+                std::snprintf(
+                    otp,
+                    sizeof(otp),
+                    "%06lu",
+                    static_cast<unsigned long>(revealed_code_)
+                );
+                M5.Display.setTextSize(kOtpTextSize);
+                M5.Display.println(otp);
+                M5.Display.setTextSize(kReadableTextSize);
+                vault_runtime::secure_zero(otp, sizeof(otp));
+            } else {
+                if (last_generate_result_ != totp::GenerateResult::kOk &&
+                    last_generate_result_ != totp::GenerateResult::kNotSynced &&
+                    last_generate_result_ != totp::GenerateResult::kTimeStale) {
+                    M5.Display.println("OTP unavailable");
+                }
+                M5.Display.println("Click: next");
+                M5.Display.println("2x: previous");
+                M5.Display.println("Hold: reveal OTP");
+            }
+        }
     }
 
-    M5.Display.printf("State: %s\n", runtime_state_text(runtime_state_));
-    M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
-
-    if (storage_error_) {
-        M5.Display.println("Vault unavailable");
-        return;
-    }
-    if (!vault_visible_) {
-        M5.Display.println("Open Web app");
-        return;
-    }
-    if (credentials_.empty()) {
-        M5.Display.println("No accounts");
-        return;
-    }
-
-    const CredentialView& selected = credentials_[selected_index_];
-    std::string label = display_label(selected);
-    M5.Display.printf(
-        "%u / %u\n",
-        static_cast<unsigned>(selected_index_ + 1),
-        static_cast<unsigned>(credentials_.size())
-    );
-    M5.Display.println(label.c_str());
-    wipe_text(&label);
-
-    if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
-        char otp[7]{};
-        std::snprintf(
-            otp,
-            sizeof(otp),
-            "%06lu",
-            static_cast<unsigned long>(revealed_code_)
-        );
-        M5.Display.setTextSize(kOtpTextSize);
-        M5.Display.println(otp);
-        M5.Display.setTextSize(kReadableTextSize);
-        vault_runtime::secure_zero(otp, sizeof(otp));
-        return;
-    }
-
-    if (last_generate_result_ != totp::GenerateResult::kOk &&
-        last_generate_result_ != totp::GenerateResult::kNotSynced &&
-        last_generate_result_ != totp::GenerateResult::kTimeStale) {
-        M5.Display.println("OTP unavailable");
-    }
-    M5.Display.println("Click: next");
-    M5.Display.println("2x: previous");
-    M5.Display.println("Hold: reveal OTP");
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    // Commit only after all LCD writes above completed. view_mutex_ stays held by
+    // the caller, so readers can observe only a previous or this completed render.
+    last_rendered_snapshot_ = rendered_snapshot;
+    rendered_snapshot_ready_ = true;
+#endif
 }
 
 void CanonicalUiController::run() {

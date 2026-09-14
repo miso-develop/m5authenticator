@@ -13,6 +13,10 @@
 #include "m5auth/totp/generator.hpp"
 #include "m5auth/vault_runtime/runtime.hpp"
 
+#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT
+#define M5AUTH_TEST_SCREEN_SNAPSHOT 0
+#endif
+
 namespace m5auth::device::sticks3 {
 
 inline constexpr char kDeviceModel[] = "M5StickS3";
@@ -24,6 +28,26 @@ struct PresenceView {
     bool confirmed{false};
     session::PresenceOperation operation{session::PresenceOperation::kTrustedBrowserUnlock};
 };
+
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+enum class ScreenMode : std::uint8_t {
+    kUnlockRequest,
+    kVaultUnavailable,
+    kOpenWeb,
+    kNoAccounts,
+    kOtpRevealed,
+    kAccountView,
+};
+
+// Test-only diagnostics may copy this structure, but never the UI-private
+// credential strings, OTP value, selection index, reveal deadline, or key data.
+struct ScreenSnapshot {
+    vault_runtime::State runtime_state{vault_runtime::State::kUnprovisioned};
+    time::Readiness trusted_time_readiness{time::Readiness::kNotSynced};
+    PresenceView presence{};
+    ScreenMode screen_mode{ScreenMode::kOpenWeb};
+};
+#endif
 
 class CanonicalPresence final : public session::protocol_v2::PresenceBinding {
 public:
@@ -73,6 +97,13 @@ public:
     // and redraws before the security operation is allowed to return.
     void security_boundary_clear();
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    // Copies the last sanitized state committed by a completed render(). Returns
+    // false until the first LCD render has completed, so the default cache value
+    // can never be reported as test evidence.
+    bool screen_snapshot(ScreenSnapshot* output) const;
+#endif
+
 private:
     struct CredentialView {
         vault_runtime::CredentialId credential_id{};
@@ -115,6 +146,10 @@ private:
     std::uint64_t reveal_deadline_ms_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
     session::PresenceGestureQuarantine presence_gesture_quarantine_;
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    ScreenSnapshot last_rendered_snapshot_{};
+    bool rendered_snapshot_ready_{false};
+#endif
     TaskHandle_t task_{nullptr};
 };
 

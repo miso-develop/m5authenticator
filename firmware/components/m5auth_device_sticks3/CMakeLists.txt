@@ -11,3 +11,7 @@ idf_component_register(
         m5auth_vault_runtime
         esp_timer
 )
+
+if(M5AUTH_TEST_SCREEN_SNAPSHOT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TEST_SCREEN_SNAPSHOT=1)
+endif()

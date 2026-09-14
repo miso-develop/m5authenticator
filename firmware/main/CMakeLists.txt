@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_usb_serial_jtag
+        json
         m5auth_core
         m5auth_provisioning
         m5auth_device_sticks3
@@ -21,6 +22,10 @@ option(
 )
 if(M5AUTH_TIMING_DIAGNOSTICS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)
+endif()
+
+if(M5AUTH_TEST_SCREEN_SNAPSHOT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TEST_SCREEN_SNAPSHOT=1)
 endif()
 
 execute_process(
