@@ -98,10 +98,10 @@ public:
     void security_boundary_clear();
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-    // Read-only copy of the last sanitized state committed by render(). It does
-    // not consult live presence/time/runtime state, so diagnostics cannot get
-    // ahead of the physical LCD render transaction.
-    ScreenSnapshot screen_snapshot() const;
+    // Copies the last sanitized state committed by a completed render(). Returns
+    // false until the first LCD render has completed, so the default cache value
+    // can never be reported as test evidence.
+    bool screen_snapshot(ScreenSnapshot* output) const;
 #endif
 
 private:
@@ -148,6 +148,7 @@ private:
     session::PresenceGestureQuarantine presence_gesture_quarantine_;
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
     ScreenSnapshot last_rendered_snapshot_{};
+    bool rendered_snapshot_ready_{false};
 #endif
     TaskHandle_t task_{nullptr};
 };
