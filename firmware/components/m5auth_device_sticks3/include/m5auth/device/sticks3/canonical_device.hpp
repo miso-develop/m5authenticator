@@ -25,6 +25,24 @@ struct PresenceView {
     session::PresenceOperation operation{session::PresenceOperation::kTrustedBrowserUnlock};
 };
 
+enum class ScreenMode : std::uint8_t {
+    kUnlockRequest,
+    kVaultUnavailable,
+    kOpenWeb,
+    kNoAccounts,
+    kOtpRevealed,
+    kAccountView,
+};
+
+// Test-only diagnostics may copy this structure, but never the UI-private
+// credential strings, OTP value, selection index, reveal deadline, or key data.
+struct ScreenSnapshot {
+    vault_runtime::State runtime_state{vault_runtime::State::kUnprovisioned};
+    time::Readiness trusted_time_readiness{time::Readiness::kNotSynced};
+    PresenceView presence{};
+    ScreenMode screen_mode{ScreenMode::kOpenWeb};
+};
+
 class CanonicalPresence final : public session::protocol_v2::PresenceBinding {
 public:
     bool begin_presence(
@@ -72,6 +90,10 @@ public:
     // Runtime state. It wipes decrypted account labels/IDs and OTP reveal state
     // and redraws before the security operation is allowed to return.
     void security_boundary_clear();
+
+    // Read-only, allowlist-only view of the coarse state currently represented
+    // by the screen. No credential text or OTP value is copied into the result.
+    ScreenSnapshot screen_snapshot() const;
 
 private:
     struct CredentialView {
