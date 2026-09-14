@@ -7,11 +7,34 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SDKCONFIG = ROOT / "firmware" / "sdkconfig.defaults"
+PARTITIONS = ROOT / "firmware" / "partitions.csv"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
+REGISTRATION_CPP = ROOT / "firmware" / "components" / "m5auth_registration" / "registration.cpp"
+VAULT_PERSISTENCE_CPP = ROOT / "firmware" / "components" / "m5auth_vault_runtime" / "nvs_persistence.cpp"
+VAULT_RUNTIME_CPP = ROOT / "firmware" / "components" / "m5auth_vault_runtime" / "runtime.cpp"
+
+
+def parse_partition_table() -> dict[str, tuple[str, str, int, int]]:
+    entries: dict[str, tuple[str, str, int, int]] = {}
+    for raw_line in PARTITIONS.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) < 5:
+            raise AssertionError(f"invalid partition row: {raw_line}")
+        name, partition_type, subtype, offset_text, size_text = fields[:5]
+        entries[name] = (
+            partition_type,
+            subtype,
+            int(offset_text, 0),
+            int(size_text, 0),
+        )
+    return entries
 
 
 class StickS3RuntimeContractTests(unittest.TestCase):
@@ -108,6 +131,59 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());", text)
         self.assertIn("M5.BtnA.wasDecideClickCount()", text)
         self.assertIn("!presence_gesture_quarantine_.active()", text)
+
+    def test_issue_107_normal_update_preserves_registration_and_vault_partitions(self) -> None:
+        partition_text = PARTITIONS.read_text(encoding="utf-8")
+        sdkconfig = SDKCONFIG.read_text(encoding="utf-8")
+        entries = parse_partition_table()
+
+        self.assertIn("# NORMAL_UPDATE_PRESERVE: nvs,auth_nvs", partition_text)
+        self.assertIn("CONFIG_PARTITION_TABLE_CUSTOM=y", sdkconfig)
+        self.assertIn('CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"', sdkconfig)
+        self.assertEqual(("data", "nvs", 0x9000, 0x6000), entries["nvs"])
+        self.assertEqual(("data", "nvs", 0x7D0000, 0x30000), entries["auth_nvs"])
+
+        for persistent_name in ("nvs", "auth_nvs"):
+            _, _, persistent_start, persistent_size = entries[persistent_name]
+            persistent_end = persistent_start + persistent_size
+            for app_name in ("ota_0", "ota_1"):
+                _, _, app_start, app_size = entries[app_name]
+                app_end = app_start + app_size
+                self.assertTrue(
+                    app_end <= persistent_start or persistent_end <= app_start,
+                    f"{app_name} overlaps persistent partition {persistent_name}",
+                )
+
+    def test_issue_107_registration_identity_stays_in_ordinary_nvs(self) -> None:
+        registration = REGISTRATION_CPP.read_text(encoding="utf-8")
+
+        self.assertIn('constexpr char kNamespace[] = "m5auth_reg2";', registration)
+        self.assertIn("const esp_err_t nvs_status = nvs_flash_init();", registration)
+        self.assertIn("nvs_open(kNamespace, mode, handle)", registration)
+        self.assertIn("separate from the dedicated auth_nvs encrypted-Vault replica", registration)
+        self.assertNotIn("nvs_open_from_partition", registration)
+        self.assertNotIn("nvs_flash_init_partition", registration)
+
+    def test_issue_107_canonical_vault_stays_in_auth_nvs(self) -> None:
+        persistence = VAULT_PERSISTENCE_CPP.read_text(encoding="utf-8")
+
+        self.assertIn('constexpr char kPartitionLabel[] = "auth_nvs";', persistence)
+        self.assertIn("nvs_flash_init_partition(kPartitionLabel)", persistence)
+        self.assertIn("nvs_open_from_partition(", persistence)
+        self.assertIn("kPartitionLabel, kNamespace, mode, handle", persistence)
+
+    def test_issue_107_reboot_with_persisted_vault_starts_locked_without_vmk(self) -> None:
+        runtime = VAULT_RUNTIME_CPP.read_text(encoding="utf-8")
+        start = runtime.index("Status Runtime::initialize()")
+        end = runtime.index("\nStatus Runtime::reload_after_persistence()", start)
+        initialize = runtime[start:end]
+
+        self.assertIn("wipe_vmk();", initialize)
+        self.assertIn("if (!snapshot.has_vault) return Status::kUnprovisioned;", initialize)
+        self.assertIn("has_vault_ = true;", initialize)
+        self.assertIn("state_ = State::kLocked;", initialize)
+        self.assertNotIn("State::kUnlocked", initialize)
+        self.assertLess(initialize.index("has_vault_ = true;"), initialize.index("state_ = State::kLocked;"))
 
     def test_issue_86_timing_diagnostics_are_compiled_but_runtime_gated_and_default_off(self) -> None:
         cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
