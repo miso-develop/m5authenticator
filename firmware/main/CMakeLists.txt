@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_usb_serial_jtag
+        json
         m5auth_core
         m5auth_provisioning
         m5auth_device_sticks3
