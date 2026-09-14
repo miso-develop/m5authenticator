@@ -136,6 +136,11 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
         ]
         self.assertEqual(222, self.read(lines)["id"])
 
+    def test_malformed_current_id_response_fails_closed(self) -> None:
+        current_malformed = b'{"v":2,"id":222,"ok":true,broken\n'
+        with self.assertRaisesRegex(RuntimeError, "current diagnostic response is malformed"):
+            self.read([current_malformed, self.line(self.valid_response(222))])
+
     def test_case_d_current_id_error_is_explicit_failure(self) -> None:
         error = {
             "v": 2,
@@ -166,7 +171,8 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
             b'"screen_mode":"open_web"}}\n'
         )
         current = self.line(self.valid_response(222))
-        self.assertEqual(222, self.read([duplicate, current])["id"])
+        with self.assertRaisesRegex(RuntimeError, "current diagnostic response is malformed"):
+            self.read([duplicate, current])
 
     def test_valid_allowlisted_response_is_accepted_only_for_expected_id(self) -> None:
         response = self.valid_response(222)
