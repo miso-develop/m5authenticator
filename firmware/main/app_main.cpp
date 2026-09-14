@@ -35,6 +35,10 @@
 #define M5AUTH_TIMING_DIAGNOSTICS 0
 #endif
 
+#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT
+#define M5AUTH_TEST_SCREEN_SNAPSHOT 0
+#endif
+
 namespace {
 
 std::uint64_t monotonic_ms() {
@@ -51,6 +55,7 @@ void teardown_transport_session(
 }
 
 constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
+constexpr bool kTestScreenSnapshotEnabled = M5AUTH_TEST_SCREEN_SNAPSHOT == 1;
 constexpr std::uint32_t kTimingRtcMagic = 0x4d354438U;  // "M5D8"
 constexpr std::size_t kTimingBuildBytes = 16;
 
@@ -381,6 +386,92 @@ std::string timing_diagnostics_response() {
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+constexpr std::string_view kScreenSnapshotRequest = R"({"v":2,"id":9002,"op":"diagnostics.screen_snapshot","params":{}})";
+
+bool is_screen_snapshot_query(std::string_view line) {
+    return kTestScreenSnapshotEnabled && line == kScreenSnapshotRequest;
+}
+
+const char* screen_snapshot_runtime_state(m5auth::vault_runtime::State state) {
+    switch (state) {
+        case m5auth::vault_runtime::State::kUnprovisioned: return "unprovisioned";
+        case m5auth::vault_runtime::State::kReprovisionRequired: return "reprovision_required";
+        case m5auth::vault_runtime::State::kLocked: return "locked";
+        case m5auth::vault_runtime::State::kUnlocked: return "unlocked";
+        case m5auth::vault_runtime::State::kError: return "error";
+    }
+    return "error";
+}
+
+const char* screen_snapshot_time_readiness(m5auth::time::Readiness readiness) {
+    switch (readiness) {
+        case m5auth::time::Readiness::kNotSynced: return "not_synced";
+        case m5auth::time::Readiness::kReady: return "ready";
+        case m5auth::time::Readiness::kStale: return "stale";
+    }
+    return "not_synced";
+}
+
+const char* screen_snapshot_presence_operation(m5auth::session::PresenceOperation operation) {
+    switch (operation) {
+        case m5auth::session::PresenceOperation::kTrustedBrowserUnlock:
+            return "trusted_browser_unlock";
+        case m5auth::session::PresenceOperation::kInitialProvisioning:
+            return "initial_provisioning";
+        case m5auth::session::PresenceOperation::kRecovery:
+            return "recovery";
+        case m5auth::session::PresenceOperation::kBrowserReplacement:
+            return "browser_replacement";
+        case m5auth::session::PresenceOperation::kVmkRekey:
+            return "vmk_rekey";
+        case m5auth::session::PresenceOperation::kFactoryReset:
+            return "factory_reset";
+    }
+    return "none";
+}
+
+const char* screen_snapshot_mode(m5auth::device::sticks3::ScreenMode mode) {
+    switch (mode) {
+        case m5auth::device::sticks3::ScreenMode::kUnlockRequest: return "unlock_request";
+        case m5auth::device::sticks3::ScreenMode::kVaultUnavailable: return "vault_unavailable";
+        case m5auth::device::sticks3::ScreenMode::kOpenWeb: return "open_web";
+        case m5auth::device::sticks3::ScreenMode::kNoAccounts: return "no_accounts";
+        case m5auth::device::sticks3::ScreenMode::kOtpRevealed: return "otp_revealed";
+        case m5auth::device::sticks3::ScreenMode::kAccountView: return "account_view";
+    }
+    return "open_web";
+}
+
+std::string screen_snapshot_response(
+    const m5auth::device::sticks3::ScreenSnapshot& snapshot
+) {
+    std::array<char, 512> buffer{};
+    const char* const presence_operation = snapshot.presence.active
+        ? screen_snapshot_presence_operation(snapshot.presence.operation)
+        : "none";
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "{\"v\":2,\"id\":9002,\"ok\":true,\"data\":{"
+        "\"runtime_state\":\"%s\","
+        "\"trusted_time_readiness\":\"%s\","
+        "\"presence\":{\"active\":%s,\"confirmed\":%s,\"operation\":\"%s\"},"
+        "\"screen_mode\":\"%s\"}}",
+        screen_snapshot_runtime_state(snapshot.runtime_state),
+        screen_snapshot_time_readiness(snapshot.trusted_time_readiness),
+        snapshot.presence.active ? "true" : "false",
+        snapshot.presence.confirmed ? "true" : "false",
+        presence_operation,
+        screen_snapshot_mode(snapshot.screen_mode)
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
+        return R"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})";
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
+}
+#endif
+
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -536,6 +627,16 @@ extern "C" void app_main(void) {
             write_response(timing_diagnostics_response());
             continue;
         }
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+        if (is_screen_snapshot_query(request)) {
+            const auto snapshot = ui.screen_snapshot();
+            const std::string response = screen_snapshot_response(snapshot);
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            write_response(response);
+            continue;
+        }
+#endif
         const TimingOperation timing_operation = kTimingDiagnosticsEnabled
             ? classify_timing_operation(request)
             : TimingOperation::kNone;
