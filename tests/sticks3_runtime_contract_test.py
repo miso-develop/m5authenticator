@@ -162,6 +162,19 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         )
         self.assertIn('case TimingOperation::kSessionStatus: return "session.status";', app)
 
+    def test_issue_86_response_writer_drains_usb_vfs_after_stdio_flush(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        start = app.index("void write_response(")
+        end = app.index("\nstd::string timing_diagnostics_response()", start)
+        writer = app[start:end]
+
+        self.assertIn("#include <unistd.h>", app)
+        self.assertEqual(1, writer.count("::fsync(STDOUT_FILENO)"))
+        self.assertLess(writer.index("std::fwrite("), writer.index("std::fputc('\\n', stdout)"))
+        self.assertLess(writer.index("std::fputc('\\n', stdout)"), writer.index("std::fflush(stdout)"))
+        self.assertLess(writer.index("std::fflush(stdout)"), writer.index("::fsync(STDOUT_FILENO)"))
+        self.assertLess(writer.index("::fsync(STDOUT_FILENO)"), writer.index("std::ferror(stdout)"))
+
     def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
 
