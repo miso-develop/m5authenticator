@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/device/sticks3/canonical_device.hpp"
 #include "m5auth/provisioning/canonical_protocol_v2.hpp"
@@ -34,6 +35,10 @@
 #define M5AUTH_TIMING_DIAGNOSTICS 0
 #endif
 
+#ifndef M5AUTH_TX_BOUNDARY_DIAGNOSTICS
+#define M5AUTH_TX_BOUNDARY_DIAGNOSTICS 0
+#endif
+
 namespace {
 
 std::uint64_t monotonic_ms() {
@@ -50,7 +55,9 @@ void teardown_transport_session(
 }
 
 constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
+constexpr bool kTxBoundaryDiagnosticsEnabled = M5AUTH_TX_BOUNDARY_DIAGNOSTICS == 1;
 constexpr std::uint32_t kTimingRtcMagic = 0x4d354438U;  // "M5D8"
+constexpr std::uint32_t kTxBoundaryRtcMagic = 0x4d355458U;  // "M5TX"
 constexpr std::size_t kTimingBuildBytes = 16;
 
 enum class TimingOperation {
@@ -61,6 +68,16 @@ enum class TimingOperation {
     kSessionComplete,
     kVaultInstall,
     kHello,
+};
+
+enum class TxBoundaryStage : std::uint64_t {
+    kNone = 0,
+    kStatusReceived = 1,
+    kHandlerComplete = 2,
+    kInputWiped = 3,
+    kFwriteComplete = 4,
+    kNewlineComplete = 5,
+    kFlushComplete = 6,
 };
 
 struct TimingSample {
@@ -98,7 +115,37 @@ struct RtcTimingDiagnostics {
     std::uint32_t magic_tail;
 };
 
+struct RtcTxBoundaryDiagnostics {
+    std::uint32_t magic;
+    char build[kTimingBuildBytes];
+    std::uint64_t count;
+    std::uint64_t stage;
+    std::uint64_t handler_us;
+    std::uint64_t input_wipe_us;
+    std::uint64_t fwrite_us;
+    std::uint64_t newline_us;
+    std::uint64_t fflush_us;
+    std::uint64_t total_write_us;
+    std::uint64_t response_bytes;
+    std::uint64_t fwrite_bytes;
+    std::uint64_t newline_ok;
+    std::uint64_t fflush_ok;
+    std::uint64_t ferror_value;
+    std::uint64_t connected_before_write;
+    std::uint64_t connected_after_fwrite;
+    std::uint64_t connected_after_newline;
+    std::uint64_t connected_after_flush;
+    std::uint64_t txfifo_before_write;
+    std::uint64_t txfifo_after_fwrite;
+    std::uint64_t txfifo_after_newline;
+    std::uint64_t txfifo_after_flush;
+    std::uint64_t stack_hwm_before_write;
+    std::uint64_t stack_hwm_after_flush;
+    std::uint32_t magic_tail;
+};
+
 RTC_NOINIT_ATTR RtcTimingDiagnostics g_rtc_timing_diagnostics;
+RTC_NOINIT_ATTR RtcTxBoundaryDiagnostics g_rtc_tx_boundary_diagnostics;
 TimingDiagnostics g_timing_diagnostics{};
 
 bool timing_rtc_build_matches() {
@@ -113,6 +160,57 @@ bool timing_rtc_build_matches() {
         expected.data(),
         expected.size()
     ) == 0;
+}
+
+bool tx_boundary_rtc_build_matches() {
+    if (g_rtc_tx_boundary_diagnostics.magic != kTxBoundaryRtcMagic ||
+        g_rtc_tx_boundary_diagnostics.magic_tail != ~kTxBoundaryRtcMagic) {
+        return false;
+    }
+    std::array<char, kTimingBuildBytes> expected{};
+    std::snprintf(expected.data(), expected.size(), "%s", M5AUTH_BUILD_COMMIT);
+    return std::memcmp(
+        g_rtc_tx_boundary_diagnostics.build,
+        expected.data(),
+        expected.size()
+    ) == 0;
+}
+
+void initialize_tx_boundary_snapshot() {
+    if (!kTxBoundaryDiagnosticsEnabled || tx_boundary_rtc_build_matches()) return;
+    std::memset(&g_rtc_tx_boundary_diagnostics, 0, sizeof(g_rtc_tx_boundary_diagnostics));
+    g_rtc_tx_boundary_diagnostics.magic = kTxBoundaryRtcMagic;
+    std::snprintf(
+        g_rtc_tx_boundary_diagnostics.build,
+        sizeof(g_rtc_tx_boundary_diagnostics.build),
+        "%s",
+        M5AUTH_BUILD_COMMIT
+    );
+    g_rtc_tx_boundary_diagnostics.magic_tail = ~kTxBoundaryRtcMagic;
+}
+
+void begin_tx_boundary_status() {
+    if (!kTxBoundaryDiagnosticsEnabled) return;
+    const std::uint64_t next_count = g_rtc_tx_boundary_diagnostics.count + 1;
+    std::memset(&g_rtc_tx_boundary_diagnostics, 0, sizeof(g_rtc_tx_boundary_diagnostics));
+    g_rtc_tx_boundary_diagnostics.magic = kTxBoundaryRtcMagic;
+    std::snprintf(
+        g_rtc_tx_boundary_diagnostics.build,
+        sizeof(g_rtc_tx_boundary_diagnostics.build),
+        "%s",
+        M5AUTH_BUILD_COMMIT
+    );
+    g_rtc_tx_boundary_diagnostics.count = next_count;
+    g_rtc_tx_boundary_diagnostics.stage = static_cast<std::uint64_t>(TxBoundaryStage::kStatusReceived);
+    g_rtc_tx_boundary_diagnostics.magic_tail = ~kTxBoundaryRtcMagic;
+}
+
+std::uint64_t elapsed_us(std::int64_t started_us) {
+    if (started_us <= 0) return 0;
+    const std::int64_t finished_us = esp_timer_get_time();
+    return finished_us >= started_us
+        ? static_cast<std::uint64_t>(finished_us - started_us)
+        : 0;
 }
 
 void persist_timing_diagnostics_to_rtc() {
@@ -225,6 +323,14 @@ bool is_timing_diagnostics_query(std::string_view line) {
         line.find("\"params\":{}") != std::string_view::npos;
 }
 
+bool is_tx_boundary_diagnostics_query(std::string_view line) {
+    if (!kTxBoundaryDiagnosticsEnabled || line.size() > 176) return false;
+    return line.find("\"v\":2") != std::string_view::npos &&
+        line.find("\"id\":9002") != std::string_view::npos &&
+        line.find("\"op\":\"diagnostics.tx_boundary\"") != std::string_view::npos &&
+        line.find("\"params\":{}") != std::string_view::npos;
+}
+
 TimingOperation classify_timing_operation(std::string_view line) {
     if (line.find("\"op\":\"session.begin\"") != std::string_view::npos) {
         return TimingOperation::kSessionBegin;
@@ -285,10 +391,10 @@ bool record_timing(TimingOperation operation, std::int64_t started_us) {
     if (sample == nullptr || started_us <= 0) return false;
     const std::int64_t finished_us = esp_timer_get_time();
     if (finished_us < started_us) return false;
-    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    const auto elapsed = static_cast<std::uint64_t>(finished_us - started_us);
     ++sample->count;
-    sample->last_us = elapsed_us;
-    sample->max_us = std::max(sample->max_us, elapsed_us);
+    sample->last_us = elapsed;
+    sample->max_us = std::max(sample->max_us, elapsed);
     return true;
 }
 
@@ -297,22 +403,74 @@ void write_response(
     TimingOperation operation = TimingOperation::kNone
 ) {
     const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
+    const bool tx_probe = kTxBoundaryDiagnosticsEnabled &&
+        operation == TimingOperation::kSessionStatus;
     const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
+    const std::int64_t total_write_started_us = tx_probe ? esp_timer_get_time() : 0;
 
+    if (tx_probe) {
+        g_rtc_tx_boundary_diagnostics.response_bytes = response.size();
+        g_rtc_tx_boundary_diagnostics.connected_before_write =
+            usb_serial_jtag_is_connected() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.txfifo_before_write =
+            usb_serial_jtag_ll_txfifo_writable() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.stack_hwm_before_write =
+            static_cast<std::uint64_t>(uxTaskGetStackHighWaterMark(nullptr));
+    }
+
+    const std::int64_t fwrite_started_us = tx_probe ? esp_timer_get_time() : 0;
     const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
+    if (tx_probe) {
+        g_rtc_tx_boundary_diagnostics.fwrite_us = elapsed_us(fwrite_started_us);
+        g_rtc_tx_boundary_diagnostics.fwrite_bytes = fwrite_bytes;
+        g_rtc_tx_boundary_diagnostics.connected_after_fwrite =
+            usb_serial_jtag_is_connected() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.txfifo_after_fwrite =
+            usb_serial_jtag_ll_txfifo_writable() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.stage =
+            static_cast<std::uint64_t>(TxBoundaryStage::kFwriteComplete);
+    }
+
+    const std::int64_t newline_started_us = tx_probe ? esp_timer_get_time() : 0;
     const int newline_result = std::fputc('\n', stdout);
+    if (tx_probe) {
+        g_rtc_tx_boundary_diagnostics.newline_us = elapsed_us(newline_started_us);
+        g_rtc_tx_boundary_diagnostics.newline_ok = newline_result == '\n' ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.connected_after_newline =
+            usb_serial_jtag_is_connected() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.txfifo_after_newline =
+            usb_serial_jtag_ll_txfifo_writable() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.stage =
+            static_cast<std::uint64_t>(TxBoundaryStage::kNewlineComplete);
+    }
+
+    const std::int64_t fflush_started_us = tx_probe ? esp_timer_get_time() : 0;
     const int fflush_result = std::fflush(stdout);
     const int ferror_value = std::ferror(stdout);
+    if (tx_probe) {
+        g_rtc_tx_boundary_diagnostics.fflush_us = elapsed_us(fflush_started_us);
+        g_rtc_tx_boundary_diagnostics.total_write_us = elapsed_us(total_write_started_us);
+        g_rtc_tx_boundary_diagnostics.fflush_ok = fflush_result == 0 ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.ferror_value = ferror_value == 0 ? 0 : 1;
+        g_rtc_tx_boundary_diagnostics.connected_after_flush =
+            usb_serial_jtag_is_connected() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.txfifo_after_flush =
+            usb_serial_jtag_ll_txfifo_writable() ? 1 : 0;
+        g_rtc_tx_boundary_diagnostics.stack_hwm_after_flush =
+            static_cast<std::uint64_t>(uxTaskGetStackHighWaterMark(nullptr));
+        g_rtc_tx_boundary_diagnostics.stage =
+            static_cast<std::uint64_t>(TxBoundaryStage::kFlushComplete);
+    }
 
     if (!measure || started_us <= 0) return;
     const std::int64_t finished_us = esp_timer_get_time();
     if (finished_us < started_us) return;
 
-    const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
+    const auto elapsed = static_cast<std::uint64_t>(finished_us - started_us);
     auto& sample = g_timing_diagnostics.response_write;
     ++sample.count;
-    sample.last_us = elapsed_us;
-    sample.max_us = std::max(sample.max_us, elapsed_us);
+    sample.last_us = elapsed;
+    sample.max_us = std::max(sample.max_us, elapsed);
     sample.operation = static_cast<std::uint64_t>(operation);
     sample.response_bytes = response.size();
     sample.fwrite_ok = fwrite_bytes == response.size() ? 1 : 0;
@@ -376,6 +534,53 @@ std::string timing_diagnostics_response() {
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
+std::string tx_boundary_diagnostics_response() {
+    std::array<char, 1600> buffer{};
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "{\"v\":2,\"id\":9002,\"ok\":true,\"data\":{"
+        "\"count\":%llu,\"stage\":%llu,\"handler_us\":%llu,\"input_wipe_us\":%llu,"
+        "\"fwrite_us\":%llu,\"newline_us\":%llu,\"fflush_us\":%llu,"
+        "\"total_write_us\":%llu,\"response_bytes\":%llu,\"fwrite_bytes\":%llu,"
+        "\"newline_ok\":%llu,\"fflush_ok\":%llu,\"ferror\":%llu,"
+        "\"connected_before_write\":%llu,\"connected_after_fwrite\":%llu,"
+        "\"connected_after_newline\":%llu,\"connected_after_flush\":%llu,"
+        "\"txfifo_before_write\":%llu,\"txfifo_after_fwrite\":%llu,"
+        "\"txfifo_after_newline\":%llu,\"txfifo_after_flush\":%llu,"
+        "\"stack_hwm_before_write\":%llu,\"stack_hwm_after_flush\":%llu,"
+        "\"reset_reason\":%d}}",
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.count),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.stage),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.handler_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.input_wipe_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.fwrite_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.newline_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.fflush_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.total_write_us),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.response_bytes),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.fwrite_bytes),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.newline_ok),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.fflush_ok),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.ferror_value),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.connected_before_write),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.connected_after_fwrite),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.connected_after_newline),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.connected_after_flush),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.txfifo_before_write),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.txfifo_after_fwrite),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.txfifo_after_newline),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.txfifo_after_flush),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.stack_hwm_before_write),
+        static_cast<unsigned long long>(g_rtc_tx_boundary_diagnostics.stack_hwm_after_flush),
+        static_cast<int>(esp_reset_reason())
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
+        return R"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})";
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
+}
+
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -390,6 +595,7 @@ extern "C" void app_main(void) {
     m5auth::registration::Store registration;
     (void)registration.initialize();
     initialize_timing_diagnostics_persistence();
+    initialize_tx_boundary_snapshot();
 
     m5auth::vault_runtime::CompatibleNvsPersistence persistence;
     m5auth::vault_runtime::Runtime runtime(persistence);
@@ -531,27 +737,56 @@ extern "C" void app_main(void) {
             write_response(timing_diagnostics_response());
             continue;
         }
-        const TimingOperation timing_operation = kTimingDiagnosticsEnabled
+        if (is_tx_boundary_diagnostics_query(request)) {
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            write_response(tx_boundary_diagnostics_response());
+            continue;
+        }
+
+        const TimingOperation classified_operation =
+            (kTimingDiagnosticsEnabled || kTxBoundaryDiagnosticsEnabled)
             ? classify_timing_operation(request)
             : TimingOperation::kNone;
-        const std::int64_t timing_started_us = timing_operation == TimingOperation::kNone
-            ? 0
-            : esp_timer_get_time();
+        const std::int64_t timing_started_us =
+            kTimingDiagnosticsEnabled && classified_operation != TimingOperation::kNone
+            ? esp_timer_get_time()
+            : 0;
+        const bool tx_probe_status = kTxBoundaryDiagnosticsEnabled &&
+            classified_operation == TimingOperation::kSessionStatus;
+        const std::int64_t tx_handler_started_us = tx_probe_status
+            ? esp_timer_get_time()
+            : 0;
+        if (tx_probe_status) begin_tx_boundary_status();
 
         const std::string response = protocol.handle_line(
             request,
             monotonic_ms()
         );
 
+        if (tx_probe_status) {
+            g_rtc_tx_boundary_diagnostics.handler_us = elapsed_us(tx_handler_started_us);
+            g_rtc_tx_boundary_diagnostics.stage =
+                static_cast<std::uint64_t>(TxBoundaryStage::kHandlerComplete);
+        }
+
         const bool timing_recorded = kTimingDiagnosticsEnabled
-            ? record_timing(timing_operation, timing_started_us)
+            ? record_timing(classified_operation, timing_started_us)
             : false;
         if (timing_recorded) {
             persist_timing_diagnostics_to_rtc();
         }
 
+        const std::int64_t tx_wipe_started_us = tx_probe_status
+            ? esp_timer_get_time()
+            : 0;
         m5auth::vault_runtime::secure_zero(input.data(), input.size());
+        if (tx_probe_status) {
+            g_rtc_tx_boundary_diagnostics.input_wipe_us = elapsed_us(tx_wipe_started_us);
+            g_rtc_tx_boundary_diagnostics.stage =
+                static_cast<std::uint64_t>(TxBoundaryStage::kInputWiped);
+        }
         buffered_input = 0;
-        write_response(response, timing_operation);
+        write_response(response, classified_operation);
     }
 }
