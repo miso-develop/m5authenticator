@@ -65,6 +65,7 @@ jobs:
             --require-production
           mkdir -p web/public/firmware
           cp /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin web/public/firmware/
+          cp /tmp/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin web/public/firmware/
           cp /tmp/m5auth-release/factory-manifest.json web/public/firmware/
           cp /tmp/m5auth-release/update-manifest.json web/public/firmware/
           cp /tmp/m5auth-release/release-metadata.json web/public/firmware/
