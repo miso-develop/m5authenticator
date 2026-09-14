@@ -33,6 +33,7 @@ jobs:
           tests/screen_snapshot_runtime_contract_test.py
           tests/screen_snapshot_security_contract_test.py
           tests/screen_snapshot_host_helper_test.py
+          tests/screen_snapshot_usage_contract_test.py
       - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
         run: >-
           docker run --rm
