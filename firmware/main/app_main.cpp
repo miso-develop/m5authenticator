@@ -422,29 +422,22 @@ ScreenSnapshotRequestParse parse_screen_snapshot_request(std::string_view line) 
     if (!kTestScreenSnapshotEnabled) return {};
 
     const bool raw_intent_hint = screen_snapshot_intent_hint(line);
-    const char* parse_end = nullptr;
-    cJSON* root = cJSON_ParseWithLengthOpts(
-        line.data(),
-        line.size(),
-        &parse_end,
-        false
-    );
-    if (root == nullptr) {
-        return raw_intent_hint
-            ? ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0}
-            : ScreenSnapshotRequestParse{};
-    }
+    if (!raw_intent_hint) return {};
 
-    const char* const input_end = line.data() + line.size();
-    while (parse_end != nullptr && parse_end < input_end &&
-           (*parse_end == ' ' || *parse_end == '\t' || *parse_end == '\r' || *parse_end == '\n')) {
-        ++parse_end;
-    }
-    if (parse_end == nullptr || parse_end != input_end || !cJSON_IsObject(root)) {
-        cJSON_Delete(root);
-        return raw_intent_hint
-            ? ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0}
-            : ScreenSnapshotRequestParse{};
+    // Only diagnostic candidates are copied/parsed here. Ordinary Protocol-v2
+    // requests, which may contain sensitive payloads, never enter this parser.
+    // The explicit NUL-terminated copy avoids cJSON version-dependent end-pointer
+    // behavior for non-NUL-terminated string_view buffers.
+    const std::string diagnostic_json(line);
+    cJSON* root = cJSON_ParseWithLengthOpts(
+        diagnostic_json.c_str(),
+        diagnostic_json.size() + 1,
+        nullptr,
+        true
+    );
+    if (root == nullptr || !cJSON_IsObject(root)) {
+        if (root != nullptr) cJSON_Delete(root);
+        return ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0};
     }
 
     bool diagnostic_intent = false;
@@ -458,7 +451,7 @@ ScreenSnapshotRequestParse parse_screen_snapshot_request(std::string_view line) 
     }
     if (!diagnostic_intent) {
         cJSON_Delete(root);
-        return {};
+        return ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0};
     }
 
     bool seen_v = false;
