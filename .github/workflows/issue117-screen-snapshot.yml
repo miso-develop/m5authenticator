@@ -9,6 +9,7 @@ on:
       - "firmware/components/m5auth_time/**"
       - "firmware/components/m5auth_session/**"
       - "tests/screen_snapshot_*"
+      - "tools/diagnostics/screen_snapshot.py"
       - "docs/testing/screen-snapshot-diagnostics.md"
       - ".github/workflows/issue117-screen-snapshot.yml"
       - ".github/workflows/security.yml"
