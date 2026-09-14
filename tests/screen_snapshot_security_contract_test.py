@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware/main/app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware/main/CMakeLists.txt"
+DEVICE_HEADER = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/canonical_device.hpp"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
 
@@ -50,11 +51,49 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
         self.assertLess(guard, first)
         self.assertGreater(end, first)
 
-    def test_response_surface_contains_no_secret_bearing_json_keys(self) -> None:
+    def test_snapshot_structure_is_an_exact_allowlist(self) -> None:
+        header = DEVICE_HEADER.read_text(encoding="utf-8")
+        start = header.index("struct ScreenSnapshot {")
+        end = header.index("\n};", start)
+        fields = [
+            line.strip()
+            for line in header[start:end].splitlines()[1:]
+            if line.strip() and not line.lstrip().startswith("//")
+        ]
+        self.assertEqual(
+            [
+                "vault_runtime::State runtime_state{vault_runtime::State::kUnprovisioned};",
+                "time::Readiness trusted_time_readiness{time::Readiness::kNotSynced};",
+                "PresenceView presence{};",
+                "ScreenMode screen_mode{ScreenMode::kOpenWeb};",
+            ],
+            fields,
+        )
+
+    def test_response_surface_is_an_exact_json_key_allowlist(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
         start = app.index("std::string screen_snapshot_response(")
         end = app.index("\n#endif", start)
         response = app[start:end].lower()
+        keys = set(re.findall(r'\\\"([a-z_]+)\\\"\s*:', response))
+        self.assertEqual(
+            {
+                "v",
+                "id",
+                "ok",
+                "data",
+                "runtime_state",
+                "trusted_time_readiness",
+                "presence",
+                "active",
+                "confirmed",
+                "operation",
+                "screen_mode",
+                "error",
+                "code",
+            },
+            keys,
+        )
         for forbidden_key in (
             "device_id",
             "attempt_id",
