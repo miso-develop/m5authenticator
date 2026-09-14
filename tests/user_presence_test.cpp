@@ -44,8 +44,9 @@ int main() {
         assert(!gate.consume_confirmation(first, 1'104));
     }
 
-    // #114 regression 1: a prior input generation is only a baseline. A new
-    // attempt cannot be confirmed until a generation newer than begin().
+    // #114 regression 1: a prior input generation is only a baseline. A stale
+    // generation consumes no authorization, and the sampled edge used with it
+    // cannot later be upgraded by advancing only the generation counter.
     {
         UserPresenceGate gate;
         assert(gate.begin(PresenceOperation::kTrustedBrowserUnlock, first, 10'000, 100));
@@ -55,8 +56,12 @@ int main() {
         gate.observe_input_state(true);
         assert(!gate.confirm_current(10'001, 100));
         assert(gate.state() == PresenceState::kAwaiting);
-        assert(gate.confirm_current(10'002, 101));
-        assert(gate.consume_confirmation(first, 10'003));
+        assert(!gate.confirm_current(10'002, 101));
+
+        gate.observe_input_state(false);
+        gate.observe_input_state(true);
+        assert(gate.confirm_current(10'003, 101));
+        assert(gate.consume_confirmation(first, 10'004));
     }
 
     // #114 regression 2: if A is already held when an attempt begins, the gate
@@ -80,10 +85,9 @@ int main() {
         assert(gate.consume_confirmation(first, 20'004));
     }
 
-    // #114 regression 3 / red test: an externally stale wasPressed-equivalent
-    // signal must not be enough on its own. Even with an advanced generation,
-    // the gate itself must have sampled the post-arm pressed state for this
-    // attempt before confirmation can succeed.
+    // #114 regression 3: an externally stale wasPressed-equivalent signal must
+    // not be enough on its own. A sampled press that is released before it is
+    // consumed is stale too and must not authorize later.
     {
         UserPresenceGate gate;
         assert(gate.begin(PresenceOperation::kTrustedBrowserUnlock, first, 30'000, 300));
@@ -94,8 +98,12 @@ int main() {
         assert(gate.state() == PresenceState::kAwaiting);
 
         gate.observe_input_state(true);
-        assert(gate.confirm_current(30'002, 301));
-        assert(gate.consume_confirmation(first, 30'003));
+        gate.observe_input_state(false);
+        assert(!gate.confirm_current(30'002, 301));
+
+        gate.observe_input_state(true);
+        assert(gate.confirm_current(30'003, 301));
+        assert(gate.consume_confirmation(first, 30'004));
     }
 
     // #114 regression 4a: cancel clears all presence state. A press/confirmation
