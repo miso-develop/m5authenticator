@@ -13,14 +13,6 @@ import json
 import sys
 from typing import Any
 
-try:
-    import serial
-    from serial import SerialException
-except ImportError as exc:  # pragma: no cover - environment guidance only
-    raise SystemExit(
-        "pyserial is required. Run this from the activated ESP-IDF Python environment."
-    ) from exc
-
 
 REQUEST_TEXT = '{"v":2,"id":9002,"op":"diagnostics.screen_snapshot","params":{}}'
 REQUEST_BYTES = (REQUEST_TEXT + "\n").encode("ascii")
@@ -104,6 +96,14 @@ def validate_response(value: Any) -> dict[str, Any]:
 
 
 def read_snapshot(port_name: str, timeout_seconds: float) -> dict[str, Any]:
+    try:
+        import serial
+        from serial import SerialException
+    except ImportError as exc:  # pragma: no cover - environment guidance only
+        raise RuntimeError(
+            "pyserial is required; run from the activated ESP-IDF Python environment"
+        ) from exc
+
     try:
         with serial.Serial(
             port=port_name,
