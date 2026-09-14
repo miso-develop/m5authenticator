@@ -98,6 +98,7 @@ interface SessionAttempt {
 
 class SyntheticCanonicalDevice implements CanonicalV2Transport {
   readonly deviceId = "00112233445566778899aabbccddeeff";
+  readonly sessionOperations: SessionWireOperation[] = [];
   state: "unprovisioned" | "locked" | "unlocked" = "unprovisioned";
   storageReady = false;
   vaultId: Uint8Array | null = null;
@@ -202,6 +203,7 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
     op: SessionWireOperation,
     params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
+    this.sessionOperations.push(op);
     if (op === "session.begin") {
       const operation = params.operation as SessionOperation;
       if ((operation === "trusted_browser_unlock" || operation === "vmk_rekey") && this.state !== "locked" && operation !== "vmk_rekey") {
@@ -402,7 +404,72 @@ function helloFor(device: SyntheticCanonicalDevice) {
 }
 
 describe("canonical Protocol v2 synthetic integration", () => {
-  it("first provisions, quick-unlocks, mutates generations, replaces Browser, rejects old Browser, and resets", async () => {
+  it("keeps active Trusted Browser connection read-only while LOCKED and unlocks only on explicit request", async () => {
+    const device = new SyntheticCanonicalDevice();
+    const store = new MemoryBrowserStore();
+    const initial = new CanonicalDeviceManagement(device, await helloFor(device), store.asIndexedDb());
+    await initial.initialize();
+    const imported = importOneAccount();
+    await initial.importAccounts(imported, recoveryPassphrase);
+    imported.clear();
+    await initial.close();
+
+    expect(device.state).toBe("locked");
+    expect(device.currentVmk).toBeNull();
+    const sessionOperationCount = device.sessionOperations.length;
+
+    const connected = new CanonicalDeviceManagement(device, await helloFor(device), store.asIndexedDb());
+    await connected.initialize();
+    expect(device.sessionOperations).toHaveLength(sessionOperationCount);
+    expect(device.currentVmk).toBeNull();
+    expect(device.state).toBe("locked");
+
+    let snapshot = await connected.refresh();
+    expect(snapshot.hello.state).toBe("locked");
+    expect(snapshot.browserOwnership).toBe("active");
+    expect(snapshot.unlockRequired).toBe(true);
+    expect(snapshot.accounts).toHaveLength(0);
+    expect(device.sessionOperations).toHaveLength(sessionOperationCount);
+
+    await connected.requestUnlock();
+    expect(device.sessionOperations.slice(sessionOperationCount)).toEqual([
+      "session.begin",
+      "session.authorize",
+      "session.status",
+      "session.complete",
+    ]);
+    expect(device.state).toBe("unlocked");
+    expect(device.currentVmk).not.toBeNull();
+    snapshot = await connected.refresh();
+    expect(snapshot.browserOwnership).toBe("active");
+    expect(snapshot.unlockRequired).toBe(false);
+  }, 30_000);
+
+  it("keeps an already-UNLOCKED connection read-only and usable", async () => {
+    const device = new SyntheticCanonicalDevice();
+    const store = new MemoryBrowserStore();
+    const initial = new CanonicalDeviceManagement(device, await helloFor(device), store.asIndexedDb());
+    await initial.initialize();
+    const imported = importOneAccount();
+    await initial.importAccounts(imported, recoveryPassphrase);
+    imported.clear();
+
+    expect(device.state).toBe("unlocked");
+    const sessionOperationCount = device.sessionOperations.length;
+    const connected = new CanonicalDeviceManagement(device, await helloFor(device), store.asIndexedDb());
+    await connected.initialize();
+    expect(device.sessionOperations).toHaveLength(sessionOperationCount);
+    expect(device.state).toBe("unlocked");
+
+    const snapshot = await connected.refresh();
+    expect(snapshot.hello.state).toBe("unlocked");
+    expect(snapshot.browserOwnership).toBe("active");
+    expect(snapshot.unlockRequired).toBe(false);
+    expect(snapshot.accounts).toHaveLength(1);
+    expect(device.sessionOperations).toHaveLength(sessionOperationCount);
+  }, 30_000);
+
+  it("first provisions, explicitly quick-unlocks, mutates generations, replaces Browser, rejects old Browser, and resets", async () => {
     const device = new SyntheticCanonicalDevice();
     const originalStore = new MemoryBrowserStore();
     const initial = new CanonicalDeviceManagement(device, await helloFor(device), originalStore.asIndexedDb());
@@ -427,6 +494,11 @@ describe("canonical Protocol v2 synthetic integration", () => {
 
     const quick = new CanonicalDeviceManagement(device, await helloFor(device), originalStore.asIndexedDb());
     await quick.initialize();
+    expect(device.state).toBe("locked");
+    snapshot = await quick.refresh();
+    expect(snapshot.browserOwnership).toBe("active");
+    expect(snapshot.unlockRequired).toBe(true);
+    await quick.requestUnlock();
     expect(device.state).toBe("unlocked");
     snapshot = await quick.refresh();
     const accountId = snapshot.accounts[0]!.id;
@@ -458,6 +530,8 @@ describe("canonical Protocol v2 synthetic integration", () => {
 
     const activeReplacement = new CanonicalDeviceManagement(device, await helloFor(device), replacementStore.asIndexedDb());
     await activeReplacement.initialize();
+    expect(device.state).toBe("locked");
+    await activeReplacement.requestUnlock();
     expect(device.state).toBe("unlocked");
     await activeReplacement.factoryReset();
     expect(device.state).toBe("unprovisioned");
