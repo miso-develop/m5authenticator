@@ -38,7 +38,7 @@ if (!flashEnabled) {
     ),
     updateChoice(
       "Update — keep authenticator data",
-      "Normal updates never request a full-flash erase. The authenticated Encrypted Vault and registration state in auth_nvs stay outside the firmware write range. The RAM-only VMK is lost on reboot, so a provisioned device returns LOCKED after the update.",
+      "Normal Update writes only the bootloader, partition table, and ota_0 application ranges and never requests a full-flash erase. Registration and Device identity in ordinary nvs, plus the encrypted Vault in auth_nvs, remain outside those write ranges. The RAM-only VMK is lost on reboot, so a provisioned device returns LOCKED after the update.",
       `${base}firmware/update-manifest.json`,
     ),
   );
@@ -62,7 +62,7 @@ function updateChoice(title: string, description: string, manifest: string): HTM
 
   action.addEventListener("click", async () => {
     action.disabled = true;
-    progress.textContent = "Waiting for device selection...";
+    progress.textContent = "Validating state-preserving firmware package...";
     try {
       await runStatePreservingUpdate(manifest, (state) => {
         progress.textContent = state.message;
