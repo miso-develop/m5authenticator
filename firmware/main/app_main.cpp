@@ -1,14 +1,17 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <unistd.h>
 
+#include "cJSON.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
 #include "esp_system.h"
@@ -387,10 +390,144 @@ std::string timing_diagnostics_response() {
 }
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-constexpr std::string_view kScreenSnapshotRequest = R"({"v":2,"id":9002,"op":"diagnostics.screen_snapshot","params":{}})";
+constexpr std::string_view kScreenSnapshotOperation = "diagnostics.screen_snapshot";
 
-bool is_screen_snapshot_query(std::string_view line) {
-    return kTestScreenSnapshotEnabled && line == kScreenSnapshotRequest;
+enum class ScreenSnapshotRequestKind {
+    kNotDiagnostic,
+    kInvalidDiagnostic,
+    kValidDiagnostic,
+};
+
+struct ScreenSnapshotRequestParse {
+    ScreenSnapshotRequestKind kind{ScreenSnapshotRequestKind::kNotDiagnostic};
+    int id{0};
+};
+
+bool read_nonnegative_json_int(cJSON* item, int* value) {
+    if (value == nullptr || !cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) ||
+        item->valuedouble < 0 || item->valuedouble > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    const int parsed = static_cast<int>(item->valuedouble);
+    if (static_cast<double>(parsed) != item->valuedouble) return false;
+    *value = parsed;
+    return true;
+}
+
+bool screen_snapshot_intent_hint(std::string_view line) {
+    return line.find("\"diagnostics.screen_snapshot\"") != std::string_view::npos;
+}
+
+ScreenSnapshotRequestParse parse_screen_snapshot_request(std::string_view line) {
+    if (!kTestScreenSnapshotEnabled) return {};
+
+    const bool raw_intent_hint = screen_snapshot_intent_hint(line);
+    const char* parse_end = nullptr;
+    cJSON* root = cJSON_ParseWithLengthOpts(
+        line.data(),
+        line.size(),
+        &parse_end,
+        false
+    );
+    if (root == nullptr) {
+        return raw_intent_hint
+            ? ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0}
+            : ScreenSnapshotRequestParse{};
+    }
+
+    const char* const input_end = line.data() + line.size();
+    while (parse_end != nullptr && parse_end < input_end &&
+           (*parse_end == ' ' || *parse_end == '\t' || *parse_end == '\r' || *parse_end == '\n')) {
+        ++parse_end;
+    }
+    if (parse_end == nullptr || parse_end != input_end || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return raw_intent_hint
+            ? ScreenSnapshotRequestParse{ScreenSnapshotRequestKind::kInvalidDiagnostic, 0}
+            : ScreenSnapshotRequestParse{};
+    }
+
+    bool diagnostic_intent = false;
+    for (cJSON* child = root->child; child != nullptr; child = child->next) {
+        if (child->string != nullptr && std::strcmp(child->string, "op") == 0 &&
+            cJSON_IsString(child) && child->valuestring != nullptr &&
+            std::strcmp(child->valuestring, kScreenSnapshotOperation.data()) == 0) {
+            diagnostic_intent = true;
+            break;
+        }
+    }
+    if (!diagnostic_intent) {
+        cJSON_Delete(root);
+        return {};
+    }
+
+    bool seen_v = false;
+    bool seen_id = false;
+    bool seen_op = false;
+    bool seen_params = false;
+    bool valid = true;
+    int request_id = 0;
+    bool request_id_valid = false;
+
+    for (cJSON* child = root->child; child != nullptr; child = child->next) {
+        const char* const key = child->string;
+        if (key == nullptr) {
+            valid = false;
+            continue;
+        }
+        if (std::strcmp(key, "v") == 0) {
+            if (seen_v) {
+                valid = false;
+                continue;
+            }
+            seen_v = true;
+            int version = 0;
+            if (!read_nonnegative_json_int(child, &version) || version != 2) valid = false;
+        } else if (std::strcmp(key, "id") == 0) {
+            if (seen_id) {
+                valid = false;
+                continue;
+            }
+            seen_id = true;
+            if (read_nonnegative_json_int(child, &request_id)) {
+                request_id_valid = true;
+            } else {
+                valid = false;
+            }
+        } else if (std::strcmp(key, "op") == 0) {
+            if (seen_op) {
+                valid = false;
+                continue;
+            }
+            seen_op = true;
+            if (!cJSON_IsString(child) || child->valuestring == nullptr ||
+                std::strcmp(child->valuestring, kScreenSnapshotOperation.data()) != 0) {
+                valid = false;
+            }
+        } else if (std::strcmp(key, "params") == 0) {
+            if (seen_params) {
+                valid = false;
+                continue;
+            }
+            seen_params = true;
+            if (!cJSON_IsObject(child) || child->child != nullptr) valid = false;
+        } else {
+            valid = false;
+        }
+    }
+
+    valid = valid && seen_v && seen_id && seen_op && seen_params;
+    cJSON_Delete(root);
+    if (!valid) {
+        return ScreenSnapshotRequestParse{
+            ScreenSnapshotRequestKind::kInvalidDiagnostic,
+            request_id_valid ? request_id : 0,
+        };
+    }
+    return ScreenSnapshotRequestParse{
+        ScreenSnapshotRequestKind::kValidDiagnostic,
+        request_id,
+    };
 }
 
 const char* screen_snapshot_runtime_state(m5auth::vault_runtime::State state) {
@@ -443,7 +580,23 @@ const char* screen_snapshot_mode(m5auth::device::sticks3::ScreenMode mode) {
     return "open_web";
 }
 
+std::string screen_snapshot_error_response(int request_id, const char* code) {
+    std::array<char, 192> buffer{};
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "{\"v\":2,\"id\":%d,\"ok\":false,\"error\":{\"code\":\"%s\"}}",
+        request_id,
+        code
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
+        return R"({"v":2,"id":0,"ok":false,"error":{"code":"internal_error"}})";
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
+}
+
 std::string screen_snapshot_response(
+    int request_id,
     const m5auth::device::sticks3::ScreenSnapshot& snapshot
 ) {
     std::array<char, 512> buffer{};
@@ -453,11 +606,12 @@ std::string screen_snapshot_response(
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
-        "{\"v\":2,\"id\":9002,\"ok\":true,\"data\":{"
+        "{\"v\":2,\"id\":%d,\"ok\":true,\"data\":{"
         "\"runtime_state\":\"%s\","
         "\"trusted_time_readiness\":\"%s\","
         "\"presence\":{\"active\":%s,\"confirmed\":%s,\"operation\":\"%s\"},"
         "\"screen_mode\":\"%s\"}}",
+        request_id,
         screen_snapshot_runtime_state(snapshot.runtime_state),
         screen_snapshot_time_readiness(snapshot.trusted_time_readiness),
         snapshot.presence.active ? "true" : "false",
@@ -466,7 +620,7 @@ std::string screen_snapshot_response(
         screen_snapshot_mode(snapshot.screen_mode)
     );
     if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
-        return R"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})";
+        return screen_snapshot_error_response(request_id, "internal_error");
     }
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
@@ -628,9 +782,22 @@ extern "C" void app_main(void) {
             continue;
         }
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-        if (is_screen_snapshot_query(request)) {
-            const auto snapshot = ui.screen_snapshot();
-            const std::string response = screen_snapshot_response(snapshot);
+        const ScreenSnapshotRequestParse snapshot_request = parse_screen_snapshot_request(request);
+        if (snapshot_request.kind != ScreenSnapshotRequestKind::kNotDiagnostic) {
+            std::string response;
+            if (snapshot_request.kind == ScreenSnapshotRequestKind::kInvalidDiagnostic) {
+                response = screen_snapshot_error_response(snapshot_request.id, "invalid_request");
+            } else {
+                m5auth::device::sticks3::ScreenSnapshot snapshot{};
+                if (!ui.screen_snapshot(&snapshot)) {
+                    response = screen_snapshot_error_response(
+                        snapshot_request.id,
+                        "snapshot_not_ready"
+                    );
+                } else {
+                    response = screen_snapshot_response(snapshot_request.id, snapshot);
+                }
+            }
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             buffered_input = 0;
             write_response(response);
