@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import secrets
 import sys
@@ -228,44 +229,91 @@ def read_matching_response(
     raise RuntimeError("no valid response for the current request id before timeout")
 
 
-def read_snapshot(port_name: str, timeout_seconds: float) -> dict[str, Any]:
-    if timeout_seconds <= 0:
-        raise RuntimeError("timeout must be positive")
-    try:
-        import serial
-        from serial import SerialException
-    except ImportError as exc:  # pragma: no cover - environment guidance only
-        raise RuntimeError(
-            "pyserial is required; run from the activated ESP-IDF Python environment"
-        ) from exc
+def _validate_timeout_seconds(timeout_seconds: float) -> None:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise RuntimeError("timeout must be a finite positive number")
+
+
+def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float) -> dict[str, Any]:
+    """Collect one snapshot with an explicit fail-closed serial lifecycle."""
+    _validate_timeout_seconds(timeout_seconds)
 
     request_id = generate_request_id()
     request = build_request(request_id)
     per_read_timeout = min(max(timeout_seconds, 0.05), 0.25)
 
+    port: Any | None = None
+    result: dict[str, Any] | None = None
+    primary_runtime_error: RuntimeError | None = None
+    primary_io_error: BaseException | None = None
+    close_error: BaseException | None = None
+
     try:
-        with serial.Serial(
-            port=port_name,
-            baudrate=115200,
-            timeout=per_read_timeout,
-            write_timeout=timeout_seconds,
-            rtscts=False,
-            dsrdtr=False,
-        ) as port:
-            # Purging is defense-in-depth only. Fresh request-ID matching below is
-            # the primary freshness guarantee and remains required even if a
-            # driver cannot purge or a delayed line arrives after this point.
-            reset_input = getattr(port, "reset_input_buffer", None)
-            if callable(reset_input):
-                reset_input()
-            port.write(request)
-            port.flush()
-            return read_matching_response(port, request_id, timeout_seconds)
-    except SerialException as exc:
+        # pySerial applies the configured DTR/RTS states when open() runs. Build a
+        # closed object first so the test helper never intentionally opens with the
+        # library defaults (active/True). rtscts/dsrdtr only control flow-control
+        # modes; the explicit line states below are the observational-safety guard.
+        port = serial_module.Serial()
+        port.port = port_name
+        port.baudrate = 115200
+        port.timeout = per_read_timeout
+        port.write_timeout = timeout_seconds
+        port.rtscts = False
+        port.dsrdtr = False
+        port.dtr = False
+        port.rts = False
+        port.open()
+
+        # Purging is defense-in-depth only. Fresh request-ID matching below is the
+        # primary freshness guarantee and remains required even if a driver cannot
+        # purge or a delayed line arrives after this point.
+        reset_input = getattr(port, "reset_input_buffer", None)
+        if callable(reset_input):
+            reset_input()
+        port.write(request)
+        port.flush()
+        result = read_matching_response(port, request_id, timeout_seconds)
+    except RuntimeError as exc:
+        primary_runtime_error = exc
+    except BaseException as exc:  # serial/OS read-write-open failures all fail closed
+        primary_io_error = exc
+    finally:
+        if port is not None and bool(getattr(port, "is_open", False)):
+            try:
+                port.close()
+            except BaseException as exc:
+                close_error = exc
+
+    if primary_runtime_error is not None:
+        if close_error is not None:
+            raise RuntimeError("serial snapshot failed and port close also failed") from close_error
+        raise primary_runtime_error
+    if primary_io_error is not None:
+        if close_error is not None:
+            raise RuntimeError("serial snapshot I/O failed and port close also failed") from close_error
         raise RuntimeError(
-            "could not open/read the serial port; close Web Serial, idf.py monitor, "
-            "and any other process that owns the COM/serial port, then retry"
+            "serial snapshot I/O failed; close Web Serial, idf.py monitor, and any "
+            "other process that owns the COM/serial port, then retry"
+        ) from primary_io_error
+    if close_error is not None:
+        # Test evidence is not accepted if lifecycle cleanup itself is ambiguous.
+        raise RuntimeError("serial port close failed; snapshot evidence discarded") from close_error
+    if result is None:
+        raise RuntimeError("serial snapshot ended without validated evidence")
+    return result
+
+
+def read_snapshot(port_name: str, timeout_seconds: float) -> dict[str, Any]:
+    # Validate before importing/opening pySerial so invalid CLI values fail fast.
+    _validate_timeout_seconds(timeout_seconds)
+    try:
+        import serial
+    except ImportError as exc:  # pragma: no cover - environment guidance only
+        raise RuntimeError(
+            "pyserial is required; run from the activated ESP-IDF Python environment"
         ) from exc
+
+    return _collect_snapshot(serial, port_name, timeout_seconds)
 
 
 def main() -> int:
