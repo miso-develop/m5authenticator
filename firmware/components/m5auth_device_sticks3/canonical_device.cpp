@@ -153,6 +153,32 @@ void CanonicalUiController::security_boundary_clear() {
     render();
 }
 
+ScreenSnapshot CanonicalUiController::screen_snapshot() const {
+    std::lock_guard<std::mutex> view(view_mutex_);
+    ScreenSnapshot snapshot{};
+    snapshot.runtime_state = runtime_state_;
+    snapshot.trusted_time_readiness = time_service_.status().readiness;
+    snapshot.presence = presence_.view();
+
+    if (snapshot.presence.active) {
+        snapshot.screen_mode = ScreenMode::kUnlockRequest;
+    } else if (storage_error_) {
+        snapshot.screen_mode = ScreenMode::kVaultUnavailable;
+    } else if (!vault_visible_) {
+        snapshot.screen_mode = ScreenMode::kOpenWeb;
+    } else if (credentials_.empty()) {
+        snapshot.screen_mode = ScreenMode::kNoAccounts;
+    } else if (
+        reveal_active_ &&
+        snapshot.trusted_time_readiness == time::Readiness::kReady
+    ) {
+        snapshot.screen_mode = ScreenMode::kOtpRevealed;
+    } else {
+        snapshot.screen_mode = ScreenMode::kAccountView;
+    }
+    return snapshot;
+}
+
 void CanonicalUiController::task_entry(void* context) {
     auto* controller = static_cast<CanonicalUiController*>(context);
     controller->run();
