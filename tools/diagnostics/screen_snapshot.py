@@ -245,8 +245,8 @@ def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float
     port: Any | None = None
     result: dict[str, Any] | None = None
     primary_runtime_error: RuntimeError | None = None
-    primary_io_error: BaseException | None = None
-    close_error: BaseException | None = None
+    primary_io_error: Exception | None = None
+    close_error: Exception | None = None
 
     try:
         # pySerial applies the configured DTR/RTS states when open() runs. Build a
@@ -275,13 +275,13 @@ def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float
         result = read_matching_response(port, request_id, timeout_seconds)
     except RuntimeError as exc:
         primary_runtime_error = exc
-    except BaseException as exc:  # serial/OS read-write-open failures all fail closed
+    except Exception as exc:  # serial/OS read-write-open failures all fail closed
         primary_io_error = exc
     finally:
         if port is not None and bool(getattr(port, "is_open", False)):
             try:
                 port.close()
-            except BaseException as exc:
+            except Exception as exc:
                 close_error = exc
 
     if primary_runtime_error is not None:
