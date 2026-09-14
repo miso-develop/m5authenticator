@@ -154,7 +154,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("const int newline_result = std::fputc", app)
         self.assertIn("const int fflush_result = std::fflush(stdout);", app)
         self.assertIn("const int ferror_value = std::ferror(stdout);", app)
-        self.assertIn("write_response(response, timing_operation);", app)
+        self.assertIn("write_response(response, classified_operation);", app)
         self.assertIn("write_response(timing_diagnostics_response());", app)
         self.assertIn(
             "const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;",
@@ -174,11 +174,59 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("nvs_open", app)
         self.assertNotIn("nvs_set_blob", app)
         self.assertNotIn("nvs_commit", app)
-        self.assertRegex(
-            app,
-            r"if \(timing_recorded\) \{\s*persist_timing_diagnostics_to_rtc\(\);\s*\}\s*\n\s*m5auth::vault_runtime::secure_zero",
-        )
+        self.assertIn("record_timing(classified_operation, timing_started_us)", app)
         self.assertNotIn("request.data()", app)
+
+    def test_issue_86_tx_boundary_probe_is_default_off_and_measurement_only(self) -> None:
+        cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        option = re.search(
+            r"option\(\s*M5AUTH_TX_BOUNDARY_DIAGNOSTICS[\s\S]+?OFF\s*\)",
+            cmake,
+        )
+        self.assertIsNotNone(option)
+        self.assertIn(
+            "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TX_BOUNDARY_DIAGNOSTICS=1)",
+            cmake,
+        )
+        self.assertIn("#define M5AUTH_TX_BOUNDARY_DIAGNOSTICS 0", app)
+        self.assertIn(
+            "constexpr bool kTxBoundaryDiagnosticsEnabled = M5AUTH_TX_BOUNDARY_DIAGNOSTICS == 1;",
+            app,
+        )
+        self.assertIn("RTC_NOINIT_ATTR RtcTxBoundaryDiagnostics g_rtc_tx_boundary_diagnostics;", app)
+        self.assertIn("diagnostics.tx_boundary", app)
+        self.assertIn("is_tx_boundary_diagnostics_query(request)", app)
+        self.assertIn("TxBoundaryStage::kStatusReceived", app)
+        self.assertIn("TxBoundaryStage::kHandlerComplete", app)
+        self.assertIn("TxBoundaryStage::kInputWiped", app)
+        self.assertIn("TxBoundaryStage::kFwriteComplete", app)
+        self.assertIn("TxBoundaryStage::kNewlineComplete", app)
+        self.assertIn("TxBoundaryStage::kFlushComplete", app)
+        self.assertIn("classified_operation == TimingOperation::kSessionStatus", app)
+        self.assertIn("usb_serial_jtag_ll_txfifo_writable()", app)
+        self.assertIn("uxTaskGetStackHighWaterMark(nullptr)", app)
+        self.assertIn("connected_before_write", app)
+        self.assertIn("connected_after_flush", app)
+        self.assertIn("input_wipe_us", app)
+        self.assertIn("fwrite_us", app)
+        self.assertIn("fflush_us", app)
+        self.assertNotIn("ESP_LOG", app)
+        self.assertNotIn("nvs_open", app)
+        self.assertNotIn("nvs_set_blob", app)
+        self.assertNotIn("nvs_commit", app)
+
+    def test_issue_86_tx_boundary_probe_does_not_change_protocol_retry_or_presence(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertEqual(1, app.count("protocol.handle_line("))
+        self.assertNotIn("retry", app.lower())
+        self.assertIn("teardown_transport_session(protocol);", app)
+        self.assertIn("m5auth::vault_runtime::secure_zero(input.data(), input.size());", app)
+        self.assertIn("write_response(response, classified_operation);", app)
+        self.assertNotIn("factory_reset", app)
+        self.assertNotIn("efuse", app.lower())
 
 
 if __name__ == "__main__":
