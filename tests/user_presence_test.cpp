@@ -149,8 +149,9 @@ int main() {
         assert(gate.consume_confirmation(second, 80'013));
     }
 
-    // #114 regression 5: beginning a superseding attempt invalidates a prior
-    // confirmed attempt, and the old attempt ID cannot consume the new gate.
+    // #114 regression 5: a superseding attempt clears prior confirmation. Once
+    // the new attempt is freshly confirmed, the old attempt ID still cannot
+    // consume that confirmation and the mismatch fails closed.
     {
         UserPresenceGate gate;
         assert(gate.begin(PresenceOperation::kRecovery, first, 90'000, 600));
@@ -162,8 +163,13 @@ int main() {
 
         assert(gate.begin(PresenceOperation::kBrowserReplacement, second, 90'100, 601));
         assert(gate.state() == PresenceState::kAwaiting);
-        assert(!gate.consume_confirmation(first, 90'101));
+        gate.observe_input_state(false);
+        gate.observe_input_state(false);
+        gate.observe_input_state(true);
+        assert(gate.confirm_current(90'101, 602));
+        assert(!gate.consume_confirmation(first, 90'102));
         assert(gate.state() == PresenceState::kIdle);
+        assert(!gate.consume_confirmation(second, 90'103));
     }
 
     // #114 regression 6: an ordinary fresh A press after neutral confirms
