@@ -262,19 +262,25 @@ def package_firmware(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--merged-binary", type=Path, required=True)
-    parser.add_argument("--bootloader-binary", type=Path, required=True)
-    parser.add_argument("--partition-table-binary", type=Path, required=True)
-    parser.add_argument("--app-binary", type=Path, required=True)
+    parser.add_argument("--bootloader-binary", type=Path)
+    parser.add_argument("--partition-table-binary", type=Path)
+    parser.add_argument("--app-binary", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-commit", required=True)
     parser.add_argument("--require-production", action="store_true")
     args = parser.parse_args()
+
+    build_dir = args.merged_binary.parent
+    bootloader_binary = args.bootloader_binary or build_dir / "bootloader" / "bootloader.bin"
+    partition_table_binary = args.partition_table_binary or build_dir / "partition_table" / "partition-table.bin"
+    app_binary = args.app_binary or build_dir / "m5authenticator.bin"
+
     try:
         outputs = package_firmware(
             args.merged_binary,
-            args.bootloader_binary,
-            args.partition_table_binary,
-            args.app_binary,
+            bootloader_binary,
+            partition_table_binary,
+            app_binary,
             args.output_dir,
             args.build_commit,
             args.require_production,
