@@ -59,13 +59,33 @@ bool UserPresenceGate::begin(
 }
 
 void UserPresenceGate::observe_input_state(bool pressed) {
-    if (state_ != PresenceState::kAwaiting || input_armed_) return;
-    if (pressed) {
-        neutral_samples_ = 0;
+    if (state_ != PresenceState::kAwaiting) return;
+
+    if (!input_armed_) {
+        post_arm_press_edge_ = false;
+        last_input_pressed_ = pressed;
+        if (pressed) {
+            neutral_samples_ = 0;
+            return;
+        }
+        if (neutral_samples_ < 2) ++neutral_samples_;
+        if (neutral_samples_ >= 2) {
+            input_armed_ = true;
+            // Arming is established from released samples, so the first
+            // subsequent observed press is necessarily post-arm.
+            last_input_pressed_ = false;
+        }
         return;
     }
-    if (neutral_samples_ < 2) ++neutral_samples_;
-    if (neutral_samples_ >= 2) input_armed_ = true;
+
+    if (pressed && !last_input_pressed_) {
+        post_arm_press_edge_ = true;
+    } else if (!pressed) {
+        // An unconsumed press edge cannot survive its release and become stale
+        // authorization input later in this attempt.
+        post_arm_press_edge_ = false;
+    }
+    last_input_pressed_ = pressed;
 }
 
 bool UserPresenceGate::confirm_current(
@@ -73,8 +93,14 @@ bool UserPresenceGate::confirm_current(
     std::uint64_t input_generation
 ) {
     if (expire(now_ms) || state_ != PresenceState::kAwaiting) return false;
-    if (!input_armed_) return false;
+    if (!input_armed_ || !post_arm_press_edge_) return false;
+
+    // A sampled physical edge is single-use even when the caller supplies an
+    // invalid/stale generation. A later confirmation therefore needs a new
+    // release-to-press edge rather than reusing the same gesture.
+    post_arm_press_edge_ = false;
     if (input_generation <= input_generation_at_start_) return false;
+
     state_ = PresenceState::kConfirmed;
     return true;
 }
@@ -130,6 +156,8 @@ void UserPresenceGate::clear() {
     input_generation_at_start_ = 0;
     neutral_samples_ = 0;
     input_armed_ = false;
+    last_input_pressed_ = false;
+    post_arm_press_edge_ = false;
 }
 
 void PresenceGestureQuarantine::begin(
