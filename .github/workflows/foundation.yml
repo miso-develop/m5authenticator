@@ -305,6 +305,8 @@ jobs:
           && /tmp/m5auth-device-ui-model-test
       - name: Test StickS3 runtime contract
         run: python -m unittest tests/sticks3_runtime_contract_test.py
+      - name: Test sanitized screen snapshot diagnostics contract
+        run: python -m unittest tests/screen_snapshot_runtime_contract_test.py
       - name: Validate release profile and security closeout rules
         run: |
           python scripts/validate_release.py
