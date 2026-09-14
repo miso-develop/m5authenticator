@@ -59,7 +59,17 @@ bool UserPresenceGate::begin(
 }
 
 void UserPresenceGate::observe_input_state(bool pressed) {
-    if (state_ != PresenceState::kAwaiting || input_armed_) return;
+    if (state_ != PresenceState::kAwaiting) return;
+
+    if (input_armed_) {
+        // Confirmation must coincide with a current pressed sample observed by
+        // this attempt after it was armed. Clearing this on release prevents a
+        // sampled press from becoming reusable stale input later in the attempt.
+        post_arm_press_sampled_ = pressed;
+        return;
+    }
+
+    post_arm_press_sampled_ = false;
     if (pressed) {
         neutral_samples_ = 0;
         return;
@@ -73,8 +83,9 @@ bool UserPresenceGate::confirm_current(
     std::uint64_t input_generation
 ) {
     if (expire(now_ms) || state_ != PresenceState::kAwaiting) return false;
-    if (!input_armed_) return false;
+    if (!input_armed_ || !post_arm_press_sampled_) return false;
     if (input_generation <= input_generation_at_start_) return false;
+    post_arm_press_sampled_ = false;
     state_ = PresenceState::kConfirmed;
     return true;
 }
@@ -130,6 +141,7 @@ void UserPresenceGate::clear() {
     input_generation_at_start_ = 0;
     neutral_samples_ = 0;
     input_armed_ = false;
+    post_arm_press_sampled_ = false;
 }
 
 void PresenceGestureQuarantine::begin(
