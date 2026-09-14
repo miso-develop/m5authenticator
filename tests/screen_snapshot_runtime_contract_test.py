@@ -92,17 +92,71 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, snapshot.lower())
 
-    def test_snapshot_reads_ui_state_under_view_lock_without_mutation(self) -> None:
+    def test_snapshot_api_is_compile_gated_with_the_test_flag(self) -> None:
+        header = DEVICE_HEADER.read_text(encoding="utf-8")
+        self.assertIn("#if M5AUTH_TEST_SCREEN_SNAPSHOT\nenum class ScreenMode", header)
+        method = "ScreenSnapshot screen_snapshot() const;"
+        method_index = header.index(method)
+        guard_index = header.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, method_index)
+        end_index = header.find("#endif", method_index)
+        self.assertNotEqual(-1, guard_index)
+        self.assertNotEqual(-1, end_index)
+        self.assertLess(guard_index, method_index)
+        self.assertGreater(end_index, method_index)
+        cache_index = header.index("ScreenSnapshot last_rendered_snapshot_{};")
+        cache_guard = header.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, cache_index)
+        cache_end = header.find("#endif", cache_index)
+        self.assertLess(cache_guard, cache_index)
+        self.assertGreater(cache_end, cache_index)
+
+    def test_snapshot_returns_only_last_rendered_cache_under_view_lock(self) -> None:
         ui = DEVICE_CPP.read_text(encoding="utf-8")
         snapshot = extract_braced_block(
             ui,
             "ScreenSnapshot CanonicalUiController::screen_snapshot() const",
         )
         self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", snapshot)
-        self.assertIn("time_service_.status().readiness", snapshot)
-        self.assertIn("presence_.view()", snapshot)
-        self.assertIn("runtime_state_", snapshot)
-        self.assertIn("reveal_active_", snapshot)
+        self.assertIn("return last_rendered_snapshot_;", snapshot)
+        for forbidden in (
+            "time_service_",
+            "presence_",
+            "runtime_state_",
+            "storage_error_",
+            "vault_visible_",
+            "credentials_",
+            "reveal_active_",
+            "revealed_code_",
+            "display_label(",
+            "runtime_",
+            "generator_",
+        ):
+            self.assertNotIn(forbidden, snapshot)
+
+    def test_render_commits_snapshot_from_exact_state_used_for_lcd(self) -> None:
+        ui = DEVICE_CPP.read_text(encoding="utf-8")
+        render = extract_braced_block(ui, "void CanonicalUiController::render()")
+
+        # External live state is captured once at the start of the render and
+        # both the LCD path and the sanitized snapshot use those locals.
+        self.assertEqual(1, render.count("time_service_.status()"))
+        self.assertEqual(1, render.count("presence_.view()"))
+        self.assertIn("const time::Snapshot time_status = time_service_.status();", render)
+        self.assertIn("const PresenceView presence = presence_.view();", render)
+        self.assertIn("rendered_snapshot.trusted_time_readiness = time_status.readiness;", render)
+        self.assertIn("rendered_snapshot.presence = presence;", render)
+        self.assertIn('readiness_text(time_status.readiness)', render)
+        self.assertIn('presence_operation_text(presence.operation)', render)
+
+        # Cache publication is after the LCD writes, so a reader serialized by
+        # view_mutex_ sees either the prior completed render or the new one.
+        commit = "last_rendered_snapshot_ = rendered_snapshot;"
+        self.assertEqual(1, render.count(commit))
+        self.assertGreater(render.index(commit), render.index('M5.Display.println("M5 Authenticator")'))
+        self.assertGreater(render.index(commit), render.rindex("M5.Display."))
+
+        # No secret-bearing display material is copied into the sanitized cache.
+        snapshot_setup_end = render.index("M5.Display.clear();")
+        snapshot_setup = render[:snapshot_setup_end]
         for forbidden in (
             "revealed_code_",
             "display_label(",
@@ -110,26 +164,34 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
             ".account",
             ".display_name",
             "credential_id",
-            "runtime_.",
-            "generator_.",
-            "hide_reveal(",
-            "clear_private_view(",
-            "refresh_credentials(",
-            "persist_selection(",
-            "select_next(",
-            "select_previous(",
-            "reveal_selected(",
-            "cancel_presence(",
-            "button_pressed(",
-            "time_service_.sync",
+            "selected_index_",
+            "reveal_deadline_ms_",
         ):
-            self.assertNotIn(forbidden, snapshot)
+            self.assertNotIn(forbidden, snapshot_setup)
 
+    def test_protocol_side_changes_cannot_publish_until_render_commit(self) -> None:
+        ui = DEVICE_CPP.read_text(encoding="utf-8")
+        snapshot = extract_braced_block(
+            ui,
+            "ScreenSnapshot CanonicalUiController::screen_snapshot() const",
+        )
+        render = extract_braced_block(ui, "void CanonicalUiController::render()")
+        run = extract_braced_block(ui, "void CanonicalUiController::run()")
         security_clear = extract_braced_block(
             ui,
             "void CanonicalUiController::security_boundary_clear()",
         )
+
+        # Diagnostic reads cannot observe protocol-side presence/time directly.
+        self.assertNotIn("presence_.view()", snapshot)
+        self.assertNotIn("time_service_.status()", snapshot)
+
+        # The two paths that call render hold view_mutex_ for the whole render.
         self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", security_clear)
+        self.assertIn("render();", security_clear)
+        self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", run)
+        self.assertIn("if (dirty) render();", run)
+        self.assertIn("last_rendered_snapshot_ = rendered_snapshot;", render)
 
     def test_serializer_has_only_allowlisted_keys_and_coarse_modes(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
