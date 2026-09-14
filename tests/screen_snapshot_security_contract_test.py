@@ -7,27 +7,37 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware/main/app_main.cpp"
+FIRMWARE_CMAKE = ROOT / "firmware/CMakeLists.txt"
 APP_MAIN_CMAKE = ROOT / "firmware/main/CMakeLists.txt"
+DEVICE_CMAKE = ROOT / "firmware/components/m5auth_device_sticks3/CMakeLists.txt"
 DEVICE_HEADER = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/canonical_device.hpp"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
 
 
 class ScreenSnapshotSecurityContractTest(unittest.TestCase):
-    def test_compile_time_flag_is_default_off(self) -> None:
-        cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+    def test_compile_time_flag_is_root_default_off_and_reaches_both_components(self) -> None:
+        root_cmake = FIRMWARE_CMAKE.read_text(encoding="utf-8")
+        app_cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        device_cmake = DEVICE_CMAKE.read_text(encoding="utf-8")
         app = APP_MAIN.read_text(encoding="utf-8")
+        header = DEVICE_HEADER.read_text(encoding="utf-8")
+
         option = re.search(
             r"option\(\s*M5AUTH_TEST_SCREEN_SNAPSHOT[\s\S]+?OFF\s*\)",
-            cmake,
+            root_cmake,
         )
         self.assertIsNotNone(option)
-        self.assertIn(
-            "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TEST_SCREEN_SNAPSHOT=1)",
-            cmake,
-        )
+        for cmake in (app_cmake, device_cmake):
+            self.assertIn("if(M5AUTH_TEST_SCREEN_SNAPSHOT)", cmake)
+            self.assertIn(
+                "target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TEST_SCREEN_SNAPSHOT=1)",
+                cmake,
+            )
         self.assertIn("#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT", app)
         self.assertIn("#define M5AUTH_TEST_SCREEN_SNAPSHOT 0", app)
+        self.assertIn("#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT", header)
+        self.assertIn("#define M5AUTH_TEST_SCREEN_SNAPSHOT 0", header)
         self.assertIn(
             "constexpr bool kTestScreenSnapshotEnabled = M5AUTH_TEST_SCREEN_SNAPSHOT == 1;",
             app,
@@ -39,8 +49,10 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
             self.assertNotIn("M5AUTH_TEST_SCREEN_SNAPSHOT=ON", text)
             self.assertNotIn("M5AUTH_TEST_SCREEN_SNAPSHOT=1", text)
 
-    def test_diagnostic_operation_is_preprocessor_guarded(self) -> None:
+    def test_diagnostic_transport_and_device_api_are_preprocessor_guarded(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
+        header = DEVICE_HEADER.read_text(encoding="utf-8")
+
         diagnostic = 'diagnostics.screen_snapshot'
         self.assertIn(diagnostic, app)
         first = app.index(diagnostic)
@@ -50,6 +62,20 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
         self.assertNotEqual(-1, end)
         self.assertLess(guard, first)
         self.assertGreater(end, first)
+
+        for symbol in (
+            "enum class ScreenMode",
+            "struct ScreenSnapshot",
+            "ScreenSnapshot screen_snapshot() const;",
+            "ScreenSnapshot last_rendered_snapshot_{};",
+        ):
+            index = header.index(symbol)
+            api_guard = header.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, index)
+            api_end = header.find("#endif", index)
+            self.assertNotEqual(-1, api_guard)
+            self.assertNotEqual(-1, api_end)
+            self.assertLess(api_guard, index)
+            self.assertGreater(api_end, index)
 
     def test_snapshot_structure_is_an_exact_allowlist(self) -> None:
         header = DEVICE_HEADER.read_text(encoding="utf-8")
@@ -121,9 +147,13 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
 
     def test_diagnostics_add_no_efuse_or_unsolicited_logging_surface(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
-        cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        root_cmake = FIRMWARE_CMAKE.read_text(encoding="utf-8")
+        app_cmake = APP_MAIN_CMAKE.read_text(encoding="utf-8")
+        device_cmake = DEVICE_CMAKE.read_text(encoding="utf-8")
         self.assertNotIn("efuse", app.lower())
-        self.assertNotIn("efuse", cmake.lower())
+        self.assertNotIn("efuse", root_cmake.lower())
+        self.assertNotIn("efuse", app_cmake.lower())
+        self.assertNotIn("efuse", device_cmake.lower())
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("std::puts(", app)
         self.assertNotIn("std::printf(", app)
