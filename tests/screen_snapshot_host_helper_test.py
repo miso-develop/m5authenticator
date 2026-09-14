@@ -74,7 +74,7 @@ class LifecycleSerialPort:
     def open(self) -> None:
         self.owner.events.append(("open", self._dtr, self._rts))
         if self.owner.fail_stage == "open":
-            raise FakeSerialException("synthetic open failure")
+            raise FakeSerialException("synthetic-sensitive-open-detail")
         self.is_open = True
 
     def reset_input_buffer(self) -> None:
@@ -116,10 +116,10 @@ class LifecycleSerialModule:
         self.instance: LifecycleSerialPort | None = None
 
     def Serial(self, *args, **kwargs) -> LifecycleSerialPort:
-        self.events.append(("construct", args, kwargs))
         if args or kwargs:
             raise AssertionError("Serial must be constructed closed with no port arguments")
         self.instance = LifecycleSerialPort(self)
+        self.events.append(("construct", args, kwargs, self.instance.is_open))
         return self.instance
 
 
@@ -201,7 +201,7 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
         self.assertEqual(222, result["id"])
 
         names = [event[0] for event in module.events]
-        self.assertEqual("construct", names[0])
+        self.assertEqual(("construct", (), {}, False), module.events[0])
         self.assertLess(names.index("dtr"), names.index("open"))
         self.assertLess(names.index("rts"), names.index("open"))
         self.assertLess(names.index("open"), names.index("write"))
@@ -227,8 +227,9 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
 
     def test_open_failure_sends_no_request_and_never_returns_success(self) -> None:
         module = LifecycleSerialModule(fail_stage="open")
-        with self.assertRaisesRegex(RuntimeError, "serial snapshot I/O failed"):
+        with self.assertRaisesRegex(RuntimeError, "serial snapshot I/O failed") as raised:
             self.collect(module)
+        self.assertNotIn("synthetic-sensitive-open-detail", str(raised.exception))
         names = [event[0] for event in module.events]
         self.assertIn("open", names)
         self.assertNotIn("write", names)
