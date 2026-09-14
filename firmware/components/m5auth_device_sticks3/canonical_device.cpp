@@ -154,9 +154,12 @@ void CanonicalUiController::security_boundary_clear() {
 }
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-ScreenSnapshot CanonicalUiController::screen_snapshot() const {
+bool CanonicalUiController::screen_snapshot(ScreenSnapshot* output) const {
+    if (output == nullptr) return false;
     std::lock_guard<std::mutex> view(view_mutex_);
-    return last_rendered_snapshot_;
+    if (!rendered_snapshot_ready_) return false;
+    *output = last_rendered_snapshot_;
+    return true;
 }
 #endif
 
@@ -423,10 +426,10 @@ void CanonicalUiController::render() {
     }
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-    // This assignment is the snapshot commit point. The caller still owns
-    // view_mutex_, so a diagnostic reader can observe either the previous full
-    // render or this completed one, never a live state that has not been drawn.
+    // Commit only after all LCD writes above completed. view_mutex_ stays held by
+    // the caller, so readers can observe only a previous or this completed render.
     last_rendered_snapshot_ = rendered_snapshot;
+    rendered_snapshot_ready_ = true;
 #endif
 }
 
