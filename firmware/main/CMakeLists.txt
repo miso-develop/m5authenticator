@@ -23,6 +23,15 @@ if(M5AUTH_TIMING_DIAGNOSTICS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TIMING_DIAGNOSTICS=1)
 endif()
 
+option(
+    M5AUTH_TEST_SCREEN_SNAPSHOT
+    "Enable test-only sanitized screen snapshot diagnostics for #117"
+    OFF
+)
+if(M5AUTH_TEST_SCREEN_SNAPSHOT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M5AUTH_TEST_SCREEN_SNAPSHOT=1)
+endif()
+
 execute_process(
     COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../.."
