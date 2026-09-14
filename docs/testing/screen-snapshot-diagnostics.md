@@ -54,9 +54,20 @@ idf.py -B build-screen-snapshot -p COM8 flash
 
 Do not run `erase-flash`. This diagnostic does not require Factory Reset, re-Provisioning, browser site-data clearing, or eFuse operations.
 
-## 3. Understand serial ownership before collecting evidence
+## 3. Understand serial ownership and control-line behavior before collecting evidence
 
 The diagnostic uses the same USB Serial/JTAG transport as Protocol v2. Only one process can normally own the COM/serial port at a time.
+
+The helper constructs the pySerial object while it is still closed, explicitly configures:
+
+```text
+DTR = inactive / False
+RTS = inactive / False
+```
+
+and only then calls `open()`. It does not intentionally toggle either line after open or during close. `rtscts=False` / `dsrdtr=False` are also configured, but those flow-control settings are not treated as a substitute for the explicit pre-open DTR/RTS states.
+
+pySerial applies the configured RTS/DTR state when the port is opened. However, pySerial also documents that some operating systems and USB/serial drivers may momentarily activate or glitch RTS/DTR as the port is opened. Software configuration alone therefore cannot prove that every Windows/driver/device combination is electrically glitch-free. **The Windows + M5StickS3 Human Gate in this document is mandatory before using this helper as auxiliary evidence.**
 
 Before the helper can open the port, close any `idf.py monitor` session and release any Web Serial or other serial-terminal ownership. However, **disconnecting Chrome/Web Serial can itself cancel the active Protocol v2 transport session and its physical-presence attempt**. That means releasing the port is not observationally neutral during an active unlock flow.
 
@@ -67,6 +78,16 @@ Consequently this diagnostic is appropriate for auxiliary checks such as:
 - account-view / OTP-revealed coarse modes when the serial port can safely be released.
 
 It may **not** be suitable for simultaneously observing an active `UNLOCK REQUEST` while the Web app still owns the serial transport. Do not disconnect Web Serial solely to capture an unlock-request snapshot and then treat the resulting state as evidence of what existed before the disconnect.
+
+If helper startup visibly causes any of the following, **do not use that run's snapshot as evidence**:
+
+- Device reboot;
+- `Starting...` appearing unexpectedly;
+- download/bootloader mode;
+- unexpected runtime or screen-state transition;
+- any other indication that opening the observation transport perturbed the state being observed.
+
+If such behavior reproduces even with pre-open DTR/RTS inactive, stop the #119 Human Gate and escalate the observation design. Do not mark the helper PASS by adding delays/retries or by hiding the transition.
 
 No Factory Reset, re-Provisioning, site-data/IndexedDB clearing, `erase-flash`, or eFuse operation is needed to transfer port ownership.
 
@@ -88,6 +109,8 @@ The numeric ID above is only an example; it is **not fixed**. The Device echoes 
 
 Delayed/stale responses from previous helper runs therefore cannot become current test evidence. The helper may purge the input buffer as defense-in-depth, but freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID.
 
+The `--timeout` value must be finite and greater than zero. `0`, negative values, `nan`, `inf`, and `-inf` are rejected before opening the serial port.
+
 A successful response is one validated JSON line such as:
 
 ```json
@@ -106,7 +129,29 @@ Before the first render has completed, including a UI task that has not started 
 
 Repeated diagnostic requests are read-only and do not start/cancel sessions or presence attempts and do not modify Vault, trusted time, UI selection, reveal deadline, or persistent generation. Port ownership changes outside the diagnostic request itself can still affect the existing Protocol v2 transport/session as described above.
 
-## 5. #75 release acceptance remains default-OFF only
+## 5. #119 Windows + M5StickS3 Human Gate
+
+CI cannot prove that the actual Windows USB/serial driver and M5StickS3 hardware exhibit no open-time control-line glitch. Perform this gate before treating the helper as observationally safe enough for auxiliary #75 evidence.
+
+Use only sanitized/non-secret observations. Do not record Device ID, credential labels, TOTP digits/secrets, Recovery Package/Passphrase, VMK/KEK/BUK/BRK/session material, Wi-Fi credentials, or Vault material.
+
+Minimum gate:
+
+1. Put the diagnostics-ON M5StickS3 into a steady-state **LOCKED** screen.
+2. Ensure Chrome/Web Serial, `idf.py monitor`, and other serial terminals do not own the COM port.
+3. Run the helper at least **5 consecutive times without power cycling**.
+4. On every run verify:
+   - `Starting...` does not appear;
+   - the Device does not reboot;
+   - download/bootloader mode does not appear;
+   - the screen/runtime state does not change unexpectedly;
+   - the sanitized snapshot matches the physical LCD coarse state;
+   - no unsolicited serial output appears.
+5. If practical, repeat the same observation pattern in additional steady states such as `account_view` and `otp_revealed`, without recording credential labels or OTP digits.
+
+Any visible reset/glitch/state transition is **FAIL**, even if the helper eventually prints a plausible snapshot. Record only the sanitized failure class and escalate the observation mechanism rather than continuing #75.
+
+## 6. #75 release acceptance remains default-OFF only
 
 Diagnostics-ON testing is auxiliary/preflight evidence only. **Never record a diagnostics-ON firmware run as the #75 release PASS.**
 
