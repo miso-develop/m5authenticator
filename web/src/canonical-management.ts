@@ -572,21 +572,23 @@ export class CanonicalDeviceManagement {
     const intent = await this.resetIntents.get(this.hello.deviceId);
     if (!intent) return;
 
-    if (!this.hello.vaultPresent && !this.hello.registrationPresent && this.hello.state === "unprovisioned") {
-      for (const affected of intent.affectedVaults) {
-        const current = await this.store.get(affected.vaultId);
-        if (current) {
-          if (current.vault.generation !== affected.generation) {
-            this.ownership = "conflict";
-            throw new GenerationConflictError("Browser canonical state changed while Device reset was pending");
+    if (!this.hello.vaultPresent || !this.hello.registrationPresent || this.hello.state === "unprovisioned") {
+      if (!this.hello.vaultPresent && !this.hello.registrationPresent && this.hello.state === "unprovisioned") {
+        for (const affected of intent.affectedVaults) {
+          const current = await this.store.get(affected.vaultId);
+          if (current) {
+            if (current.vault.generation !== affected.generation) {
+              this.ownership = "conflict";
+              throw new GenerationConflictError("Browser canonical state changed while Device reset was pending");
+            }
+            await this.store.delete(affected.vaultId, affected.generation);
           }
-          await this.store.delete(affected.vaultId, affected.generation);
+          await this.journal.delete(affected.vaultId);
         }
-        await this.journal.delete(affected.vaultId);
+        await this.resetIntents.delete(intent.deviceId);
+        notifyCanonicalBrowserStateChanged();
+        return;
       }
-      await this.resetIntents.delete(intent.deviceId);
-      notifyCanonicalBrowserStateChanged();
-      return;
     }
 
     if (intent.affectedVaults.length === 1) {
@@ -829,7 +831,6 @@ export class CanonicalDeviceManagement {
       this.state = activated;
       this.ownership = "active";
       notifyCanonicalBrowserStateChanged();
-      if (this.hello.state === "locked") await this.quickUnlock();
       this.unlockRequired = this.hello.state === "locked";
       return;
     }
