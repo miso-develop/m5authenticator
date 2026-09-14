@@ -32,7 +32,7 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("malformed stale lines are ignored", doc)
         self.assertIn("secrets.randbelow", helper)
         self.assertIn("response_id != request_id", helper)
-        self.assertNotIn('id\":9002', helper)
+        self.assertNotIn('id":9002', helper)
 
     def test_snapshot_not_ready_is_explicit_fail_closed_evidence(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
