@@ -13,6 +13,10 @@
 #include "m5auth/totp/generator.hpp"
 #include "m5auth/vault_runtime/runtime.hpp"
 
+#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT
+#define M5AUTH_TEST_SCREEN_SNAPSHOT 0
+#endif
+
 namespace m5auth::device::sticks3 {
 
 inline constexpr char kDeviceModel[] = "M5StickS3";
@@ -25,6 +29,7 @@ struct PresenceView {
     session::PresenceOperation operation{session::PresenceOperation::kTrustedBrowserUnlock};
 };
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
 enum class ScreenMode : std::uint8_t {
     kUnlockRequest,
     kVaultUnavailable,
@@ -42,6 +47,7 @@ struct ScreenSnapshot {
     PresenceView presence{};
     ScreenMode screen_mode{ScreenMode::kOpenWeb};
 };
+#endif
 
 class CanonicalPresence final : public session::protocol_v2::PresenceBinding {
 public:
@@ -91,9 +97,12 @@ public:
     // and redraws before the security operation is allowed to return.
     void security_boundary_clear();
 
-    // Read-only, allowlist-only view of the coarse state currently represented
-    // by the screen. No credential text or OTP value is copied into the result.
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    // Read-only copy of the last sanitized state committed by render(). It does
+    // not consult live presence/time/runtime state, so diagnostics cannot get
+    // ahead of the physical LCD render transaction.
     ScreenSnapshot screen_snapshot() const;
+#endif
 
 private:
     struct CredentialView {
@@ -137,6 +146,9 @@ private:
     std::uint64_t reveal_deadline_ms_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
     session::PresenceGestureQuarantine presence_gesture_quarantine_;
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+    ScreenSnapshot last_rendered_snapshot_{};
+#endif
     TaskHandle_t task_{nullptr};
 };
 
