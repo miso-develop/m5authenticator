@@ -376,7 +376,7 @@ std::string timing_diagnostics_response() {
         static_cast<int>(esp_reset_reason())
     );
     if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size()) {
-        return R"({\"v\":2,\"id\":9001,\"ok\":false,\"error\":{\"code\":\"internal_error\"}})";
+        return R"({"v":2,"id":9001,"ok":false,"error":{"code":"internal_error"}})";
     }
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
