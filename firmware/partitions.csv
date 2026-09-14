@@ -1,4 +1,5 @@
 # M5Authenticator persistent-state ownership / Normal Update contract (#107)
+# NORMAL_UPDATE_PRESERVE: nvs,auth_nvs
 # - nvs: stable Device identity + active Trusted Browser registration. PRESERVE on Normal Update.
 # - auth_nvs: canonical encrypted Vault + generation/last-used state. PRESERVE on Normal Update.
 # Normal Update write ranges MUST NOT overlap either partition. First Install / explicit destructive reset may erase state.
