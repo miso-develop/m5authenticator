@@ -1,0 +1,35 @@
+name: Issue 117 Screen Snapshot
+
+on:
+  pull_request:
+    paths:
+      - "firmware/main/**"
+      - "firmware/components/m5auth_device_sticks3/**"
+      - "tests/screen_snapshot_*"
+      - ".github/workflows/issue117-screen-snapshot.yml"
+      - ".github/workflows/security.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-screen-snapshot-profile:
+    name: test-only screen snapshot profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test sanitized snapshot contracts
+        run: python3 -m unittest tests/screen_snapshot_runtime_contract_test.py tests/screen_snapshot_security_contract_test.py
+      - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/project"
+          -w /project/firmware
+          espressif/idf:v5.5.5
+          bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py -B build-screen-snapshot -DM5AUTH_TEST_SCREEN_SNAPSHOT=ON build && grep -Fx "M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON" build-screen-snapshot/CMakeCache.txt'
+      - name: Verify dependency lockfile is unchanged
+        run: git diff --exit-code -- firmware/dependencies.lock
