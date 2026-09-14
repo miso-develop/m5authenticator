@@ -200,13 +200,10 @@ export class CanonicalDeviceManagement {
 
       this.ownership = "active";
       if (this.hello.state === "locked") {
-        try {
-          await this.quickUnlock();
-          this.unlockRequired = false;
-        } catch {
-          this.ownership = "active";
-          this.unlockRequired = true;
-        }
+        // Ordinary connection is read-only with respect to unlock. A valid
+        // Trusted Browser remains eligible, but VMK delivery/session.begin is
+        // reserved for the explicit requestUnlock() user action.
+        this.unlockRequired = true;
       } else if (this.hello.state === "unlocked") {
         this.unlockRequired = false;
       } else {
