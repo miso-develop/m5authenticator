@@ -75,7 +75,7 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
         start = app.index("std::string screen_snapshot_response(")
         end = app.index("\n#endif", start)
         response = app[start:end].lower()
-        keys = set(re.findall(r'\\\"([a-z_]+)\\\"\s*:', response))
+        success_keys = set(re.findall(r'\\\"([a-z_]+)\\\"\s*:', response))
         self.assertEqual(
             {
                 "v",
@@ -89,10 +89,12 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
                 "confirmed",
                 "operation",
                 "screen_mode",
-                "error",
-                "code",
             },
-            keys,
+            success_keys,
+        )
+        self.assertIn(
+            'R"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})"',
+            response,
         )
         for forbidden_key in (
             "device_id",
