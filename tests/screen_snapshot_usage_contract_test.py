@@ -21,16 +21,37 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("idf.py -B build-screen-snapshot -p COM8 flash", doc)
         self.assertIn("Do not reuse `firmware\\build`", doc)
 
-    def test_human_procedure_documents_exact_read_only_request_and_port_ownership(self) -> None:
+    def test_helper_fresh_id_and_stale_response_contract_is_documented(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
         helper = HELPER.read_text(encoding="utf-8")
-        request = '{"v":2,"id":9002,"op":"diagnostics.screen_snapshot","params":{}}'
-        self.assertIn(request, doc)
-        self.assertIn(request, helper)
-        self.assertIn("python tools\\diagnostics\\screen_snapshot.py --port COM8", doc)
-        self.assertIn("Web Serial", doc)
-        self.assertIn("idf.py monitor", doc)
+        self.assertIn("fresh positive request ID", doc)
+        self.assertIn("it is **not fixed**", doc)
+        self.assertIn("response.id", doc)
+        self.assertIn("wrong-ID lines are ignored", doc)
+        self.assertIn("malformed stale lines are ignored", doc)
+        self.assertIn("secrets.randbelow", helper)
+        self.assertIn("response_id != request_id", helper)
+        self.assertNotIn('id":9002', helper)
+
+    def test_snapshot_not_ready_is_explicit_fail_closed_evidence(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        self.assertIn("snapshot_not_ready", doc)
+        self.assertIn("FAIL / re-check condition", doc)
+        self.assertIn("Before the first render has completed", doc)
+        self.assertIn("failed to start", doc)
+        self.assertIn("not evidence", doc)
+
+    def test_serial_ownership_can_invalidate_active_unlock_observation(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        self.assertIn("disconnecting Chrome/Web Serial", doc)
+        self.assertIn("cancel the active Protocol v2 transport session", doc)
+        self.assertIn("physical-presence attempt", doc)
+        self.assertIn("may **not** be suitable", doc)
+        self.assertIn("active `UNLOCK REQUEST`", doc)
+        self.assertIn("steady-state screen mode", doc)
+        self.assertIn("account-view / OTP-revealed coarse modes", doc)
         self.assertIn("one process can normally own", doc)
+        self.assertIn("idf.py monitor", doc)
 
     def test_diagnostics_on_is_auxiliary_and_cannot_satisfy_issue75(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
