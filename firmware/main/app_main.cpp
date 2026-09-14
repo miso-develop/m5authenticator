@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unistd.h>
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
@@ -302,6 +303,10 @@ void write_response(
     const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
     const int newline_result = std::fputc('\n', stdout);
     const int fflush_result = std::fflush(stdout);
+    // fflush() only drains libc buffering. ESP-IDF's USB Serial/JTAG VFS
+    // fsync path waits for host pickup and emits the terminating ZLP needed
+    // when a response lands on an exact 64-byte USB packet boundary.
+    (void)::fsync(STDOUT_FILENO);
     const int ferror_value = std::ferror(stdout);
 
     if (!measure || started_us <= 0) return;
