@@ -1,0 +1,39 @@
+name: Issue 86 Device TX Probe
+
+on:
+  pull_request:
+    paths:
+      - "firmware/main/CMakeLists.txt"
+      - "firmware/main/app_main.cpp"
+      - "tests/sticks3_runtime_contract_test.py"
+      - ".github/workflows/issue86-device-tx-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe-build:
+    name: ESP-IDF 5.5.5 TX probe build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify probe remains opt-in
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'M5AUTH_TX_BOUNDARY_DIAGNOSTICS' firmware/main/CMakeLists.txt
+          grep -q 'M5AUTH_TX_BOUNDARY_DIAGNOSTICS' firmware/main/app_main.cpp
+          grep -q 'OFF' firmware/main/CMakeLists.txt
+      - name: Build measurement firmware with ESP-IDF 5.5.5
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/project"
+          -w /project/firmware
+          espressif/idf:v5.5.5
+          bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py -DM5AUTH_TIMING_DIAGNOSTICS=OFF -DM5AUTH_TX_BOUNDARY_DIAGNOSTICS=ON build'
+      - name: Verify dependency lockfile is unchanged
+        run: git diff --exit-code -- firmware/dependencies.lock
