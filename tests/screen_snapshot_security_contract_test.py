@@ -66,8 +66,9 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
         for symbol in (
             "enum class ScreenMode",
             "struct ScreenSnapshot",
-            "ScreenSnapshot screen_snapshot() const;",
+            "bool screen_snapshot(ScreenSnapshot* output) const;",
             "ScreenSnapshot last_rendered_snapshot_{};",
+            "bool rendered_snapshot_ready_{false};",
         ):
             index = header.index(symbol)
             api_guard = header.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, index)
@@ -118,10 +119,8 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
             },
             success_keys,
         )
-        self.assertIn(
-            'r"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})"',
-            response,
-        )
+        self.assertIn('screen_snapshot_error_response(request_id, "internal_error")', response)
+        self.assertNotIn('\\"id\\":9002', response)
         for forbidden_key in (
             "device_id",
             "attempt_id",
