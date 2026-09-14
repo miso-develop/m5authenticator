@@ -93,7 +93,7 @@ class ScreenSnapshotSecurityContractTest(unittest.TestCase):
             success_keys,
         )
         self.assertIn(
-            'R"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})"',
+            'r"({"v":2,"id":9002,"ok":false,"error":{"code":"internal_error"}})"',
             response,
         )
         for forbidden_key in (
