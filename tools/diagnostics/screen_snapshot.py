@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import time
@@ -114,6 +115,15 @@ def _parse_json_line(raw: bytes) -> Any:
         raise ValueError("invalid one-line JSON") from exc
 
 
+def _raw_mentions_request_id(raw: bytes, request_id: int) -> bool:
+    # This is failure detection only, never success parsing. If malformed bytes
+    # clearly carry the current ID token, fail closed rather than skipping a
+    # possibly-corrupted current response as though it were stale. False positives
+    # are safe because they can only turn the diagnostic into an explicit failure.
+    pattern = rb'"id"\s*:\s*' + str(request_id).encode("ascii") + rb'(?=\s*[,}])'
+    return re.search(pattern, raw) is not None
+
+
 def _response_id(value: Any) -> int | None:
     if not isinstance(value, dict):
         return None
@@ -194,9 +204,11 @@ def read_matching_response(
             continue
         try:
             parsed = _parse_json_line(raw)
-        except ValueError:
-            # A malformed stale line cannot become evidence. Keep waiting for a
-            # valid response carrying the current fresh request ID.
+        except ValueError as exc:
+            if _raw_mentions_request_id(raw, request_id):
+                raise RuntimeError("current diagnostic response is malformed") from exc
+            # A malformed stale/unrelated line cannot become evidence. Keep
+            # waiting for a valid response carrying the current fresh request ID.
             continue
 
         response_id = _response_id(parsed)
