@@ -1,6 +1,6 @@
 # V1 Distribution and Update Paths
 
-M5Authenticator V1 distributes one CI-built, user-independent M5StickS3 firmware image through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, credential identity metadata, TOTP/Wi-Fi secrets, VMK/KEK/BUK/BRK/session keys, user Recovery Packages, device dumps, or a universal production encryption key.
+M5Authenticator V1 distributes CI-built, user-independent M5StickS3 firmware through GitHub Releases, the same-site GitHub Pages Web Flasher, and M5Burner. Distribution must never package authenticator accounts, credential identity metadata, TOTP/Wi-Fi secrets, VMK/KEK/BUK/BRK/session keys, user Recovery Packages, device dumps, or a universal production encryption key.
 
 For the durable V1 requirements and cross-component flow overview, see `docs/V1_REQUIREMENTS.md` and `docs/ARCHITECTURE.md`.
 
@@ -50,44 +50,76 @@ idf.py build
 idf.py merge-bin -o m5authenticator-merged.bin -f raw
 ```
 
-`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so output is `firmware/build/m5authenticator-merged.bin`.
+`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so the merged First Install/M5Burner image is `firmware/build/m5authenticator-merged.bin`.
 
-The raw merged image is flashed at offset `0x0`. `scripts/package_firmware.py` rejects an empty image or one whose byte range reaches protected `auth_nvs`.
+Normal Update does **not** reuse the merged offset-0 image. `scripts/package_firmware.py` additionally packages the exact ESP-IDF build outputs:
+
+```text
+firmware/build/bootloader/bootloader.bin
+firmware/build/partition_table/partition-table.bin
+firmware/build/m5authenticator.bin
+```
 
 The package contains:
 
 ```text
 m5authenticator-v<version>-m5sticks3.bin
+m5authenticator-v<version>-m5sticks3-update-bootloader.bin
+m5authenticator-v<version>-m5sticks3-update-partition-table.bin
+m5authenticator-v<version>-m5sticks3-update-ota0.bin
 factory-manifest.json
 update-manifest.json
 release-metadata.json
 SHA256SUMS
 ```
 
-`release-metadata.json` contains only non-secret build/device/release-contract metadata, including independent Firmware / Protocol / Storage Schema / Vault Format versions, security profile/version, VMK persistence mode, post-update state, and production-eligibility state. `SHA256SUMS` covers downloadable package files.
+The merged `.bin` is the destructive First Install / M5Burner artifact. The three `update-*` binaries are only for the state-preserving Web Normal Update path.
 
-There is no separately rebuilt M5Burner package. M5Burner `USER CUSTOM` publication uses the same merged `.bin` used by GitHub Releases and Web Flasher.
+Before packaging succeeds, `scripts/package_firmware.py` validates the real binary sizes against the flash write windows and rejects any Normal Update part whose write range overlaps a partition other than the intended `ota_0` application slot. This mechanically protects ordinary `nvs`, `otadata`, `phy_init`, `ota_1`, and `auth_nvs`; in particular the #107 persistent-state contract requires preservation of both ordinary `nvs` and `auth_nvs`.
+
+`release-metadata.json` contains only non-secret build/device/release-contract metadata, including independent Firmware / Protocol / Storage Schema / Vault Format versions, security profile/version, VMK persistence mode, post-update state, production-eligibility state, and the validated Normal Update write plan. `SHA256SUMS` covers all downloadable package files.
+
+There is no separately rebuilt M5Burner package. M5Burner `USER CUSTOM` publication uses the merged `.bin` from the same CI build.
 
 ## State-preserving flash layout
 
 V1 8 MiB layout:
 
 ```text
-0x000000  bootloader / partition table / system data
+0x000000  bootloader
+0x008000  partition table
+0x009000  nvs       (stable Device identity + active Trusted Browser registration)
+0x00f000  otadata
+0x011000  phy_init
 0x030000  ota_0
 0x400000  ota_1
-0x7d0000  auth_nvs
+0x7d0000  auth_nvs  (canonical encrypted Vault + generation/last-used state)
 0x800000  end of flash
 ```
 
-Both 0x3d0000-byte OTA application slots end before the final 0x30000-byte `auth_nvs` partition.
+The Normal Update write plan is deliberately partition-aware:
 
-The merged image is generated without `--pad-to-size`, so its normal write range ends before `auth_nvs`. The same CI-built binary therefore supports:
+```text
+bootloader       @ 0x000000, must end before 0x008000
+partition table  @ 0x008000, must end before 0x009000
+ota_0 app         @ 0x030000, must end before 0x400000
+```
 
-- **First install:** erase Flash, then flash merged image at `0x0`.
-- **Normal update:** do not erase Flash; flash the same merged image at `0x0`, preserving `auth_nvs`.
+Consequently Normal Update does not write ordinary `nvs`, `otadata`, `phy_init`, `ota_1`, or `auth_nvs`.
 
-Preserving `auth_nvs` preserves the authenticated Encrypted Vault and registration/non-secret runtime state. VMK is not persisted there or anywhere else in Device Flash. Firmware update/reboot therefore preserves the encrypted Vault but destroys the RAM-only VMK, and a provisioned Device returns `LOCKED` after update.
+The two persistent M5Authenticator ownership partitions are intentionally separate:
+
+- ordinary `nvs`: stable Device identity and active Trusted Browser registration;
+- `auth_nvs`: authenticated Encrypted Vault plus canonical generation/last-used state.
+
+Both must survive Normal Update. Preserving only `auth_nvs` is insufficient and creates a fail-closed Vault-without-registration state; this is the release-blocking defect captured by #107.
+
+VMK is not persisted in either partition or anywhere else in Device Flash. Firmware update/reboot therefore preserves persistent state but destroys the RAM-only VMK, so a provisioned Device returns `LOCKED` after update.
+
+The two installation semantics are therefore:
+
+- **First install:** destructive install using the merged offset-0 image; existing state may be erased.
+- **Normal update:** no full erase; write only the validated bootloader, partition-table, and `ota_0` application parts listed above.
 
 Factory Reset is not an update mechanism. It explicitly erases M5Authenticator Vault/user/registration state; normal update must not expose or invoke a full-Flash erase path.
 
@@ -112,24 +144,25 @@ The Pages site contains:
 
 No runtime CDN is used. The Provisioner retains `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so same-origin firmware assets can be fetched.
 
-With production eligibility enabled, CI may place the exact validated package binary/manifests under `/firmware/` only after the same V1 release/profile and merged-image security checks pass.
+With production eligibility enabled, CI may place the exact validated package binaries/manifests under `/firmware/` only after the same V1 release/profile and firmware security checks pass.
 
 ### First install — destructive
 
-Uses standard ESP Web Tools install with `factory-manifest.json`. This is explicitly for a new Device or intentional clean installation and performs the installation semantics documented by the Flasher UI.
+Uses standard ESP Web Tools install with `factory-manifest.json`. `factory-manifest.json` contains one merged firmware part at offset `0x0`. This path is explicitly for a new Device or intentional clean installation and keeps destructive semantics separate from Normal Update.
 
 ### Update — preserve authenticator state
 
 Normal Update does not use the generic erase-capable install dialog. M5Authenticator invokes ESP Web Tools 10.4.0 low-level flash API with `eraseFirst=false` unconditionally.
 
-The update path requires:
+The update path requires a same-origin `update-manifest.json` containing exactly three ESP32-S3 parts:
 
-- same-origin `update-manifest.json`
-- exactly one ESP32-S3 firmware part
-- offset `0x0`
-- the same merged firmware image as other distribution paths
+- bootloader at `0x000000`;
+- partition table at `0x008000`;
+- `ota_0` application at `0x030000`.
 
-`web/src/firmware-update.test.ts` pins the invariant that Update always calls the flasher with `eraseFirst=false`. There is no erase choice in normal Update UI.
+The Web app fetches each same-origin asset before opening the Serial chooser and validates the actual byte size against the allowed write window. Legacy single merged offset-0 manifests, missing/duplicate/unexpected parts, cross-origin assets, empty files, or oversized files fail closed before flashing.
+
+`web/src/firmware-update.test.ts` pins the accepted offsets/ranges and the invariant that Update always calls the flasher with `eraseFirst=false`. There is no erase choice in normal Update UI.
 
 `update-manifest.json` may retain the generic erase prompt as defense-in-depth if opened outside the M5Authenticator UI; it is not the normal execution path.
 
@@ -139,10 +172,10 @@ The update path requires:
 
 1. requires the exact V1 security contract and production eligibility;
 2. verifies tag equals `v<firmware_version>`;
-3. builds/merges firmware in pinned ESP-IDF 5.5.5;
+3. builds firmware in pinned ESP-IDF 5.5.5 and produces both merged and component binaries;
 4. verifies the actual merged firmware security surface;
-5. packages that exact CI-built image;
-6. uploads package files directly to the GitHub Release.
+5. packages the destructive merged image plus validated three-part Normal Update set;
+6. uploads all package files directly to the GitHub Release.
 
 The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
 
@@ -161,7 +194,7 @@ No credential-bearing data or user Recovery Package may enter an Actions Artifac
 
 ## M5Burner
 
-M5Burner `USER CUSTOM` publication uses the exact `.bin` from a production GitHub Release.
+M5Burner `USER CUSTOM` publication uses the exact merged `.bin` from a production GitHub Release. The `update-*` component binaries are not the M5Burner publication artifact.
 
 Do **not** use M5Burner Firmware Export on a provisioned Device. A full-device export can capture the Encrypted Vault and user state; even ciphertext-only credential backups/dumps are prohibited public artifacts under `SECURITY.md`.
 
@@ -170,7 +203,7 @@ Publication procedure:
 1. use only `m5authenticator-v<version>-m5sticks3.bin` from the production GitHub Release;
 2. choose M5StickS3 device type;
 3. use the project repository as source link;
-4. upload that CI-built `.bin`;
+4. upload that CI-built merged `.bin`;
 5. verify version/checksum against `release-metadata.json` / `SHA256SUMS`;
 6. never source public firmware from a provisioned Device dump.
 
