@@ -8,6 +8,7 @@ on:
       - "firmware/components/m5auth_device_sticks3/**"
       - "firmware/components/m5auth_time/**"
       - "firmware/components/m5auth_session/**"
+      - "firmware/components/m5auth_vault_runtime/**"
       - "tests/screen_snapshot_*"
       - "tools/diagnostics/screen_snapshot.py"
       - "docs/testing/screen-snapshot-diagnostics.md"
