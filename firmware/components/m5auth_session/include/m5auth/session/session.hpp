@@ -106,6 +106,9 @@ public:
     // A request becomes armed only after two consecutive released samples
     // observed after begin(). Requiring two samples prevents a release state
     // sampled just before a concurrent request from arming a pre-existing press.
+    // Once armed, confirmation additionally requires that this gate itself has
+    // observed the button pressed after arming; a caller-supplied stale edge or
+    // generation advance is never sufficient on its own.
     void observe_input_state(bool pressed);
 
     bool confirm_current(std::uint64_t now_ms, std::uint64_t input_generation);
@@ -132,6 +135,7 @@ private:
     std::uint64_t input_generation_at_start_{0};
     std::uint8_t neutral_samples_{0};
     bool input_armed_{false};
+    bool post_arm_press_sampled_{false};
 };
 
 class PresenceGestureQuarantine {
