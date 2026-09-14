@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 _MAX_REQUEST_ID = 2_000_000_000
 _OPERATION = "diagnostics.screen_snapshot"
+_issued_request_ids: set[int] = set()
 
 _ALLOWED_DATA_KEYS = {
     "runtime_state",
@@ -63,8 +64,12 @@ class _DuplicateJsonKey(ValueError):
 
 
 def generate_request_id() -> int:
-    """Return a fresh positive ID inside the Device parser's signed-int range."""
-    return secrets.randbelow(_MAX_REQUEST_ID) + 1
+    """Return a fresh positive ID, never reused within this helper process."""
+    while True:
+        request_id = secrets.randbelow(_MAX_REQUEST_ID) + 1
+        if request_id not in _issued_request_ids:
+            _issued_request_ids.add(request_id)
+            return request_id
 
 
 def build_request(request_id: int) -> bytes:
