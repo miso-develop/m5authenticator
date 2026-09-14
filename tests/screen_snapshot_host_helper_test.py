@@ -36,6 +36,9 @@ class AdvancingClock:
 
 
 class ScreenSnapshotHostHelperTest(unittest.TestCase):
+    def setUp(self) -> None:
+        helper._issued_request_ids.clear()
+
     def valid_response(self, request_id: int) -> dict:
         return {
             "v": 2,
@@ -65,13 +68,20 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
             now=AdvancingClock(),
         )
 
-    def test_fresh_request_id_generation_is_positive_and_not_fixed(self) -> None:
-        with mock.patch.object(helper.secrets, "randbelow", side_effect=[0, 1, 123456]):
+    def test_fresh_request_id_generation_retries_collision_and_is_not_fixed(self) -> None:
+        # The second invocation first collides with ID 1, then must draw again and
+        # return ID 2. This proves process-local freshness rather than relying only
+        # on the probability of a random collision being small.
+        with mock.patch.object(
+            helper.secrets,
+            "randbelow",
+            side_effect=[0, 0, 1, 123456],
+        ):
             self.assertEqual(1, helper.generate_request_id())
             self.assertEqual(2, helper.generate_request_id())
             self.assertEqual(123457, helper.generate_request_id())
-        self.assertNotEqual(9002, 1)
-        self.assertNotEqual(9002, 2)
+        self.assertEqual({1, 2, 123457}, helper._issued_request_ids)
+        self.assertNotIn(9002, helper._issued_request_ids)
 
     def test_request_echo_identity_is_dynamic_and_read_only(self) -> None:
         request_id = 182736451
