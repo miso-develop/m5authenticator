@@ -10,7 +10,7 @@ The repository root `.node-version` is the canonical Node.js version file. `web/
 `fnm` manages Node.js versions, not npm versions independently. npm is installed inside each fnm-managed Node.js installation. Therefore the setup is:
 
 1. install the Node.js version from `.node-version` with fnm;
-2. install npm `11.19.0` once inside that Node.js installation;
+2. install npm `11.19.0` once inside that exact fnm-managed Node.js installation;
 3. initialize fnm with `--use-on-cd` so entering this repository automatically selects that Node.js installation and therefore its pinned npm.
 
 ## Windows one-time toolchain bootstrap
@@ -25,8 +25,9 @@ The script:
 
 - reads Node.js from `.node-version`;
 - runs `fnm install` for that exact version;
-- installs npm `11.19.0` only inside that fnm-managed Node.js installation;
-- verifies `node --version` and `npm --version` through `fnm exec`.
+- resolves that fnm-managed Node.js installation by asking `fnm exec ... node` for `process.execPath`;
+- invokes the adjacent `npm.cmd` directly, so npm `11.19.0` is installed only inside that Node.js installation;
+- verifies that exact Node.js/npm pair without relying on another active Node.js installation on `PATH`.
 
 It does not change `fnm default` and therefore does not change the user's persistent default Node.js version.
 
@@ -63,13 +64,15 @@ The repository includes:
 scripts\fnm_autorun.cmd
 ```
 
-It initializes fnm using `--use-on-cd` and recursive `.node-version` lookup. Configure your Command Prompt / Windows Terminal startup to call this script once for each new shell.
+It evaluates `fnm env --use-on-cd --version-file-strategy recursive`, installs the directory-change hook, and also performs one silent `fnm use` immediately. That last step matters when a new CMD window starts with its current directory already inside this repository: there has not yet been a `cd` event for the hook to observe.
 
-For example, a Windows Terminal Command Prompt profile can start with:
+Configure your Command Prompt / Windows Terminal startup to call this script once for each new shell. For example, a Windows Terminal Command Prompt profile can start with:
 
 ```text
 cmd.exe /k call "<path-to-m5authenticator>\scripts\fnm_autorun.cmd"
 ```
+
+This configuration applies only to CMD processes that actually run that startup command. A different already-open CMD window does not inherit the hook from another window.
 
 If you already use a Command Processor `AutoRun` script, call `scripts\fnm_autorun.cmd` from the existing startup script rather than replacing the existing AutoRun value.
 
@@ -120,3 +123,7 @@ scripts\bootstrap_node_toolchain.cmd
 ```
 
 Do not globally upgrade npm from inside the pinned Node.js `24.21.0` environment unless the repository pin is intentionally changed at the same time.
+
+### Windows `fnm exec` note
+
+On Windows, `fnm exec` has historically been unreliable for `npm`/`npx` commands because they are `.cmd` launchers and because another active multishell may remain on `PATH`. Repository bootstrap scripts must therefore use `fnm exec` only to resolve the pinned `node.exe`, then invoke the `npm.cmd` adjacent to that executable directly. This prevents a bootstrap intended for Node.js `24.21.0` from modifying npm belonging to another Node.js installation.
