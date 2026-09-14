@@ -154,12 +154,9 @@ void CanonicalUiController::security_boundary_clear() {
 }
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
-bool CanonicalUiController::screen_snapshot(ScreenSnapshot* snapshot) const {
-    if (snapshot == nullptr) return false;
+ScreenSnapshot CanonicalUiController::screen_snapshot() const {
     std::lock_guard<std::mutex> view(view_mutex_);
-    if (!last_rendered_snapshot_valid_) return false;
-    *snapshot = last_rendered_snapshot_;
-    return true;
+    return last_rendered_snapshot_;
 }
 #endif
 
@@ -430,7 +427,6 @@ void CanonicalUiController::render() {
     // view_mutex_, so a diagnostic reader can observe either the previous full
     // render or this completed one, never a live state that has not been drawn.
     last_rendered_snapshot_ = rendered_snapshot;
-    last_rendered_snapshot_valid_ = true;
 #endif
 }
 
