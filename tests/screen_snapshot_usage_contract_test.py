@@ -32,7 +32,7 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("malformed stale lines are ignored", doc)
         self.assertIn("secrets.randbelow", helper)
         self.assertIn("response_id != request_id", helper)
-        self.assertNotIn('id":9002', helper)
+        self.assertNotIn('id\":9002', helper)
 
     def test_snapshot_not_ready_is_explicit_fail_closed_evidence(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
@@ -78,6 +78,29 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         import_index = helper.index("import serial", helper.index("def read_snapshot"))
         self.assertLess(validate_index, import_index)
 
+    def test_pre_request_sync_is_bounded_quiet_not_retry_and_is_reported(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        helper = HELPER.read_text(encoding="utf-8")
+        self.assertIn("continuous quiet", doc)
+        self.assertIn("before sending the first and only diagnostic request", doc)
+        self.assertIn("sends no diagnostic request", doc)
+        self.assertIn("not a retry", doc)
+        self.assertIn("SCREEN_SNAPSHOT_SYNC=", doc)
+        for field in (
+            "pre_purge_waiting",
+            "pre_request_data",
+            "pre_request_bytes",
+            "pre_request_newline",
+            "first_byte",
+            "quiet_ms",
+            "invocation",
+        ):
+            self.assertIn(field, doc)
+            self.assertIn(field, helper)
+        self.assertIn("_PRE_REQUEST_QUIET_SECONDS", helper)
+        self.assertIn("_PRE_REQUEST_SYNC_MAX_SECONDS", helper)
+        self.assertIn("_MAX_PRE_REQUEST_DRAIN_BYTES", helper)
+
     def test_completed_malformed_current_frame_is_sanitized_and_never_retried_into_pass(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
         helper = HELPER.read_text(encoding="utf-8")
@@ -90,6 +113,7 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
             "control",
             "json_error",
             "id_position",
+            "prefix_len",
             "object_starts",
             "object_ends",
             "shape",
@@ -113,15 +137,18 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("abandon bytes", doc)
         self.assertIn("cannot reconstruct bytes already lost", doc)
 
-    def test_human_gate_rejects_observation_induced_reset_or_state_change(self) -> None:
+    def test_human_gate_requires_clean_first_open_case_before_repetition(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
+        self.assertIn("first helper invocation after flash/reboot", doc)
+        self.assertIn("helper has never opened the COM port", doc)
+        self.assertIn("must be tested separately", doc)
+        self.assertIn("record the sanitized `SCREEN_SNAPSHOT_SYNC` line", doc)
         self.assertIn("at least **5 consecutive times without power cycling**", doc)
         self.assertIn("`Starting...` does not appear", doc)
         self.assertIn("Device does not reboot", doc)
         self.assertIn("download/bootloader mode", doc)
         self.assertIn("screen/runtime state does not change unexpectedly", doc)
         self.assertIn("snapshot matches the physical LCD coarse state", doc)
-        self.assertIn("no unsolicited serial output", doc)
         self.assertIn("malformed current-ID completed frame", doc)
         self.assertIn("return to Integration", doc)
 
