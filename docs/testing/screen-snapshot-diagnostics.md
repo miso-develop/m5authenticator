@@ -99,7 +99,39 @@ From the repository root, use the read-only helper. Run it from the activated ES
 python tools\diagnostics\screen_snapshot.py --port COM8
 ```
 
-For every invocation the helper generates a fresh positive request ID in the Device parser's safe integer range and sends exactly one request with that ID, conceptually:
+### Pre-request serial synchronization
+
+A host-side serial purge is not treated as proof that the Device USB TX path is empty. Bytes emitted during boot/runtime can still be pending below the host receive queue and arrive after the COM port is opened or after the host purge.
+
+Therefore, after opening the port with inactive DTR/RTS, the helper:
+
+1. records only whether pySerial reports host-side bytes waiting before the explicit purge;
+2. performs the host-side input purge;
+3. drains any bytes that arrive after that purge without parsing or displaying them;
+4. restarts a **continuous quiet** timer whenever any byte arrives;
+5. requires at least 200 ms of continuous quiet, within a bounded 1.5 s synchronization window and an 8192-byte discard ceiling, **before sending the first and only diagnostic request**.
+
+This phase **sends no diagnostic request**. It is transport synchronization before request 1, **not a retry**, and it is not a fixed sleep: newly arriving data resets the quiet condition. If continuous quiet cannot be established or the bounded discard ceiling is exceeded, the helper fails before writing a request.
+
+The helper reports only sanitized synchronization metadata on stderr, for example:
+
+```text
+SCREEN_SNAPSHOT_SYNC=pre_purge_waiting=no,pre_request_data=yes,pre_request_bytes=37,pre_request_newline=no,first_byte=51-250ms,quiet_ms=200,invocation=first
+```
+
+The fields are:
+
+- `pre_purge_waiting`: whether the host driver reported queued input immediately before the helper's explicit purge (`yes`, `no`, or `unknown`);
+- `pre_request_data`: whether any bytes arrived after purge but before request 1;
+- `pre_request_bytes`: count of discarded pre-request bytes only;
+- `pre_request_newline`: whether those discarded bytes contained a newline;
+- `first_byte`: bucket for first post-purge byte observation (`le-50ms`, `51-250ms`, `gt-250ms`, or `none`);
+- `quiet_ms`: achieved continuous quiet duration before request 1;
+- `invocation`: whether this is the first collection in the helper process.
+
+No discarded byte value or decoded text is printed. A successful snapshot does **not** erase the fact that `pre_request_data=yes` was observed; record the sync line together with the snapshot during Human validation.
+
+For every invocation the helper then generates a fresh positive request ID in the Device parser's safe integer range and sends exactly one request with that ID, conceptually:
 
 ```json
 {"v":2,"id":182736451,"op":"diagnostics.screen_snapshot","params":{}}
@@ -107,7 +139,7 @@ For every invocation the helper generates a fresh positive request ID in the Dev
 
 The numeric ID above is only an example; it is **not fixed**. The Device echoes the current request ID in its response. The helper accepts a success only when `response.id` exactly matches the fresh ID generated for that invocation.
 
-Delayed/stale responses from previous helper runs therefore cannot become current test evidence. The helper may purge the input buffer as defense-in-depth, but freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID.
+Delayed/stale responses from previous helper runs therefore cannot become current test evidence. Freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID. The pre-request synchronization exists specifically to prevent an unterminated startup/console tail from being concatenated with the new current response; it does not relax current-response parsing.
 
 The `--timeout` value must be finite and greater than zero. `0`, negative values, `nan`, `inf`, and `-inf` are rejected before opening the serial port.
 
@@ -145,18 +177,24 @@ For investigation, the failure text contains structural facts only. It may repor
 - `control`: non-whitespace control-byte presence;
 - `json_error`: decoder-position bucket (`near-start`, `middle`, `near-end`, or `unknown`);
 - `id_position`: current-ID-token position bucket;
+- `prefix_len`: structural byte count before the first `{` when prefix contamination is detected;
 - `object_starts` / `object_ends`: zero/one/multiple top-level JSON-object-looking boundaries;
-- `shape`: structural classification such as `prefix-contamination`, `suffix-contamination`, `middle-interleave-corruption`, `concatenated-objects`, `truncated-looking`, `invalid-utf8`, or `unknown`.
+- `shape`: structural classification such as `prefix-contamination`, `suffix-contamination`, `middle-interleave-corruption`, `concatenated-objects`, `truncated-looking`, `invalid-utf8`, or `unknown`;
+- the same sanitized pre-request synchronization fields listed above.
 
-These diagnostics never print the raw serial payload, decoded frame text, byte values, credential labels, OTP digits, secrets, or other Device data. Record only this sanitized structural result when reporting a malformed current response.
+These diagnostics never print the raw serial payload, decoded frame text, byte values, credential labels, OTP digits, secrets, or other Device data. Record only this sanitized structural result when reporting a malformed current response. In particular, do not strip bytes before the first `{`, parse a JSON suffix, skip a malformed current frame, or perform an automatic retry to turn a contaminated response into PASS.
 
 ### Device TX framing and residual transport risk
 
 The Device writes every Protocol-v2 response through the common `write_response()` path. The response body and terminating newline are assembled into one frame and sent with one logical stdio write while the `stdout` FILE lock remains held through `fflush()` and USB Serial/JTAG `fsync()`. This prevents normal concurrent `stdout` writers from entering between the JSON body and its newline. The same common TX hardening is present in default-OFF production firmware; it does **not** enable the screen-snapshot operation when `M5AUTH_TEST_SCREEN_SNAPSHOT` is OFF and does not change the Protocol-v2 JSON format.
 
-ESP-IDF logging uses the console standard stream, and USB Serial/JTAG is the configured primary console for this firmware. The USB Serial/JTAG VFS also serializes individual writes to the shared physical port. Direct/early/ROM writers that bypass the ordinary stdio locking model are not proven to be covered by the application FILE lock.
+The USB Serial/JTAG connection state used by ESP-IDF follows USB bus activity, not ownership of the Windows COM handle. A powered/enumerated host can therefore be present while no user-space serial reader owns the port. The simplified USB Serial/JTAG VFS has a bounded transmit window and can abandon bytes when the TX FIFO does not make progress, while its higher-level write reports the requested size. Bootloader/ROM, ESP-IDF, library, or runtime console data can consequently leave a partial/unterminated tail which is delivered only after a later COM open. A host input purge cannot guarantee removal of bytes still pending on the Device side.
 
-ESP-IDF's simplified USB Serial/JTAG VFS can also abandon bytes if the host is not draining the TX FIFO within its bounded transmit window. `fflush()` / `fsync()` help drain buffered output but cannot reconstruct bytes already lost below stdio. Therefore a `truncated-looking` or other corruption classification remains a transport finding requiring investigation; it must not be repaired on the host by skipping the malformed current frame or automatically retrying.
+ESP-IDF logging normally uses the console standard stream, and USB Serial/JTAG is the configured primary console for this firmware. The USB Serial/JTAG VFS also serializes individual writes to the shared physical port. However, **Direct/early/ROM writers** are separate from the ordinary application `stdout` FILE locking model. In particular, the USB Serial/JTAG bootloader console uses the ROM output path, and constrained/early logging can use ROM printing. Those paths can precede application `write_response()` and are not retroactively protected by its FILE lock.
+
+`fflush()` / `fsync()` help complete new response output and preserve the prior 64-byte/ZLP transport fix, but cannot reconstruct bytes already lost or remove an old prefix that was emitted before the response transaction began. A future post-request `prefix-contamination`, `truncated-looking`, or other current-ID corruption classification therefore remains a gate failure; the host synchronization is not allowed to salvage that frame.
+
+The driver-backed USB Serial/JTAG mode provides FreeRTOS ring buffers and stronger application-TX buffering, but it is not used as the #119 fix: it is installed only after application startup, adds RAM/ISR/ring-buffer complexity, and cannot prevent ROM/bootloader output emitted before the application from leaving a first-open tail.
 
 ## 5. #119 Windows + M5StickS3 Human Gate
 
@@ -164,19 +202,28 @@ CI cannot prove that the actual Windows USB/serial driver and M5StickS3 hardware
 
 Use only sanitized/non-secret observations. Do not record Device ID, credential labels, TOTP digits/secrets, Recovery Package/Passphrase, VMK/KEK/BUK/BRK/session material, Wi-Fi credentials, or Vault material.
 
-Minimum gate:
+The **first helper invocation after flash/reboot** is a distinct mandatory case and **must be tested separately** from repeat invocations. For that first-open case:
 
-1. Put the diagnostics-ON M5StickS3 into a steady-state **LOCKED** screen.
-2. Ensure Chrome/Web Serial, `idf.py monitor`, and other serial terminals do not own the COM port.
-3. Run the helper at least **5 consecutive times without power cycling**.
-4. On every run verify:
+1. clean-build and flash the authorized diagnostics exact head;
+2. after the flash/reset, allow the Device to reach the steady **LOCKED** screen;
+3. close the flasher/monitor and ensure Chrome/Web Serial and other terminals do not own the port;
+4. confirm the **helper has never opened the COM port** since that flash/reboot;
+5. run the helper exactly once while observing the LCD;
+6. record the sanitized `SCREEN_SNAPSHOT_SYNC` line and the sanitized snapshot or failure;
+7. if the run fails or visibly perturbs the Device, stop immediately. Do not retry that first-open case into PASS.
+
+Only if Integration accepts the first-open result may the repeated-open portion proceed:
+
+1. keep the Device in a steady-state **LOCKED** screen;
+2. run the helper at least **5 consecutive times without power cycling**;
+3. on every run verify:
    - `Starting...` does not appear;
    - the Device does not reboot;
    - download/bootloader mode does not appear;
    - the screen/runtime state does not change unexpectedly;
    - the sanitized snapshot matches the physical LCD coarse state;
-   - no unsolicited serial output appears.
-5. If practical, repeat the same observation pattern in additional steady states such as `account_view` and `otp_revealed`, without recording credential labels or OTP digits.
+   - the sanitized sync line is retained with the evidence;
+4. if practical, repeat the same observation pattern in additional steady states such as `account_view` and `otp_revealed`, without recording credential labels or OTP digits.
 
 Any visible reset/glitch/state transition **or malformed current-ID completed frame** is **FAIL**, even if a later invocation succeeds. Stop that gate attempt, record only the sanitized failure class/structural diagnostics, and return to Integration. Do not continue until a later success overwrites the failure.
 
