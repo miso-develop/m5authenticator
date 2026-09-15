@@ -110,7 +110,11 @@ class WindowsDiagnosticsScriptContractTest(unittest.TestCase):
         self.assertIn("scripts\\windows\\flash-screen-snapshot.cmd com8", docs)
         self.assertIn("screen_snapshot.py", docs)
         self.assertIn("integration", docs)
-        self.assertRegex(docs, r"screen_snapshot\.py[\s\S]{0,1200}(one|1).{0,40}(run|invocation|回)")
+        self.assertIn(
+            "run `python tools\\diagnostics\\screen_snapshot.py --port com8` exactly once",
+            docs,
+        )
+        self.assertIn("the build and flash scripts never launch the human helper", docs)
 
     def test_project_command_chaining_policy_is_durable(self) -> None:
         agents = self._text(AGENTS).lower()
