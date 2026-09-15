@@ -13,14 +13,13 @@ WORKFLOW = ROOT / ".github/workflows/issue117-screen-snapshot.yml"
 class ScreenSnapshotUsageContractTest(unittest.TestCase):
     def test_human_procedure_uses_isolated_diagnostics_build_directory(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
-        self.assertIn("idf.py -B build-screen-snapshot set-target esp32s3", doc)
-        self.assertIn(
-            "idf.py -B build-screen-snapshot -DM5AUTH_TEST_SCREEN_SNAPSHOT=ON build",
-            doc,
-        )
+        self.assertIn("scripts\\windows\\build-screen-snapshot.cmd", doc)
+        self.assertIn("scripts\\windows\\rebuild-screen-snapshot.cmd", doc)
         self.assertIn("M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON", doc)
-        self.assertIn("idf.py -B build-screen-snapshot -p COM8 flash", doc)
+        self.assertIn("scripts\\windows\\flash-screen-snapshot.cmd COM8", doc)
         self.assertIn("Do not reuse `firmware\\build`", doc)
+        self.assertIn("build and rebuild helpers do **not** flash", doc)
+        self.assertIn("flash helper does not run a diagnostics build", doc)
 
     def test_helper_fresh_id_and_stale_response_contract_is_documented(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
@@ -163,6 +162,8 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("first helper invocation after flash/reboot", doc)
         self.assertIn("helper has never opened the COM port", doc)
         self.assertIn("must be tested separately", doc)
+        self.assertIn("scripts\\windows\\rebuild-screen-snapshot.cmd", doc)
+        self.assertIn("scripts\\windows\\flash-screen-snapshot.cmd COM8", doc)
         self.assertIn("record the sanitized `SCREEN_SNAPSHOT_SYNC` line", doc)
         self.assertIn("prefix_equals_request_first64", doc)
         self.assertIn("suffix_allowlist_valid", doc)
@@ -178,6 +179,8 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
     def test_workflow_tracks_relation_suite_and_vault_runtime_dependency(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("tests/screen_snapshot_request_relation_test.py", workflow)
+        self.assertIn("tests/screen_snapshot_windows_scripts_contract_test.py", workflow)
+        self.assertIn('"scripts/windows/**"', workflow)
         self.assertIn('"firmware/components/m5auth_vault_runtime/**"', workflow)
         for required in (
             '"firmware/components/m5auth_device_sticks3/**"',
