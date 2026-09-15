@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
+MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 SDKCONFIG_DEFAULTS = ROOT / "firmware" / "sdkconfig.defaults"
 
 TX_FLUSH_TIMEOUT_US = 50_000
@@ -195,12 +196,10 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self._stale(64))
         model.open_listener()
         self.assertEqual(model.purge_host_queue(), b"")
-
         writable, _ = fresh_local_deadline_wait_model(samples=[False, True])
         self.assertTrue(writable)
         model.emit_flushed_transfer(b"\n")
         self.assertEqual(model.read_host_queue(), self._stale(64) + b"\n")
-
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
@@ -229,6 +228,20 @@ class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
         self.assertNotIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
         self.assertNotIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
         self.assertNotIn("CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y", defaults)
+
+    def test_low_level_hal_include_is_diagnostics_only_and_private_dependency_is_explicit(self) -> None:
+        source = APP_MAIN.read_text(encoding="utf-8")
+        include = '#include "hal/usb_serial_jtag_ll.h"'
+        include_at = source.index(include)
+        macro_at = source.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, include_at)
+        endif_at = source.index("#endif", include_at)
+        self.assertGreaterEqual(macro_at, 0)
+        self.assertLess(macro_at, include_at)
+        self.assertLess(include_at, endif_at)
+
+        cmake = MAIN_CMAKE.read_text(encoding="utf-8")
+        self.assertIn("PRIV_REQUIRES", cmake)
+        self.assertIn("hal", cmake)
 
     def test_diagnostics_boundary_uses_fresh_ll_deadline_before_stdio_delimiter(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
