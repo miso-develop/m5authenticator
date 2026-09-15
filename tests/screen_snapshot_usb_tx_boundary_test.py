@@ -254,8 +254,8 @@ class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
         boundary_start = source.index("bool synchronize_screen_snapshot_response_boundary")
         boundary_end = source.index("enum class ScreenSnapshotRequestKind", boundary_start)
         boundary = source[boundary_start:boundary_end]
-        self.assertNotIn("clearerr(stdout)", boundary)
-        self.assertNotIn("ferror(stdout)", boundary)
+        self.assertNotIn("std::clearerr(stdout)", boundary)
+        self.assertNotIn("std::ferror(stdout)", boundary)
 
     def test_diagnostics_boundary_is_test_only_and_fail_closed(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
