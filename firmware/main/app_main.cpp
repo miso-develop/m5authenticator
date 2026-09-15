@@ -308,14 +308,24 @@ void write_response(
     const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
     const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
 
-    const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
-    const int newline_result = std::fputc('\n', stdout);
+    // stdout is line-buffered and shared with ESP-IDF console logging. Keep the
+    // JSON body and its newline in one logical frame and hold the FILE lock across
+    // write/flush/fsync so another normal stdout writer cannot enter between them.
+    // The USB Serial/JTAG VFS adds its own write lock for stdout/stderr sharing.
+    std::string frame;
+    frame.reserve(response.size() + 1);
+    frame.append(response);
+    frame.push_back('\n');
+
+    ::flockfile(stdout);
+    const std::size_t fwrite_bytes = std::fwrite(frame.data(), 1, frame.size(), stdout);
     const int fflush_result = std::fflush(stdout);
-    // fflush() only drains libc buffering. ESP-IDF's USB Serial/JTAG VFS
-    // fsync path waits for host pickup and emits the terminating ZLP needed
-    // when a response lands on an exact 64-byte USB packet boundary.
+    // fflush() drains libc buffering. ESP-IDF's USB Serial/JTAG VFS fsync path
+    // waits for host pickup and emits the terminating ZLP needed when a transfer
+    // lands on an exact 64-byte USB packet boundary.
     (void)::fsync(STDOUT_FILENO);
     const int ferror_value = std::ferror(stdout);
+    ::funlockfile(stdout);
 
     if (!measure || started_us <= 0) return;
     const std::int64_t finished_us = esp_timer_get_time();
@@ -328,8 +338,8 @@ void write_response(
     sample.max_us = std::max(sample.max_us, elapsed_us);
     sample.operation = static_cast<std::uint64_t>(operation);
     sample.response_bytes = response.size();
-    sample.fwrite_ok = fwrite_bytes == response.size() ? 1 : 0;
-    sample.newline_ok = newline_result == '\n' ? 1 : 0;
+    sample.fwrite_ok = fwrite_bytes == frame.size() ? 1 : 0;
+    sample.newline_ok = fwrite_bytes == frame.size() && frame.back() == '\n' ? 1 : 0;
     sample.fflush_ok = fflush_result == 0 ? 1 : 0;
     sample.ferror_value = ferror_value == 0 ? 0 : 1;
     persist_timing_diagnostics_to_rtc();
