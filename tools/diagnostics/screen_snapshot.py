@@ -20,8 +20,12 @@ from typing import Any, Callable
 
 _MAX_REQUEST_ID = 2_000_000_000
 _MAX_RESPONSE_LINE_BYTES = 4096
+_MAX_PRE_REQUEST_DRAIN_BYTES = 8192
+_PRE_REQUEST_QUIET_SECONDS = 0.20
+_PRE_REQUEST_SYNC_MAX_SECONDS = 1.50
 _OPERATION = "diagnostics.screen_snapshot"
 _issued_request_ids: set[int] = set()
+_collection_count = 0
 
 _ALLOWED_DATA_KEYS = {
     "runtime_state",
@@ -186,7 +190,124 @@ def _json_error_bucket(exc: ValueError, payload_length: int) -> str:
     return "unknown"
 
 
-def _completed_malformed_diagnostics(raw: bytes, request_id: int, exc: ValueError) -> str:
+def _timing_bucket(seconds: float | None) -> str:
+    if seconds is None:
+        return "none"
+    if seconds <= 0.05:
+        return "le-50ms"
+    if seconds <= 0.25:
+        return "51-250ms"
+    return "gt-250ms"
+
+
+def _pre_purge_waiting_presence(port: Any) -> str:
+    try:
+        waiting = getattr(port, "in_waiting")
+    except Exception:
+        return "unknown"
+    if isinstance(waiting, bool) or not isinstance(waiting, int) or waiting < 0:
+        return "unknown"
+    return "yes" if waiting > 0 else "no"
+
+
+def _format_pre_request_sync(sync: dict[str, Any]) -> str:
+    """Format only structural/timing metadata; never include discarded serial data."""
+    return (
+        f"pre_purge_waiting={sync['pre_purge_waiting']},"
+        f"pre_request_data={sync['pre_request_data']},"
+        f"pre_request_bytes={sync['pre_request_bytes']},"
+        f"pre_request_newline={sync['pre_request_newline']},"
+        f"first_byte={sync['first_byte']},"
+        f"quiet_ms={sync['quiet_ms']},"
+        f"invocation={sync['invocation']}"
+    )
+
+
+def _synchronize_before_request(
+    port: Any,
+    *,
+    now: Callable[[], float] = time.monotonic,
+    invocation: str = "unknown",
+) -> dict[str, Any]:
+    """Drain late startup bytes and require bounded continuous quiet before request 1."""
+    started = now()
+    deadline = started + _PRE_REQUEST_SYNC_MAX_SECONDS
+    pre_purge_waiting = _pre_purge_waiting_presence(port)
+
+    # On Windows pySerial this purges the host driver RX queue only. It cannot
+    # guarantee that bytes still pending in the Device USB TX path will not arrive
+    # later, so continue draining until a continuous quiet condition is observed.
+    reset_input = getattr(port, "reset_input_buffer", None)
+    if callable(reset_input):
+        reset_input()
+
+    last_data_at = now()
+    total_bytes = 0
+    saw_newline = False
+    first_byte_elapsed: float | None = None
+
+    while True:
+        current = now()
+        quiet_seconds = max(0.0, current - last_data_at)
+        if quiet_seconds >= _PRE_REQUEST_QUIET_SECONDS:
+            sync = {
+                "pre_purge_waiting": pre_purge_waiting,
+                "pre_request_data": "yes" if total_bytes else "no",
+                "pre_request_bytes": total_bytes,
+                "pre_request_newline": "yes" if saw_newline else "no",
+                "first_byte": _timing_bucket(first_byte_elapsed),
+                "quiet_ms": int(quiet_seconds * 1000),
+                "invocation": invocation,
+            }
+            return sync
+        if current >= deadline:
+            sync = {
+                "pre_purge_waiting": pre_purge_waiting,
+                "pre_request_data": "yes" if total_bytes else "no",
+                "pre_request_bytes": total_bytes,
+                "pre_request_newline": "yes" if saw_newline else "no",
+                "first_byte": _timing_bucket(first_byte_elapsed),
+                "quiet_ms": int(quiet_seconds * 1000),
+                "invocation": invocation,
+            }
+            raise RuntimeError(
+                "pre-request synchronization did not reach quiet condition ("
+                + _format_pre_request_sync(sync)
+                + ")"
+            )
+
+        fragment = port.readline()
+        after_read = now()
+        if fragment:
+            if first_byte_elapsed is None:
+                first_byte_elapsed = max(0.0, after_read - started)
+            total_bytes += len(fragment)
+            saw_newline = saw_newline or b"\n" in fragment
+            if total_bytes > _MAX_PRE_REQUEST_DRAIN_BYTES:
+                sync = {
+                    "pre_purge_waiting": pre_purge_waiting,
+                    "pre_request_data": "yes",
+                    "pre_request_bytes": total_bytes,
+                    "pre_request_newline": "yes" if saw_newline else "no",
+                    "first_byte": _timing_bucket(first_byte_elapsed),
+                    "quiet_ms": 0,
+                    "invocation": invocation,
+                }
+                raise RuntimeError(
+                    "pre-request synchronization exceeded byte limit ("
+                    + _format_pre_request_sync(sync)
+                    + ")"
+                )
+            # Any newly-arrived data restarts the continuous quiet requirement.
+            last_data_at = after_read
+
+
+def _completed_malformed_diagnostics(
+    raw: bytes,
+    request_id: int,
+    exc: ValueError,
+    pre_request_sync: dict[str, Any] | None = None,
+) -> str:
     """Return structural-only diagnostics; never include serial bytes or decoded text."""
     payload = raw.rstrip(b"\r\n")
     trimmed = payload.strip(b" \t\r\n")
@@ -198,6 +319,12 @@ def _completed_malformed_diagnostics(raw: bytes, request_id: int, exc: ValueErro
     id_match = re.search(_request_id_pattern(request_id), payload)
     id_position = _position_bucket(id_match.start() if id_match else None, len(payload))
     json_error = _json_error_bucket(exc, len(payload))
+    first_brace = payload.find(b"{")
+    prefix_len = (
+        str(first_brace)
+        if first_object == "no" and first_brace >= 0
+        else "unknown"
+    )
 
     text: str | None
     try:
@@ -234,12 +361,17 @@ def _completed_malformed_diagnostics(raw: bytes, request_id: int, exc: ValueErro
     else:
         shape = "unknown"
 
+    sync_suffix = ""
+    if pre_request_sync is not None:
+        sync_suffix = "," + _format_pre_request_sync(pre_request_sync)
+
     return (
         "current diagnostic response is malformed "
         f"(frame_len={len(raw)},utf8={utf8},first_object={first_object},"
         f"last_object={last_object},nul={nul},control={control},"
-        f"json_error={json_error},id_position={id_position},"
-        f"object_starts={object_starts},object_ends={object_ends},shape={shape})"
+        f"json_error={json_error},id_position={id_position},prefix_len={prefix_len},"
+        f"object_starts={object_starts},object_ends={object_ends},shape={shape}"
+        f"{sync_suffix})"
     )
 
 
@@ -315,6 +447,7 @@ def read_matching_response(
     timeout_seconds: float,
     *,
     now: Callable[[], float] = time.monotonic,
+    pre_request_sync: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     deadline = now() + timeout_seconds
     pending = bytearray()
@@ -347,7 +480,12 @@ def read_matching_response(
             except ValueError as exc:
                 if _raw_mentions_request_id(raw, request_id):
                     raise RuntimeError(
-                        _completed_malformed_diagnostics(raw, request_id, exc)
+                        _completed_malformed_diagnostics(
+                            raw,
+                            request_id,
+                            exc,
+                            pre_request_sync,
+                        )
                     ) from exc
                 # A malformed stale/unrelated completed line cannot become evidence.
                 # Keep waiting for a valid response carrying the fresh request ID.
@@ -381,9 +519,20 @@ def _validate_timeout_seconds(timeout_seconds: float) -> None:
         raise RuntimeError("timeout must be a finite positive number")
 
 
-def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float) -> dict[str, Any]:
+def _collect_snapshot(
+    serial_module: Any,
+    port_name: str,
+    timeout_seconds: float,
+    *,
+    now: Callable[[], float] = time.monotonic,
+    sync_reporter: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Collect one snapshot with an explicit fail-closed serial lifecycle."""
     _validate_timeout_seconds(timeout_seconds)
+
+    global _collection_count
+    _collection_count += 1
+    invocation = "first" if _collection_count == 1 else "later"
 
     request_id = generate_request_id()
     request = build_request(request_id)
@@ -411,15 +560,27 @@ def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float
         port.rts = False
         port.open()
 
-        # Purging is defense-in-depth only. Fresh request-ID matching below is the
-        # primary freshness guarantee and remains required even if a driver cannot
-        # purge or a delayed line arrives after this point.
-        reset_input = getattr(port, "reset_input_buffer", None)
-        if callable(reset_input):
-            reset_input()
+        # A host-side purge cannot remove bytes which are still pending in the
+        # Device USB TX path. Drain after the purge and require continuous quiet
+        # before sending request 1. This phase never sends a protocol request and
+        # therefore is synchronization, not a retry or malformed-frame recovery.
+        pre_request_sync = _synchronize_before_request(
+            port,
+            now=now,
+            invocation=invocation,
+        )
+        if sync_reporter is not None:
+            sync_reporter(_format_pre_request_sync(pre_request_sync))
+
         port.write(request)
         port.flush()
-        result = read_matching_response(port, request_id, timeout_seconds)
+        result = read_matching_response(
+            port,
+            request_id,
+            timeout_seconds,
+            now=now,
+            pre_request_sync=pre_request_sync,
+        )
     except RuntimeError as exc:
         primary_runtime_error = exc
     except Exception as exc:  # serial/OS read-write-open failures all fail closed
@@ -450,7 +611,12 @@ def _collect_snapshot(serial_module: Any, port_name: str, timeout_seconds: float
     return result
 
 
-def read_snapshot(port_name: str, timeout_seconds: float) -> dict[str, Any]:
+def read_snapshot(
+    port_name: str,
+    timeout_seconds: float,
+    *,
+    sync_reporter: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     # Validate before importing/opening pySerial so invalid CLI values fail fast.
     _validate_timeout_seconds(timeout_seconds)
     try:
@@ -460,7 +626,12 @@ def read_snapshot(port_name: str, timeout_seconds: float) -> dict[str, Any]:
             "pyserial is required; run from the activated ESP-IDF Python environment"
         ) from exc
 
-    return _collect_snapshot(serial, port_name, timeout_seconds)
+    return _collect_snapshot(
+        serial,
+        port_name,
+        timeout_seconds,
+        sync_reporter=sync_reporter,
+    )
 
 
 def main() -> int:
@@ -471,8 +642,17 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=3.0, help="Overall response timeout seconds")
     args = parser.parse_args()
 
+    def report_sync(summary: str) -> None:
+        # This line intentionally contains metadata only. It reports whether stale
+        # data existed before request 1 without ever exposing the discarded bytes.
+        print(f"SCREEN_SNAPSHOT_SYNC={summary}", file=sys.stderr)
+
     try:
-        response = read_snapshot(args.port, args.timeout)
+        response = read_snapshot(
+            args.port,
+            args.timeout,
+            sync_reporter=report_sync,
+        )
     except RuntimeError as exc:
         print(f"SCREEN_SNAPSHOT=FAIL: {exc}", file=sys.stderr)
         return 1
