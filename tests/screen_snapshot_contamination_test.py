@@ -147,13 +147,36 @@ class ScreenSnapshotContaminationTest(unittest.TestCase):
         self.assertIn("utf8=invalid", message)
         self.assertNotIn("ff", message.lower())
 
+    def test_nul_presence_is_reported_without_exposing_payload(self) -> None:
+        payload = self.current_payload()
+        split = payload.index(b'"screen_mode"')
+        message = self.assert_sanitized_malformed(
+            [payload[:split] + b"\x00" + payload[split:] + b"\n"],
+            "middle-interleave-corruption",
+        )
+        self.assertIn("nul=yes", message)
+        self.assertIn("control=yes", message)
+        self.assertNotIn("\\x00", message)
+
+    def test_nonwhitespace_control_presence_is_reported_without_byte_value(self) -> None:
+        payload = self.current_payload()
+        split = payload.index(b'"screen_mode"')
+        message = self.assert_sanitized_malformed(
+            [payload[:split] + b"\x01" + payload[split:] + b"\n"],
+            "middle-interleave-corruption",
+        )
+        self.assertIn("nul=no", message)
+        self.assertIn("control=yes", message)
+        self.assertNotIn("\\x01", message)
+
     def test_current_id_truncated_json_with_newline_is_truncated_looking(self) -> None:
         payload = self.current_payload()
         truncated = payload[: payload.index(b'"presence"')]
-        self.assert_sanitized_malformed(
+        message = self.assert_sanitized_malformed(
             [truncated + b"\n"],
             "truncated-looking",
         )
+        self.assertIn("id_position=near-start", message)
 
     def test_fragmented_valid_response_is_accepted(self) -> None:
         line = self.current_line()
