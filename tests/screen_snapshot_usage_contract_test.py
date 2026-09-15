@@ -78,6 +78,41 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         import_index = helper.index("import serial", helper.index("def read_snapshot"))
         self.assertLess(validate_index, import_index)
 
+    def test_completed_malformed_current_frame_is_sanitized_and_never_retried_into_pass(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        helper = HELPER.read_text(encoding="utf-8")
+        for field in (
+            "frame_len",
+            "utf8",
+            "first_object",
+            "last_object",
+            "nul",
+            "control",
+            "json_error",
+            "id_position",
+            "object_starts",
+            "object_ends",
+            "shape",
+        ):
+            self.assertIn(field, doc)
+            self.assertIn(field, helper)
+        self.assertIn("It does **not** skip that current frame", doc)
+        self.assertIn("retry automatically", doc)
+        self.assertIn("must not overwrite the failed run", doc)
+        self.assertIn("never print the raw serial payload", doc)
+        self.assertNotIn("errors=\"replace\"", helper)
+
+    def test_device_tx_framing_and_transport_residual_risk_are_documented(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        self.assertIn("common `write_response()` path", doc)
+        self.assertIn("one logical stdio write", doc)
+        self.assertIn("`stdout` FILE lock", doc)
+        self.assertIn("default-OFF production firmware", doc)
+        self.assertIn("does **not** enable the screen-snapshot operation", doc)
+        self.assertIn("Direct/early/ROM writers", doc)
+        self.assertIn("abandon bytes", doc)
+        self.assertIn("cannot reconstruct bytes already lost", doc)
+
     def test_human_gate_rejects_observation_induced_reset_or_state_change(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
         self.assertIn("at least **5 consecutive times without power cycling**", doc)
@@ -87,7 +122,8 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("screen/runtime state does not change unexpectedly", doc)
         self.assertIn("snapshot matches the physical LCD coarse state", doc)
         self.assertIn("no unsolicited serial output", doc)
-        self.assertIn("Any visible reset/glitch/state transition is **FAIL**", doc)
+        self.assertIn("malformed current-ID completed frame", doc)
+        self.assertIn("return to Integration", doc)
 
     def test_workflow_tracks_vault_runtime_snapshot_dependency(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
