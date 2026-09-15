@@ -42,6 +42,10 @@
 #define M5AUTH_TEST_SCREEN_SNAPSHOT 0
 #endif
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+#include "hal/usb_serial_jtag_ll.h"
+#endif
+
 namespace {
 
 std::uint64_t monotonic_ms() {
@@ -401,36 +405,59 @@ std::string timing_diagnostics_response() {
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
 constexpr std::string_view kScreenSnapshotOperation = "diagnostics.screen_snapshot";
+constexpr std::int64_t kScreenSnapshotTxBoundaryTimeoutUs = 50 * 1000LL;
+
+bool wait_for_screen_snapshot_tx_fifo_writable() {
+    const std::int64_t started_us = esp_timer_get_time();
+    if (started_us < 0) return false;
+
+    while (true) {
+        if (usb_serial_jtag_ll_txfifo_writable()) return true;
+
+        const std::int64_t now_us = esp_timer_get_time();
+        if (now_us < started_us ||
+            (now_us - started_us) >= kScreenSnapshotTxBoundaryTimeoutUs) {
+            return false;
+        }
+
+        // The deadline is wall-clock based, not tick-count based. Yield one RTOS
+        // tick between polls so other tasks can run while the host consumes the
+        // pending IN packet.
+        vTaskDelay(1);
+    }
+}
 
 bool synchronize_screen_snapshot_response_boundary() {
-    // A valid diagnostic request proves that a user-space serial listener is now
-    // active. First finalize any earlier exact-64-byte Device-to-host transfer,
-    // then emit one test-only line delimiter and finalize it before the current
-    // JSON response. This never strips, reparses, skips, or retries a current
-    // response; it only creates an explicit framing boundary ahead of it.
+    // Receipt of a valid diagnostics request proves that the user-space COM
+    // listener exists. Do not call ESP-IDF's no-driver fsync until a fresh local
+    // deadline has independently observed TX FIFO writability: v5.5.5 fsync uses
+    // the private VFS last_tx_ts as its timeout origin and can otherwise fail
+    // immediately when startup TX happened more than 50 ms earlier.
+    //
+    // Once writable, emit a one-byte newline through stdio. A successful VFS TX
+    // refreshes last_tx_ts; fflush + fsync can then use the normal VFS path to
+    // finish that short transfer. If a race prevents the newline from reaching
+    // the FIFO, last_tx_ts remains stale and fsync fails closed.
     ::flockfile(stdout);
-    const int pre_fflush_result = std::fflush(stdout);
-    const int pre_fsync_result = pre_fflush_result == 0
-        ? ::fsync(STDOUT_FILENO)
-        : -1;
-    const int delimiter_result = pre_fsync_result == 0
-        ? std::fputc('\n', stdout)
-        : EOF;
+    const bool writable = wait_for_screen_snapshot_tx_fifo_writable();
+    const int delimiter_result = writable ? std::fputc('\n', stdout) : EOF;
     const int delimiter_fflush_result = delimiter_result != EOF
         ? std::fflush(stdout)
         : -1;
     const int delimiter_fsync_result = delimiter_fflush_result == 0
         ? ::fsync(STDOUT_FILENO)
         : -1;
-    const int ferror_value = std::ferror(stdout);
     ::funlockfile(stdout);
 
-    return pre_fflush_result == 0 &&
-        pre_fsync_result == 0 &&
+    // Do not consult or clear ferror(stdout) here. The FILE error indicator is
+    // sticky historical state, whereas the return values above describe this
+    // fresh boundary attempt. A current fputc/fflush/fsync failure still fails
+    // closed; an unrelated prior stream error is neither erased nor treated as
+    // proof that this fresh boundary failed.
+    return writable &&
         delimiter_result != EOF &&
         delimiter_fflush_result == 0 &&
-        delimiter_fsync_result == 0 &&
-        ferror_value == 0;
+        delimiter_fsync_result == 0;
 }
 
 enum class ScreenSnapshotRequestKind {
