@@ -162,9 +162,7 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self._stale(64))
         model.open_listener()
         self.assertEqual(model.purge_host_queue(), b"")
-
         model.emit_flushed_transfer(self.RESPONSE)
-
         self.assertEqual(model.read_host_queue(), self._stale(64) + self.RESPONSE)
 
     def test_63_byte_stale_tx_is_terminated_and_host_purgeable(self) -> None:
@@ -172,7 +170,6 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self._stale(63))
         model.open_listener()
         self.assertEqual(model.purge_host_queue(), self._stale(63))
-
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
@@ -181,7 +178,6 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self._stale(65))
         model.open_listener()
         self.assertEqual(model.purge_host_queue(), self._stale(65))
-
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
@@ -190,7 +186,6 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self._stale(64))
         model.finalize_with_zlp()
         model.open_listener()
-
         self.assertEqual(model.purge_host_queue(), self._stale(64))
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
@@ -213,7 +208,6 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model = UsbCdcTransactionModel()
         model.emit_flushed_transfer(self._stale(64))
         model.open_listener()
-
         writable, _ = fresh_local_deadline_wait_model(samples=[])
         self.assertFalse(writable)
         self.assertEqual(model.read_host_queue(), b"")
@@ -225,7 +219,6 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         self.assertTrue(writable)
         model.emit_flushed_transfer(b"\n")
         self.assertEqual(model.read_host_queue(), b"\n")
-
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
@@ -237,20 +230,24 @@ class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
         self.assertNotIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
         self.assertNotIn("CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y", defaults)
 
-    def test_diagnostics_boundary_uses_fresh_ll_deadline_not_prefsync(self) -> None:
+    def test_diagnostics_boundary_uses_fresh_ll_deadline_before_stdio_delimiter(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
         self.assertIn("wait_for_screen_snapshot_tx_fifo_writable", source)
         self.assertIn("usb_serial_jtag_ll_txfifo_writable()", source)
-        self.assertIn("usb_serial_jtag_ll_write_txfifo", source)
-        self.assertIn("usb_serial_jtag_ll_txfifo_flush()", source)
         self.assertIn("kScreenSnapshotTxBoundaryTimeoutUs", source)
         self.assertIn("esp_timer_get_time()", source)
 
         boundary_start = source.index("bool synchronize_screen_snapshot_response_boundary")
         boundary_end = source.index("enum class ScreenSnapshotRequestKind", boundary_start)
         boundary = source[boundary_start:boundary_end]
+        wait_call = boundary.index("wait_for_screen_snapshot_tx_fifo_writable()")
+        delimiter = boundary.index("fputc('\\n', stdout)")
+        fflush_call = boundary.index("fflush(stdout)", delimiter)
+        fsync_call = boundary.index("fsync(STDOUT_FILENO)", fflush_call)
+        self.assertLess(wait_call, delimiter)
+        self.assertLess(delimiter, fflush_call)
+        self.assertLess(fflush_call, fsync_call)
         self.assertNotIn("pre_fsync_result", boundary)
-        self.assertNotIn("fputc('\\n', stdout)", boundary)
 
     def test_sticky_file_error_is_not_cleared_or_used_as_fresh_boundary_evidence(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
@@ -264,7 +261,6 @@ class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
         source = APP_MAIN.read_text(encoding="utf-8")
         self.assertIn("synchronize_screen_snapshot_response_boundary", source)
         self.assertIn("if (!synchronize_screen_snapshot_response_boundary())", source)
-
         diagnostics_start = source.index("#if M5AUTH_TEST_SCREEN_SNAPSHOT")
         boundary_def = source.index("synchronize_screen_snapshot_response_boundary")
         diagnostics_end = source.index("#endif", boundary_def)
