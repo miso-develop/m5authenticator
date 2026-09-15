@@ -42,6 +42,10 @@
 #define M5AUTH_TEST_SCREEN_SNAPSHOT 0
 #endif
 
+#if M5AUTH_TEST_SCREEN_SNAPSHOT
+#include "hal/usb_serial_jtag_ll.h"
+#endif
+
 namespace {
 
 std::uint64_t monotonic_ms() {
@@ -308,14 +312,24 @@ void write_response(
     const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
     const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
 
-    const std::size_t fwrite_bytes = std::fwrite(response.data(), 1, response.size(), stdout);
-    const int newline_result = std::fputc('\n', stdout);
+    // stdout is line-buffered and shared with ESP-IDF console logging. Keep the
+    // JSON body and its newline in one logical frame and hold the FILE lock across
+    // write/flush/fsync so another normal stdout writer cannot enter between them.
+    // The USB Serial/JTAG VFS adds its own write lock for stdout/stderr sharing.
+    std::string frame;
+    frame.reserve(response.size() + 1);
+    frame.append(response);
+    frame.push_back('\n');
+
+    ::flockfile(stdout);
+    const std::size_t fwrite_bytes = std::fwrite(frame.data(), 1, frame.size(), stdout);
     const int fflush_result = std::fflush(stdout);
-    // fflush() only drains libc buffering. ESP-IDF's USB Serial/JTAG VFS
-    // fsync path waits for host pickup and emits the terminating ZLP needed
-    // when a response lands on an exact 64-byte USB packet boundary.
+    // fflush() drains libc buffering. ESP-IDF's USB Serial/JTAG VFS fsync path
+    // waits for host pickup and emits the terminating ZLP needed when a transfer
+    // lands on an exact 64-byte USB packet boundary.
     (void)::fsync(STDOUT_FILENO);
     const int ferror_value = std::ferror(stdout);
+    ::funlockfile(stdout);
 
     if (!measure || started_us <= 0) return;
     const std::int64_t finished_us = esp_timer_get_time();
@@ -328,8 +342,8 @@ void write_response(
     sample.max_us = std::max(sample.max_us, elapsed_us);
     sample.operation = static_cast<std::uint64_t>(operation);
     sample.response_bytes = response.size();
-    sample.fwrite_ok = fwrite_bytes == response.size() ? 1 : 0;
-    sample.newline_ok = newline_result == '\n' ? 1 : 0;
+    sample.fwrite_ok = fwrite_bytes == frame.size() ? 1 : 0;
+    sample.newline_ok = fwrite_bytes == frame.size() && frame.back() == '\n' ? 1 : 0;
     sample.fflush_ok = fflush_result == 0 ? 1 : 0;
     sample.ferror_value = ferror_value == 0 ? 0 : 1;
     persist_timing_diagnostics_to_rtc();
@@ -343,7 +357,7 @@ std::string timing_diagnostics_response() {
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
-        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
+        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{" 
         "\"session_begin\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"session_authorize\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"session_status\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
@@ -391,6 +405,60 @@ std::string timing_diagnostics_response() {
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
 constexpr std::string_view kScreenSnapshotOperation = "diagnostics.screen_snapshot";
+constexpr std::int64_t kScreenSnapshotTxBoundaryTimeoutUs = 50 * 1000LL;
+
+bool wait_for_screen_snapshot_tx_fifo_writable() {
+    const std::int64_t started_us = esp_timer_get_time();
+    if (started_us < 0) return false;
+
+    while (true) {
+        if (usb_serial_jtag_ll_txfifo_writable()) return true;
+
+        const std::int64_t now_us = esp_timer_get_time();
+        if (now_us < started_us ||
+            (now_us - started_us) >= kScreenSnapshotTxBoundaryTimeoutUs) {
+            return false;
+        }
+
+        // The deadline is wall-clock based, not tick-count based. Yield one RTOS
+        // tick between polls so other tasks can run while the host consumes the
+        // pending IN packet.
+        vTaskDelay(1);
+    }
+}
+
+bool synchronize_screen_snapshot_response_boundary() {
+    // Receipt of a valid diagnostics request proves that the user-space COM
+    // listener exists. Do not call ESP-IDF's no-driver fsync until a fresh local
+    // deadline has independently observed TX FIFO writability: v5.5.5 fsync uses
+    // the private VFS last_tx_ts as its timeout origin and can otherwise fail
+    // immediately when startup TX happened more than 50 ms earlier.
+    //
+    // Once writable, emit a one-byte newline through stdio. A successful VFS TX
+    // refreshes last_tx_ts; fflush + fsync can then use the normal VFS path to
+    // finish that short transfer. If a race prevents the newline from reaching
+    // the FIFO, last_tx_ts remains stale and fsync fails closed.
+    ::flockfile(stdout);
+    const bool writable = wait_for_screen_snapshot_tx_fifo_writable();
+    const int delimiter_result = writable ? std::fputc('\n', stdout) : EOF;
+    const int delimiter_fflush_result = delimiter_result != EOF
+        ? std::fflush(stdout)
+        : -1;
+    const int delimiter_fsync_result = delimiter_fflush_result == 0
+        ? ::fsync(STDOUT_FILENO)
+        : -1;
+    ::funlockfile(stdout);
+
+    // Do not consult or clear ferror(stdout) here. The FILE error indicator is
+    // sticky historical state, whereas the return values above describe this
+    // fresh boundary attempt. A current fputc/fflush/fsync failure still fails
+    // closed; an unrelated prior stream error is neither erased nor treated as
+    // proof that this fresh boundary failed.
+    return writable &&
+        delimiter_result != EOF &&
+        delimiter_fflush_result == 0 &&
+        delimiter_fsync_result == 0;
+}
 
 enum class ScreenSnapshotRequestKind {
     kNotDiagnostic,
@@ -599,7 +667,7 @@ std::string screen_snapshot_response(
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
-        "{\"v\":2,\"id\":%d,\"ok\":true,\"data\":{"
+        "{\"v\":2,\"id\":%d,\"ok\":true,\"data\":{" 
         "\"runtime_state\":\"%s\","
         "\"trusted_time_readiness\":\"%s\","
         "\"presence\":{\"active\":%s,\"confirmed\":%s,\"operation\":\"%s\"},"
@@ -793,6 +861,13 @@ extern "C" void app_main(void) {
             }
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             buffered_input = 0;
+            if (!synchronize_screen_snapshot_response_boundary()) {
+                // Fail closed without emitting the current JSON frame. Returning
+                // stops this protocol task; the Device UI/runtime tasks remain,
+                // while the Human helper times out rather than accepting an
+                // ambiguously framed response.
+                return;
+            }
             write_response(response);
             continue;
         }

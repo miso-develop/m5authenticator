@@ -81,6 +81,14 @@ checkpointにはsecretやcredential-bearing payloadを含めず、少なくと�
 - `.cmd` を追加する場合はCRLFを維持する。
 - Windows command entrypointは `.cmd` に統一し、`.bat` は新規導入しない。
 
+## Command chaining policy
+
+- `&&` によるcommand chainingは、前段が成功した場合に次段を実行してもstate・副作用・evidence boundary上の曖昧さがないことが自明な場合だけ使用する。
+- state-changing operationやHuman evidenceを含む手順では、commandを分離し、各commandの成功/失敗を明示的に判定してから次へ進む。
+- Windows `.cmd` helperでは、外部commandの後に原則として明示的な `if errorlevel 1` 判定を置く。複数の重要操作を `&&` でまとめない。
+- 特に build → flash、flash → monitor、clean/fullclean → destructive operation、provisioning/reset/eFuse関連操作、Human Gate evidence生成操作を安易にchainしない。
+- build、flash、monitor、Human Gate helper等の責務を分けたentrypointが存在する場合は、利用者の明示的な次操作を境界として維持する。
+
 ## Supporting rules
 
 - Issue planning、task分解、handoff、work item lifecycleを扱う場合は `agent/WORK-TRACKING.md` を参照する。

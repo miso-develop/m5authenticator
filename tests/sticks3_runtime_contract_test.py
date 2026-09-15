@@ -227,7 +227,8 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         app = APP_MAIN.read_text(encoding="utf-8")
 
         self.assertIn("const std::size_t fwrite_bytes = std::fwrite", app)
-        self.assertIn("const int newline_result = std::fputc", app)
+        self.assertIn("frame.push_back('\\n')", app)
+        self.assertNotIn("const int newline_result = std::fputc", app)
         self.assertIn("const int fflush_result = std::fflush(stdout);", app)
         self.assertIn("const int ferror_value = std::ferror(stdout);", app)
         self.assertIn("write_response(response, timing_operation);", app)
@@ -246,10 +247,15 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
         self.assertIn("#include <unistd.h>", app)
         self.assertEqual(1, writer.count("::fsync(STDOUT_FILENO)"))
-        self.assertLess(writer.index("std::fwrite("), writer.index("std::fputc('\\n', stdout)"))
-        self.assertLess(writer.index("std::fputc('\\n', stdout)"), writer.index("std::fflush(stdout)"))
+        self.assertIn("::flockfile(stdout)", writer)
+        self.assertIn("std::fwrite(frame.data(), 1, frame.size(), stdout)", writer)
+        self.assertNotIn("std::fputc", writer)
+        self.assertIn("::funlockfile(stdout)", writer)
+        self.assertLess(writer.index("::flockfile(stdout)"), writer.index("std::fwrite("))
+        self.assertLess(writer.index("std::fwrite("), writer.index("std::fflush(stdout)"))
         self.assertLess(writer.index("std::fflush(stdout)"), writer.index("::fsync(STDOUT_FILENO)"))
         self.assertLess(writer.index("::fsync(STDOUT_FILENO)"), writer.index("std::ferror(stdout)"))
+        self.assertLess(writer.index("std::ferror(stdout)"), writer.index("::funlockfile(stdout)"))
 
     def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
