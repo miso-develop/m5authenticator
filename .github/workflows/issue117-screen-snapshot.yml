@@ -41,6 +41,7 @@ jobs:
           tests/screen_snapshot_pre_request_sync_test.py
           tests/screen_snapshot_request_relation_test.py
           tests/screen_snapshot_request_path_contract_test.py
+          tests/screen_snapshot_usb_tx_boundary_test.py
           tests/screen_snapshot_tx_atomicity_test.py
           tests/screen_snapshot_usage_contract_test.py
           tests/screen_snapshot_windows_scripts_contract_test.py
