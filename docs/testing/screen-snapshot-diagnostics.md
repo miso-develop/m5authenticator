@@ -129,9 +129,38 @@ Before the first render has completed, including a UI task that has not started 
 
 Repeated diagnostic requests are read-only and do not start/cancel sessions or presence attempts and do not modify Vault, trusted time, UI selection, reveal deadline, or persistent generation. Port ownership changes outside the diagnostic request itself can still affect the existing Protocol v2 transport/session as described above.
 
+### Completed malformed current-ID frames
+
+Serial input is framed by newline. A per-read timeout may return only part of a line, so the helper buffers fragments until `\n` is actually received. An unterminated fragment is therefore **not** classified as malformed JSON merely because one read ended.
+
+If a newline-terminated frame clearly contains the current fresh request ID but cannot be parsed, the helper fails immediately. It does **not** skip that current frame, wait for a later valid frame, or retry automatically. A later successful manual invocation must not overwrite the failed run when evaluating a Human Gate.
+
+For investigation, the failure text contains structural facts only. It may report:
+
+- `frame_len`: total completed frame length;
+- `utf8`: valid / invalid;
+- `first_object`: whether the first non-whitespace byte looks like `{`;
+- `last_object`: whether the last non-whitespace byte looks like `}`;
+- `nul`: NUL-byte presence;
+- `control`: non-whitespace control-byte presence;
+- `json_error`: decoder-position bucket (`near-start`, `middle`, `near-end`, or `unknown`);
+- `id_position`: current-ID-token position bucket;
+- `object_starts` / `object_ends`: zero/one/multiple top-level JSON-object-looking boundaries;
+- `shape`: structural classification such as `prefix-contamination`, `suffix-contamination`, `middle-interleave-corruption`, `concatenated-objects`, `truncated-looking`, `invalid-utf8`, or `unknown`.
+
+These diagnostics never print the raw serial payload, decoded frame text, byte values, credential labels, OTP digits, secrets, or other Device data. Record only this sanitized structural result when reporting a malformed current response.
+
+### Device TX framing and residual transport risk
+
+The Device writes every Protocol-v2 response through the common `write_response()` path. The response body and terminating newline are assembled into one frame and sent with one logical stdio write while the `stdout` FILE lock remains held through `fflush()` and USB Serial/JTAG `fsync()`. This prevents normal concurrent `stdout` writers from entering between the JSON body and its newline. The same common TX hardening is present in default-OFF production firmware; it does **not** enable the screen-snapshot operation when `M5AUTH_TEST_SCREEN_SNAPSHOT` is OFF and does not change the Protocol-v2 JSON format.
+
+ESP-IDF logging uses the console standard stream, and USB Serial/JTAG is the configured primary console for this firmware. The USB Serial/JTAG VFS also serializes individual writes to the shared physical port. Direct/early/ROM writers that bypass the ordinary stdio locking model are not proven to be covered by the application FILE lock.
+
+ESP-IDF's simplified USB Serial/JTAG VFS can also abandon bytes if the host is not draining the TX FIFO within its bounded transmit window. `fflush()` / `fsync()` help drain buffered output but cannot reconstruct bytes already lost below stdio. Therefore a `truncated-looking` or other corruption classification remains a transport finding requiring investigation; it must not be repaired on the host by skipping the malformed current frame or automatically retrying.
+
 ## 5. #119 Windows + M5StickS3 Human Gate
 
-CI cannot prove that the actual Windows USB/serial driver and M5StickS3 hardware exhibit no open-time control-line glitch. Perform this gate before treating the helper as observationally safe enough for auxiliary #75 evidence.
+CI cannot prove that the actual Windows USB/serial driver and M5StickS3 hardware exhibit no open-time control-line glitch or intermittent transport corruption. Perform this gate only when Integration has explicitly authorized a new attempt after reviewing the exact helper/firmware head.
 
 Use only sanitized/non-secret observations. Do not record Device ID, credential labels, TOTP digits/secrets, Recovery Package/Passphrase, VMK/KEK/BUK/BRK/session material, Wi-Fi credentials, or Vault material.
 
@@ -149,7 +178,7 @@ Minimum gate:
    - no unsolicited serial output appears.
 5. If practical, repeat the same observation pattern in additional steady states such as `account_view` and `otp_revealed`, without recording credential labels or OTP digits.
 
-Any visible reset/glitch/state transition is **FAIL**, even if the helper eventually prints a plausible snapshot. Record only the sanitized failure class and escalate the observation mechanism rather than continuing #75.
+Any visible reset/glitch/state transition **or malformed current-ID completed frame** is **FAIL**, even if a later invocation succeeds. Stop that gate attempt, record only the sanitized failure class/structural diagnostics, and return to Integration. Do not continue until a later success overwrites the failure.
 
 ## 6. #75 release acceptance remains default-OFF only
 
