@@ -52,6 +52,7 @@ class LifecycleSerialPort:
         self.dsrdtr = None
         self._dtr = True
         self._rts = True
+        self.request_written = False
 
     @property
     def dtr(self) -> bool:
@@ -84,6 +85,7 @@ class LifecycleSerialPort:
         self.owner.events.append(("write", data))
         if self.owner.fail_stage == "write":
             raise FakeSerialException("synthetic write failure")
+        self.request_written = True
         return len(data)
 
     def flush(self) -> None:
@@ -95,6 +97,8 @@ class LifecycleSerialPort:
         self.owner.events.append(("readline",))
         if self.owner.fail_stage == "readline":
             raise FakeSerialException("synthetic read failure")
+        if not self.request_written:
+            return b""
         if self.owner.lines:
             return self.owner.lines.pop(0)
         return b""
@@ -126,6 +130,7 @@ class LifecycleSerialModule:
 class ScreenSnapshotHostHelperTest(unittest.TestCase):
     def setUp(self) -> None:
         helper._issued_request_ids.clear()
+        helper._collection_count = 0
 
     def valid_response(self, request_id: int) -> dict:
         return {
@@ -158,7 +163,12 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
 
     def collect(self, module: LifecycleSerialModule, timeout: float = 1.0) -> dict:
         with mock.patch.object(helper, "generate_request_id", return_value=222):
-            return helper._collect_snapshot(module, "COM_TEST", timeout)
+            return helper._collect_snapshot(
+                module,
+                "COM_TEST",
+                timeout,
+                now=AdvancingClock(),
+            )
 
     def test_fresh_request_id_generation_retries_collision_and_is_not_fixed(self) -> None:
         with mock.patch.object(
@@ -195,19 +205,22 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, request)
 
-    def test_serial_is_closed_configured_inactive_then_opened_before_io(self) -> None:
+    def test_serial_is_closed_configured_inactive_then_synchronized_before_request(self) -> None:
         module = LifecycleSerialModule([self.line(self.valid_response(222))])
         result = self.collect(module)
         self.assertEqual(222, result["id"])
 
         names = [event[0] for event in module.events]
+        readline_indices = [index for index, name in enumerate(names) if name == "readline"]
         self.assertEqual(("construct", (), {}, False), module.events[0])
         self.assertLess(names.index("dtr"), names.index("open"))
         self.assertLess(names.index("rts"), names.index("open"))
-        self.assertLess(names.index("open"), names.index("write"))
+        self.assertLess(names.index("open"), names.index("reset_input_buffer"))
+        self.assertLess(names.index("reset_input_buffer"), readline_indices[0])
+        self.assertLess(readline_indices[0], names.index("write"))
         self.assertLess(names.index("write"), names.index("flush"))
-        self.assertLess(names.index("flush"), names.index("readline"))
-        self.assertLess(names.index("readline"), names.index("close"))
+        self.assertLess(names.index("flush"), readline_indices[-1])
+        self.assertLess(readline_indices[-1], names.index("close"))
         self.assertIn(("dtr", False), module.events)
         self.assertIn(("rts", False), module.events)
         self.assertIn(("open", False, False), module.events)
@@ -254,7 +267,12 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
             side_effect=RuntimeError("no valid response for the current request id before timeout"),
         ):
             with self.assertRaisesRegex(RuntimeError, "current request id"):
-                helper._collect_snapshot(module, "COM_TEST", 1.0)
+                helper._collect_snapshot(
+                    module,
+                    "COM_TEST",
+                    1.0,
+                    now=AdvancingClock(),
+                )
         self.assertIn(("close",), module.events)
 
     def test_close_failure_discards_already_validated_snapshot(self) -> None:
