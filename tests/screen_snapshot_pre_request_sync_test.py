@@ -200,6 +200,7 @@ class ScreenSnapshotPreRequestSyncTest(unittest.TestCase):
         self.assertEqual(1, module.instance.write_count)
         self.assertTrue(reports)
         self.assertIn("pre_request_data=no", reports[0])
+        self.assertIn("invocation=first", reports[0])
         self.assertLess(module.events.index("read-pre"), module.events.index("write"))
         self.assertLess(module.events.index("write"), module.events.index("read-post"))
 
@@ -224,8 +225,10 @@ class ScreenSnapshotPreRequestSyncTest(unittest.TestCase):
             self.collect(module, reports)
         assert module.instance is not None
         self.assertEqual(1, module.instance.write_count)
-        self.assertIn("pre_request_data=no", str(raised.exception))
-        self.assertNotIn(self.STALE.decode("ascii"), str(raised.exception))
+        message = str(raised.exception)
+        self.assertIn("pre_request_data=no", message)
+        self.assertIn(f"prefix_len={len(self.STALE)}", message)
+        self.assertNotIn(self.STALE.decode("ascii"), message)
 
     def test_malformed_current_response_is_not_skipped_or_retried(self) -> None:
         malformed = b'{"v":2,"id":222,"ok":true,broken\n'
