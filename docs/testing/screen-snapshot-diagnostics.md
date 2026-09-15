@@ -225,7 +225,7 @@ Only if Integration accepts the first-open result may the repeated-open portion 
    - the sanitized sync line is retained with the evidence;
 4. if practical, repeat the same observation pattern in additional steady states such as `account_view` and `otp_revealed`, without recording credential labels or OTP digits.
 
-Any visible reset/glitch/state transition **or malformed current-ID completed frame** is **FAIL**, even if a later invocation succeeds. Stop that gate attempt, record only the sanitized failure class/structural diagnostics, and return to Integration. Do not continue until a later success overwrites the failure.
+Any visible reset/glitch/state transition **or malformed current-ID completed frame** is **FAIL**, even if a later invocation succeeds. Stop that gate attempt, record only the sanitized failure class/structural diagnostics, and return to Integration. Do not continue and do not allow a later successful invocation to overwrite the failed gate attempt.
 
 ## 6. #75 release acceptance remains default-OFF only
 
