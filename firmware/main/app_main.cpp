@@ -353,7 +353,7 @@ std::string timing_diagnostics_response() {
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
-        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{"
+        "{\"v\":2,\"id\":9001,\"ok\":true,\"data\":{" 
         "\"session_begin\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"session_authorize\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
         "\"session_status\":{\"count\":%llu,\"last_us\":%llu,\"max_us\":%llu},"
@@ -401,6 +401,37 @@ std::string timing_diagnostics_response() {
 
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
 constexpr std::string_view kScreenSnapshotOperation = "diagnostics.screen_snapshot";
+
+bool synchronize_screen_snapshot_response_boundary() {
+    // A valid diagnostic request proves that a user-space serial listener is now
+    // active. First finalize any earlier exact-64-byte Device-to-host transfer,
+    // then emit one test-only line delimiter and finalize it before the current
+    // JSON response. This never strips, reparses, skips, or retries a current
+    // response; it only creates an explicit framing boundary ahead of it.
+    ::flockfile(stdout);
+    const int pre_fflush_result = std::fflush(stdout);
+    const int pre_fsync_result = pre_fflush_result == 0
+        ? ::fsync(STDOUT_FILENO)
+        : -1;
+    const int delimiter_result = pre_fsync_result == 0
+        ? std::fputc('\n', stdout)
+        : EOF;
+    const int delimiter_fflush_result = delimiter_result != EOF
+        ? std::fflush(stdout)
+        : -1;
+    const int delimiter_fsync_result = delimiter_fflush_result == 0
+        ? ::fsync(STDOUT_FILENO)
+        : -1;
+    const int ferror_value = std::ferror(stdout);
+    ::funlockfile(stdout);
+
+    return pre_fflush_result == 0 &&
+        pre_fsync_result == 0 &&
+        delimiter_result != EOF &&
+        delimiter_fflush_result == 0 &&
+        delimiter_fsync_result == 0 &&
+        ferror_value == 0;
+}
 
 enum class ScreenSnapshotRequestKind {
     kNotDiagnostic,
@@ -609,7 +640,7 @@ std::string screen_snapshot_response(
     const int written = std::snprintf(
         buffer.data(),
         buffer.size(),
-        "{\"v\":2,\"id\":%d,\"ok\":true,\"data\":{"
+        "{\"v\":2,\"id\":%d,\"ok\":true,\"data\":{" 
         "\"runtime_state\":\"%s\","
         "\"trusted_time_readiness\":\"%s\","
         "\"presence\":{\"active\":%s,\"confirmed\":%s,\"operation\":\"%s\"},"
@@ -803,6 +834,13 @@ extern "C" void app_main(void) {
             }
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
             buffered_input = 0;
+            if (!synchronize_screen_snapshot_response_boundary()) {
+                // Fail closed without emitting the current JSON frame. Returning
+                // stops this protocol task; the Device UI/runtime tasks remain,
+                // while the Human helper times out rather than accepting an
+                // ambiguously framed response.
+                return;
+            }
             write_response(response);
             continue;
         }
