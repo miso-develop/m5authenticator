@@ -252,6 +252,14 @@ class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
         self.assertNotIn("pre_fsync_result", boundary)
         self.assertNotIn("fputc('\\n', stdout)", boundary)
 
+    def test_sticky_file_error_is_not_cleared_or_used_as_fresh_boundary_evidence(self) -> None:
+        source = APP_MAIN.read_text(encoding="utf-8")
+        boundary_start = source.index("bool synchronize_screen_snapshot_response_boundary")
+        boundary_end = source.index("enum class ScreenSnapshotRequestKind", boundary_start)
+        boundary = source[boundary_start:boundary_end]
+        self.assertNotIn("clearerr(stdout)", boundary)
+        self.assertNotIn("ferror(stdout)", boundary)
+
     def test_diagnostics_boundary_is_test_only_and_fail_closed(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
         self.assertIn("synchronize_screen_snapshot_response_boundary", source)
