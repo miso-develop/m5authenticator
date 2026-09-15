@@ -140,10 +140,10 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
 
 
 class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
-    def test_normal_startup_console_logs_are_disabled_on_protocol_transport(self) -> None:
+    def test_fix_does_not_disable_production_logging_or_burn_rom_log_efuse(self) -> None:
         defaults = SDKCONFIG_DEFAULTS.read_text(encoding="utf-8")
-        self.assertIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
-        self.assertIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
+        self.assertNotIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
+        self.assertNotIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
         self.assertNotIn("CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y", defaults)
 
     def test_diagnostics_boundary_is_test_only_and_fail_closed(self) -> None:
