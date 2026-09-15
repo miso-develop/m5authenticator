@@ -316,6 +316,58 @@ class ScreenSnapshotHostHelperTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "current request id"):
             helper.read_matching_response(port, 222, 0.08, now=AdvancingClock())
 
+    def test_timeout_metadata_reports_no_post_request_data_without_payload(self) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            helper.read_matching_response(
+                FakePort([]),
+                222,
+                0.08,
+                now=AdvancingClock(),
+                request_sent_at=0.0,
+            )
+        message = str(raised.exception)
+        self.assertIn("post_request_data=no", message)
+        self.assertIn("completed_lines=none", message)
+        self.assertIn("first_completed_frame_len=none", message)
+        self.assertIn("malformed_unrelated_lines=none", message)
+        self.assertIn("valid_wrong_id_lines=none", message)
+        self.assertIn("post_request_first_byte=none", message)
+
+    def test_timeout_metadata_distinguishes_malformed_unrelated_completed_line(self) -> None:
+        secretish = b"SYNTHETIC_SHOULD_NEVER_APPEAR\n"
+        with self.assertRaises(RuntimeError) as raised:
+            helper.read_matching_response(
+                FakePort([secretish]),
+                222,
+                0.08,
+                now=AdvancingClock(),
+                request_sent_at=0.0,
+            )
+        message = str(raised.exception)
+        self.assertIn("post_request_data=yes", message)
+        self.assertIn("completed_lines=one", message)
+        self.assertIn(f"first_completed_frame_len={len(secretish)}", message)
+        self.assertIn("malformed_unrelated_lines=one", message)
+        self.assertIn("valid_wrong_id_lines=none", message)
+        self.assertNotIn("SYNTHETIC_SHOULD_NEVER_APPEAR", message)
+
+    def test_timeout_metadata_counts_valid_wrong_id_lines_without_exposing_content(self) -> None:
+        stale_1 = self.line(self.valid_response(10))
+        stale_2 = self.line(self.valid_response(11))
+        with self.assertRaises(RuntimeError) as raised:
+            helper.read_matching_response(
+                FakePort([stale_1, stale_2]),
+                222,
+                0.08,
+                now=AdvancingClock(),
+                request_sent_at=0.0,
+            )
+        message = str(raised.exception)
+        self.assertIn("completed_lines=multiple", message)
+        self.assertIn(f"first_completed_frame_len={len(stale_1)}", message)
+        self.assertIn("malformed_unrelated_lines=none", message)
+        self.assertIn("valid_wrong_id_lines=multiple", message)
+
     def test_case_c_malformed_stale_line_does_not_block_current_response(self) -> None:
         lines = [
             b'{"v":2,"id":111,"ok":true,broken\n',
