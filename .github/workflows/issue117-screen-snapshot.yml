@@ -38,6 +38,7 @@ jobs:
           tests/screen_snapshot_contamination_test.py
           tests/screen_snapshot_pre_request_sync_test.py
           tests/screen_snapshot_request_relation_test.py
+          tests/screen_snapshot_request_path_contract_test.py
           tests/screen_snapshot_tx_atomicity_test.py
           tests/screen_snapshot_usage_contract_test.py
       - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
