@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "firmware/CMakeLists.txt"
+      - "firmware/sdkconfig.defaults"
       - "firmware/main/**"
       - "firmware/components/m5auth_device_sticks3/**"
       - "firmware/components/m5auth_time/**"
