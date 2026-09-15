@@ -11,7 +11,9 @@ on:
       - "firmware/components/m5auth_vault_runtime/**"
       - "tests/screen_snapshot_*"
       - "tools/diagnostics/screen_snapshot.py"
+      - "scripts/windows/**"
       - "docs/testing/screen-snapshot-diagnostics.md"
+      - "AGENTS.md"
       - ".github/workflows/issue117-screen-snapshot.yml"
       - ".github/workflows/security.yml"
 
@@ -41,6 +43,7 @@ jobs:
           tests/screen_snapshot_request_path_contract_test.py
           tests/screen_snapshot_tx_atomicity_test.py
           tests/screen_snapshot_usage_contract_test.py
+          tests/screen_snapshot_windows_scripts_contract_test.py
       - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
         run: >-
           docker run --rm
