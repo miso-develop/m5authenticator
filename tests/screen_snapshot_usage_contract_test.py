@@ -78,13 +78,15 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         import_index = helper.index("import serial", helper.index("def read_snapshot"))
         self.assertLess(validate_index, import_index)
 
-    def test_pre_request_sync_is_bounded_quiet_not_retry_and_is_reported(self) -> None:
+    def test_pre_request_sync_is_bounded_defense_in_depth_not_root_fix(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
         helper = HELPER.read_text(encoding="utf-8")
         self.assertIn("continuous quiet", doc)
         self.assertIn("before sending the first and only diagnostic request", doc)
         self.assertIn("sends no diagnostic request", doc)
         self.assertIn("not a retry", doc)
+        self.assertIn("defense-in-depth", doc)
+        self.assertIn("not sufficient", doc)
         self.assertIn("SCREEN_SNAPSHOT_SYNC=", doc)
         for field in (
             "pre_purge_waiting",
@@ -101,7 +103,7 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("_PRE_REQUEST_SYNC_MAX_SECONDS", helper)
         self.assertIn("_MAX_PRE_REQUEST_DRAIN_BYTES", helper)
 
-    def test_completed_malformed_current_frame_is_sanitized_and_never_retried_into_pass(self) -> None:
+    def test_completed_malformed_current_frame_relation_is_sanitized_and_fail_closed(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
         helper = HELPER.read_text(encoding="utf-8")
         for field in (
@@ -113,18 +115,37 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
             "control",
             "json_error",
             "id_position",
+            "request_len",
             "prefix_len",
+            "prefix_equals_request_prefix",
+            "prefix_equals_request_first64",
+            "request_prefix_match_len",
+            "suffix_json_valid",
+            "suffix_id_matches_current",
+            "suffix_allowlist_valid",
+            "post_request_first_byte",
             "object_starts",
             "object_ends",
             "shape",
         ):
             self.assertIn(field, doc)
             self.assertIn(field, helper)
+        self.assertIn("diagnosis only", doc)
         self.assertIn("It does **not** skip that current frame", doc)
         self.assertIn("retry automatically", doc)
         self.assertIn("must not overwrite the failed run", doc)
         self.assertIn("never print the raw serial payload", doc)
+        self.assertIn("does not become PASS", doc)
         self.assertNotIn("errors=\"replace\"", helper)
+
+    def test_64_byte_transport_boundary_is_documented_without_overclaim(self) -> None:
+        doc = DOC.read_text(encoding="utf-8")
+        self.assertIn("64-byte", doc)
+        self.assertIn("full USB packet", doc)
+        self.assertIn("short packet or ZLP", doc)
+        self.assertIn("cannot by itself prove", doc)
+        self.assertIn("request begins with `{`", doc)
+        self.assertIn("first_object=no", doc)
 
     def test_device_tx_framing_and_transport_residual_risk_are_documented(self) -> None:
         doc = DOC.read_text(encoding="utf-8")
@@ -143,6 +164,8 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("helper has never opened the COM port", doc)
         self.assertIn("must be tested separately", doc)
         self.assertIn("record the sanitized `SCREEN_SNAPSHOT_SYNC` line", doc)
+        self.assertIn("prefix_equals_request_first64", doc)
+        self.assertIn("suffix_allowlist_valid", doc)
         self.assertIn("at least **5 consecutive times without power cycling**", doc)
         self.assertIn("`Starting...` does not appear", doc)
         self.assertIn("Device does not reboot", doc)
@@ -152,8 +175,9 @@ class ScreenSnapshotUsageContractTest(unittest.TestCase):
         self.assertIn("malformed current-ID completed frame", doc)
         self.assertIn("return to Integration", doc)
 
-    def test_workflow_tracks_vault_runtime_snapshot_dependency(self) -> None:
+    def test_workflow_tracks_relation_suite_and_vault_runtime_dependency(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("tests/screen_snapshot_request_relation_test.py", workflow)
         self.assertIn('"firmware/components/m5auth_vault_runtime/**"', workflow)
         for required in (
             '"firmware/components/m5auth_device_sticks3/**"',
