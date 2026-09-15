@@ -117,13 +117,130 @@ def _parse_json_line(raw: bytes) -> Any:
         raise ValueError("invalid one-line JSON") from exc
 
 
+def _request_id_pattern(request_id: int) -> bytes:
+    return rb'"id"\s*:\s*' + str(request_id).encode("ascii") + rb'(?=\s*[,}])'
+
+
 def _raw_mentions_request_id(raw: bytes, request_id: int) -> bool:
     # This is failure detection only, never success parsing. If malformed bytes
     # clearly carry the current ID token, fail closed rather than skipping a
     # possibly-corrupted current response as though it were stale. False positives
     # are safe because they can only turn the diagnostic into an explicit failure.
-    pattern = rb'"id"\s*:\s*' + str(request_id).encode("ascii") + rb'(?=\s*[,}])'
-    return re.search(pattern, raw) is not None
+    return re.search(_request_id_pattern(request_id), raw) is not None
+
+
+def _position_bucket(position: int | None, length: int) -> str:
+    if position is None or length <= 0:
+        return "unknown"
+    fraction = position / length
+    if fraction < 0.25:
+        return "near-start"
+    if fraction > 0.75:
+        return "near-end"
+    return "middle"
+
+
+def _count_bucket(count: int) -> str:
+    if count <= 0:
+        return "none"
+    if count == 1:
+        return "one"
+    return "multiple"
+
+
+def _top_level_object_buckets(text: str) -> tuple[str, str]:
+    """Count JSON-object-looking top-level brace pairs without exposing text."""
+    starts = 0
+    ends = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                starts += 1
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                ends += 1
+    return _count_bucket(starts), _count_bucket(ends)
+
+
+def _json_error_bucket(exc: ValueError, payload_length: int) -> str:
+    cause = exc.__cause__
+    if isinstance(cause, json.JSONDecodeError):
+        return _position_bucket(cause.pos, payload_length)
+    if isinstance(cause, UnicodeDecodeError):
+        return _position_bucket(cause.start, payload_length)
+    return "unknown"
+
+
+def _completed_malformed_diagnostics(raw: bytes, request_id: int, exc: ValueError) -> str:
+    """Return structural-only diagnostics; never include serial bytes or decoded text."""
+    payload = raw.rstrip(b"\r\n")
+    trimmed = payload.strip(b" \t\r\n")
+    first_object = "yes" if trimmed.startswith(b"{") else "no"
+    last_object = "yes" if trimmed.endswith(b"}") else "no"
+    nul = "yes" if b"\x00" in payload else "no"
+    control = "yes" if any(byte < 0x20 and byte != 0x09 for byte in payload) else "no"
+
+    id_match = re.search(_request_id_pattern(request_id), payload)
+    id_position = _position_bucket(id_match.start() if id_match else None, len(payload))
+    json_error = _json_error_bucket(exc, len(payload))
+
+    text: str | None
+    try:
+        text = payload.decode("utf-8", errors="strict")
+        utf8 = "valid"
+    except UnicodeDecodeError:
+        text = None
+        utf8 = "invalid"
+
+    object_starts = "unknown"
+    object_ends = "unknown"
+    has_decodable_suffix = False
+    if text is not None:
+        object_starts, object_ends = _top_level_object_buckets(text)
+        stripped_text = text.lstrip()
+        try:
+            _, decoded_end = json.JSONDecoder().raw_decode(stripped_text)
+            has_decodable_suffix = bool(stripped_text[decoded_end:].strip())
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    if utf8 == "invalid":
+        shape = "invalid-utf8"
+    elif first_object == "no" and id_match is not None:
+        shape = "prefix-contamination"
+    elif object_starts == "multiple" and object_ends == "multiple":
+        shape = "concatenated-objects"
+    elif has_decodable_suffix:
+        shape = "suffix-contamination"
+    elif first_object == "yes" and last_object == "no":
+        shape = "truncated-looking"
+    elif first_object == "yes" and last_object == "yes":
+        shape = "middle-interleave-corruption"
+    else:
+        shape = "unknown"
+
+    return (
+        "current diagnostic response is malformed "
+        f"(frame_len={len(raw)},utf8={utf8},first_object={first_object},"
+        f"last_object={last_object},nul={nul},control={control},"
+        f"json_error={json_error},id_position={id_position},"
+        f"object_starts={object_starts},object_ends={object_ends},shape={shape})"
+    )
 
 
 def _response_id(value: Any) -> int | None:
@@ -229,7 +346,9 @@ def read_matching_response(
                 parsed = _parse_json_line(raw)
             except ValueError as exc:
                 if _raw_mentions_request_id(raw, request_id):
-                    raise RuntimeError("current diagnostic response is malformed") from exc
+                    raise RuntimeError(
+                        _completed_malformed_diagnostics(raw, request_id, exc)
+                    ) from exc
                 # A malformed stale/unrelated completed line cannot become evidence.
                 # Keep waiting for a valid response carrying the fresh request ID.
                 continue
