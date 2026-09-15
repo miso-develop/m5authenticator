@@ -194,6 +194,8 @@ ESP-IDF logging normally uses the console standard stream, and USB Serial/JTAG i
 
 `fflush()` / `fsync()` help complete new response output and preserve the prior 64-byte/ZLP transport fix, but cannot reconstruct bytes already lost or remove an old prefix that was emitted before the response transaction began. A future post-request `prefix-contamination`, `truncated-looking`, or other current-ID corruption classification therefore remains a gate failure; the host synchronization is not allowed to salvage that frame.
 
+The production Web Serial path shares this physical transport. Its initial `hello` has an existing bounded startup-noise synchronization/retry policy for that **read-only** operation, so first-connect text noise already has a mitigation. Normal post-handshake exchanges do not strip arbitrary prefixes and continue to fail closed. Production transport separation/hardening beyond this existing startup behavior is tracked separately in #121 rather than weakening Protocol-v2 parsing in #119.
+
 The driver-backed USB Serial/JTAG mode provides FreeRTOS ring buffers and stronger application-TX buffering, but it is not used as the #119 fix: it is installed only after application startup, adds RAM/ISR/ring-buffer complexity, and cannot prevent ROM/bootloader output emitted before the application from leaving a first-open tail.
 
 ## 5. #119 Windows + M5StickS3 Human Gate
