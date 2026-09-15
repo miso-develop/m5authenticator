@@ -113,6 +113,8 @@ Therefore, after opening the port with inactive DTR/RTS, the helper:
 
 This phase **sends no diagnostic request**. It is transport synchronization before request 1, **not a retry**, and it is not a fixed sleep: newly arriving data resets the quiet condition. If continuous quiet cannot be established or the bounded discard ceiling is exceeded, the helper fails before writing a request.
 
+This synchronization is now explicitly **defense-in-depth**, not the #119 root fix. The physical first-open gate at exact head `2e7ae807097d7f1b73eb6e806a6dcf2452b8e416` established 266 ms continuous quiet with no pre-purge or pre-request bytes, yet the current-ID frame still failed with a 64-byte prefix. Therefore pre-request quiet is useful against visible late startup bytes but is **not sufficient** to prove the Device-to-host USB transfer state is clean.
+
 The helper reports only sanitized synchronization metadata on stderr, for example:
 
 ```text
@@ -139,7 +141,7 @@ For every invocation the helper then generates a fresh positive request ID in th
 
 The numeric ID above is only an example; it is **not fixed**. The Device echoes the current request ID in its response. The helper accepts a success only when `response.id` exactly matches the fresh ID generated for that invocation.
 
-Delayed/stale responses from previous helper runs therefore cannot become current test evidence. Freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID. The pre-request synchronization exists specifically to prevent an unterminated startup/console tail from being concatenated with the new current response; it does not relax current-response parsing.
+Delayed/stale responses from previous helper runs therefore cannot become current test evidence. Freshness does **not** depend on purge behavior: wrong-ID lines are ignored, malformed stale lines are ignored, and the helper keeps reading only until its bounded timeout for the current ID. The pre-request synchronization does not relax current-response parsing.
 
 The `--timeout` value must be finite and greater than zero. `0`, negative values, `nan`, `inf`, and `-inf` are rejected before opening the serial port.
 
@@ -177,30 +179,50 @@ For investigation, the failure text contains structural facts only. It may repor
 - `control`: non-whitespace control-byte presence;
 - `json_error`: decoder-position bucket (`near-start`, `middle`, `near-end`, or `unknown`);
 - `id_position`: current-ID-token position bucket;
-- `prefix_len`: structural byte count before the first `{` when prefix contamination is detected;
+- `request_len`: length of the fresh request retained only for numeric comparison;
+- `prefix_len`: byte count before the strict JSON suffix candidate;
+- `prefix_equals_request_prefix`: whether the prefix exactly equals the same-length prefix of the current request;
+- `prefix_equals_request_first64`: whether an exactly 64-byte prefix equals the current request's first 64 bytes (`yes`, `no`, or `not-applicable`);
+- `request_prefix_match_len`: common-prefix length bucket (`none`, `1-15`, `16-31`, `32-63`, `64`, `gt-64`, or `unknown`);
+- `suffix_json_valid`: whether a JSON suffix is syntactically valid;
+- `suffix_id_matches_current`: whether a valid suffix carries the current fresh request ID;
+- `suffix_allowlist_valid`: whether that current-ID suffix independently satisfies the same strict response allowlist;
+- `post_request_first_byte`: bucket for the first host byte observed after the request write/flush;
 - `object_starts` / `object_ends`: zero/one/multiple top-level JSON-object-looking boundaries;
 - `shape`: structural classification such as `prefix-contamination`, `suffix-contamination`, `middle-interleave-corruption`, `concatenated-objects`, `truncated-looking`, `invalid-utf8`, or `unknown`;
 - the same sanitized pre-request synchronization fields listed above.
 
-These diagnostics never print the raw serial payload, decoded frame text, byte values, credential labels, OTP digits, secrets, or other Device data. Record only this sanitized structural result when reporting a malformed current response. In particular, do not strip bytes before the first `{`, parse a JSON suffix, skip a malformed current frame, or perform an automatic retry to turn a contaminated response into PASS.
+The suffix analysis is **diagnosis only**. Even when `suffix_json_valid=yes`, `suffix_id_matches_current=yes`, and `suffix_allowlist_valid=yes`, the contaminated completed frame still fails. The suffix does not become PASS, bytes before `{` are not stripped, and the helper does not continue to a later valid frame.
+
+These diagnostics never print the raw serial payload, decoded frame text, raw request/prefix/suffix bytes, hashes, byte values, credential labels, OTP digits, secrets, or other Device data. Record only this sanitized structural result when reporting a malformed current response. In particular, do not strip bytes before the first `{`, parse a JSON suffix for acceptance, skip a malformed current frame, or perform an automatic retry to turn a contaminated response into PASS.
+
+### Why the 64-byte boundary matters, without proving the source
+
+The latest physical first-open failure reported `prefix_len=64`. USB Serial/JTAG on ESP32-S3 uses a 64-byte full USB packet boundary. ESP-IDF v5.5.5 documents that a full 64-byte Device-to-host transfer needs subsequent data or a short packet or ZLP to terminate the transaction for the host CDC listener; its VFS `fsync` path performs the additional drain/flush needed for that boundary.
+
+That exact size is therefore significant, but it **cannot by itself prove** that the prefix came from USB packet retention, a request echo, ROM/console output, or another source. A source-consistent candidate is an earlier exactly-64-byte Device-to-host IN transfer which remained internally pending until later TX activity supplied the terminating transfer, making it invisible to the host COM receive queue during pre-request quiet. This remains a hypothesis until sanitized relation evidence narrows it further.
+
+A literal current-request-first64 echo is testable without exposing bytes. The diagnostic request begins with `{`; the observed physical frame had `first_object=no`. That already makes exact literal first-64 equality structurally unlikely, but the helper now reports `prefix_equals_request_first64` and `request_prefix_match_len` rather than inferring from appearance alone.
 
 ### Device TX framing and residual transport risk
 
 The Device writes every Protocol-v2 response through the common `write_response()` path. The response body and terminating newline are assembled into one frame and sent with one logical stdio write while the `stdout` FILE lock remains held through `fflush()` and USB Serial/JTAG `fsync()`. This prevents normal concurrent `stdout` writers from entering between the JSON body and its newline. The same common TX hardening is present in default-OFF production firmware; it does **not** enable the screen-snapshot operation when `M5AUTH_TEST_SCREEN_SNAPSHOT` is OFF and does not change the Protocol-v2 JSON format.
 
-The USB Serial/JTAG connection state used by ESP-IDF follows USB bus activity, not ownership of the Windows COM handle. A powered/enumerated host can therefore be present while no user-space serial reader owns the port. The simplified USB Serial/JTAG VFS has a bounded transmit window and can abandon bytes when the TX FIFO does not make progress, while its higher-level write reports the requested size. Bootloader/ROM, ESP-IDF, library, or runtime console data can consequently leave a partial/unterminated tail which is delivered only after a later COM open. A host input purge cannot guarantee removal of bytes still pending on the Device side.
+The USB Serial/JTAG connection state used by ESP-IDF follows USB bus/SOF activity, not ownership of the Windows COM handle. A powered/enumerated host can therefore be present while no user-space serial reader owns the port. The simplified USB Serial/JTAG VFS has a bounded transmit window and can abandon bytes when the TX FIFO does not make progress, while its higher-level write reports the requested size.
 
-ESP-IDF logging normally uses the console standard stream, and USB Serial/JTAG is the configured primary console for this firmware. The USB Serial/JTAG VFS also serializes individual writes to the shared physical port. However, **Direct/early/ROM writers** are separate from the ordinary application `stdout` FILE locking model. In particular, the USB Serial/JTAG bootloader console uses the ROM output path, and constrained/early logging can use ROM printing. Those paths can precede application `write_response()` and are not retroactively protected by its FILE lock.
+ESP-IDF v5.5.5 VFS read logic reads the USB RX FIFO, performs only configured CR/LF normalization, and returns data. It contains no RX-to-TX echo operation. The driver-backed source likewise handles host OUT RX and Device IN TX in distinct interrupt branches and distinct buffers. `fgets(stdin)` therefore has no demonstrated USB Serial/JTAG line-discipline echo path in this configuration. Request echo/loopback is not impossible at every lower hardware/driver layer, but it is downgraded by the inspected source.
 
-`fflush()` / `fsync()` help complete new response output and preserve the prior 64-byte/ZLP transport fix, but cannot reconstruct bytes already lost or remove an old prefix that was emitted before the response transaction began. A future post-request `prefix-contamination`, `truncated-looking`, or other current-ID corruption classification therefore remains a gate failure; the host synchronization is not allowed to salvage that frame.
+ESP-IDF logging normally uses the console standard stream, and USB Serial/JTAG is the configured primary console for this firmware. The USB Serial/JTAG VFS serializes individual stdout/stderr writes to the shared physical port. However, **Direct/early/ROM writers** are separate from the ordinary application `stdout` FILE locking model. ESP-IDF's driver source explicitly accounts for ROM print routines putting bytes into the TX FIFO. Bootloader/ROM and constrained/early output can therefore bypass the application FILE lock and can precede or coincide with request handling.
+
+`fflush()` / `fsync()` help complete the current response and preserve the prior 64-byte/ZLP transport fix, but cannot reconstruct bytes already lost or retroactively terminate/identify older direct output. A future post-request `prefix-contamination`, `truncated-looking`, or other current-ID corruption classification therefore remains a gate failure.
 
 The production Web Serial path shares this physical transport. Its initial `hello` has an existing bounded startup-noise synchronization/retry policy for that **read-only** operation, so first-connect text noise already has a mitigation. Normal post-handshake exchanges do not strip arbitrary prefixes and continue to fail closed. Production transport separation/hardening beyond this existing startup behavior is tracked separately in #121 rather than weakening Protocol-v2 parsing in #119.
 
-The driver-backed USB Serial/JTAG mode provides FreeRTOS ring buffers and stronger application-TX buffering, but it is not used as the #119 fix: it is installed only after application startup, adds RAM/ISR/ring-buffer complexity, and cannot prevent ROM/bootloader output emitted before the application from leaving a first-open tail.
+The driver-backed USB Serial/JTAG mode provides FreeRTOS ring buffers and stronger application-TX buffering, but it is not used as the #119 fix: it is installed only after application startup, adds RAM/ISR/ring-buffer complexity, and cannot prevent ROM/bootloader output emitted before the application.
 
 ## 5. #119 Windows + M5StickS3 Human Gate
 
-CI cannot prove that the actual Windows USB/serial driver and M5StickS3 hardware exhibit no open-time control-line glitch or intermittent transport corruption. Perform this gate only when Integration has explicitly authorized a new attempt after reviewing the exact helper/firmware head.
+CI cannot prove the actual Windows USB/serial driver and M5StickS3 hardware behavior. Perform this gate only when Integration has explicitly authorized a new attempt after reviewing the exact helper/firmware head. Device Agent must not self-authorize or rerun it.
 
 Use only sanitized/non-secret observations. Do not record Device ID, credential labels, TOTP digits/secrets, Recovery Package/Passphrase, VMK/KEK/BUK/BRK/session material, Wi-Fi credentials, or Vault material.
 
@@ -211,7 +233,7 @@ The **first helper invocation after flash/reboot** is a distinct mandatory case 
 3. close the flasher/monitor and ensure Chrome/Web Serial and other terminals do not own the port;
 4. confirm the **helper has never opened the COM port** since that flash/reboot;
 5. run the helper exactly once while observing the LCD;
-6. record the sanitized `SCREEN_SNAPSHOT_SYNC` line and the sanitized snapshot or failure;
+6. record the sanitized `SCREEN_SNAPSHOT_SYNC` line and the sanitized snapshot or failure, including `prefix_equals_request_first64`, `request_prefix_match_len`, `suffix_json_valid`, `suffix_id_matches_current`, `suffix_allowlist_valid`, and `post_request_first_byte` when a malformed frame is reported;
 7. if the run fails or visibly perturbs the Device, stop immediately. Do not retry that first-open case into PASS.
 
 Only if Integration accepts the first-open result may the repeated-open portion proceed:
