@@ -80,13 +80,27 @@ class ScreenSnapshotRequestRelationTest(unittest.TestCase):
         self.assertEqual("yes", relation["suffix_id_matches_current"])
         self.assertEqual("yes", relation["suffix_allowlist_valid"])
 
-    def test_prefix_equal_request_body_is_identified_without_raw_output(self) -> None:
+    def test_prefix_equal_64_byte_request_body_is_identified_without_raw_output(self) -> None:
         request = helper.build_request(self.REQUEST_ID)
-        relation = self.analyze(request.rstrip(b"\n"))
-        self.assertEqual(len(request) - 1, relation["prefix_len"])
+        request_body = request.rstrip(b"\n")
+        self.assertEqual(64, len(request_body))
+        relation = self.analyze(request_body)
+        self.assertEqual(64, relation["prefix_len"])
         self.assertEqual("yes", relation["prefix_equals_request_prefix"])
-        self.assertEqual("gt-64", relation["request_prefix_match_len"])
+        self.assertEqual("yes", relation["prefix_equals_request_first64"])
+        self.assertEqual("64", relation["request_prefix_match_len"])
         self.assertNotIn(request.decode("ascii"), helper._format_malformed_relation(relation))
+
+    def test_prefix_equal_larger_request_body_is_bucketed_gt64(self) -> None:
+        request_id = 10000
+        request = helper.build_request(request_id)
+        request_body = request.rstrip(b"\n")
+        self.assertGreater(len(request_body), 64)
+        relation = self.analyze(request_body, request_id=request_id)
+        self.assertEqual(len(request_body), relation["prefix_len"])
+        self.assertEqual("yes", relation["prefix_equals_request_prefix"])
+        self.assertEqual("no", relation["prefix_equals_request_first64"])
+        self.assertEqual("gt-64", relation["request_prefix_match_len"])
 
     def test_unrelated_64_byte_prefix_is_not_request_echo(self) -> None:
         relation = self.analyze(b"X" * 64)
