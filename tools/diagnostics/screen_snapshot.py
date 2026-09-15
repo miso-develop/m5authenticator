@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 
 _MAX_REQUEST_ID = 2_000_000_000
+_MAX_RESPONSE_LINE_BYTES = 4096
 _OPERATION = "diagnostics.screen_snapshot"
 _issued_request_ids: set[int] = set()
 
@@ -199,32 +200,59 @@ def read_matching_response(
     now: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     deadline = now() + timeout_seconds
+    pending = bytearray()
+
     while now() < deadline:
-        raw = port.readline()
-        if not raw:
-            continue
-        try:
-            parsed = _parse_json_line(raw)
-        except ValueError as exc:
-            if _raw_mentions_request_id(raw, request_id):
-                raise RuntimeError("current diagnostic response is malformed") from exc
-            # A malformed stale/unrelated line cannot become evidence. Keep
-            # waiting for a valid response carrying the current fresh request ID.
+        fragment = port.readline()
+        if not fragment:
+            # A per-read timeout does not terminate the overall collection window.
+            # Preserve any partial frame and keep waiting until the overall deadline.
             continue
 
-        response_id = _response_id(parsed)
-        if response_id != request_id:
-            # Delayed responses from previous helper runs are deliberately ignored.
-            continue
+        pending.extend(fragment)
 
-        if not isinstance(parsed, dict) or parsed.get("ok") is not True:
-            raise _current_error(parsed, request_id)
-        try:
-            return validate_success_response(parsed, request_id)
-        except ValueError as exc:
-            raise RuntimeError(
-                "current diagnostic response failed sanitized allowlist validation"
-            ) from exc
+        while True:
+            newline_index = pending.find(b"\n")
+            if newline_index < 0:
+                if len(pending) > _MAX_RESPONSE_LINE_BYTES:
+                    raise RuntimeError("diagnostic response line exceeds maximum length")
+                break
+
+            frame_length = newline_index + 1
+            if frame_length > _MAX_RESPONSE_LINE_BYTES:
+                raise RuntimeError("diagnostic response line exceeds maximum length")
+
+            raw = bytes(pending[:frame_length])
+            del pending[:frame_length]
+
+            try:
+                parsed = _parse_json_line(raw)
+            except ValueError as exc:
+                if _raw_mentions_request_id(raw, request_id):
+                    raise RuntimeError("current diagnostic response is malformed") from exc
+                # A malformed stale/unrelated completed line cannot become evidence.
+                # Keep waiting for a valid response carrying the fresh request ID.
+                continue
+
+            response_id = _response_id(parsed)
+            if response_id != request_id:
+                # Delayed responses from previous helper runs are deliberately ignored.
+                continue
+
+            if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+                raise _current_error(parsed, request_id)
+            try:
+                return validate_success_response(parsed, request_id)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "current diagnostic response failed sanitized allowlist validation"
+                ) from exc
+
+    if pending:
+        # Partial bytes are not malformed JSON: without a terminating newline the
+        # frame is incomplete. Fail closed at the overall deadline without logging
+        # or echoing any raw serial payload.
+        raise RuntimeError("diagnostic response line was incomplete before timeout")
 
     raise RuntimeError("no valid response for the current request id before timeout")
 
