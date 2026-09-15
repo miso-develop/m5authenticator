@@ -578,6 +578,26 @@ def _completed_malformed_diagnostics(
     )
 
 
+def _format_timeout_diagnostics(
+    *,
+    post_request_data: bool,
+    completed_lines: int,
+    first_completed_frame_len: int | None,
+    malformed_unrelated_lines: int,
+    valid_wrong_id_lines: int,
+    post_request_first_byte: str,
+) -> str:
+    """Format timeout-only structural metadata without any serial payload content."""
+    return (
+        f"post_request_data={'yes' if post_request_data else 'no'},"
+        f"completed_lines={_count_bucket(completed_lines)},"
+        f"first_completed_frame_len={first_completed_frame_len if first_completed_frame_len is not None else 'none'},"
+        f"malformed_unrelated_lines={_count_bucket(malformed_unrelated_lines)},"
+        f"valid_wrong_id_lines={_count_bucket(valid_wrong_id_lines)},"
+        f"post_request_first_byte={post_request_first_byte}"
+    )
+
+
 def read_matching_response(
     port: Any,
     request_id: int,
@@ -591,6 +611,11 @@ def read_matching_response(
     deadline = now() + timeout_seconds
     pending = bytearray()
     post_request_first_byte = "unknown" if request_sent_at is None else "none"
+    post_request_data = False
+    completed_lines = 0
+    first_completed_frame_len: int | None = None
+    malformed_unrelated_lines = 0
+    valid_wrong_id_lines = 0
 
     while now() < deadline:
         fragment = port.readline()
@@ -600,6 +625,7 @@ def read_matching_response(
             # Preserve any partial frame and keep waiting until the overall deadline.
             continue
 
+        post_request_data = True
         if request_sent_at is not None and post_request_first_byte == "none":
             post_request_first_byte = _timing_bucket(max(0.0, after_read - request_sent_at))
 
@@ -618,6 +644,9 @@ def read_matching_response(
 
             raw = bytes(pending[:frame_length])
             del pending[:frame_length]
+            completed_lines += 1
+            if first_completed_frame_len is None:
+                first_completed_frame_len = frame_length
 
             try:
                 parsed = _parse_json_line(raw)
@@ -633,13 +662,22 @@ def read_matching_response(
                             post_request_first_byte,
                         )
                     ) from exc
+                malformed_unrelated_lines += 1
                 # A malformed stale/unrelated completed line cannot become evidence.
                 # Keep waiting for a valid response carrying the fresh request ID.
                 continue
 
             response_id = _response_id(parsed)
             if response_id != request_id:
-                # Delayed responses from previous helper runs are deliberately ignored.
+                # Count only a strict allowlisted response carrying its own ID as a
+                # valid wrong-ID frame. Other unrelated completed JSON is grouped
+                # with malformed/unusable unrelated lines. Neither can be evidence.
+                if response_id is not None and _strict_current_response_allowlisted(
+                    parsed, response_id
+                ):
+                    valid_wrong_id_lines += 1
+                else:
+                    malformed_unrelated_lines += 1
                 continue
 
             if not isinstance(parsed, dict) or parsed.get("ok") is not True:
@@ -651,13 +689,29 @@ def read_matching_response(
                     "current diagnostic response failed sanitized allowlist validation"
                 ) from exc
 
+    timeout_diagnostics = _format_timeout_diagnostics(
+        post_request_data=post_request_data,
+        completed_lines=completed_lines,
+        first_completed_frame_len=first_completed_frame_len,
+        malformed_unrelated_lines=malformed_unrelated_lines,
+        valid_wrong_id_lines=valid_wrong_id_lines,
+        post_request_first_byte=post_request_first_byte,
+    )
     if pending:
         # Partial bytes are not malformed JSON: without a terminating newline the
         # frame is incomplete. Fail closed at the overall deadline without logging
         # or echoing any raw serial payload.
-        raise RuntimeError("diagnostic response line was incomplete before timeout")
+        raise RuntimeError(
+            "diagnostic response line was incomplete before timeout ("
+            + timeout_diagnostics
+            + ")"
+        )
 
-    raise RuntimeError("no valid response for the current request id before timeout")
+    raise RuntimeError(
+        "no valid response for the current request id before timeout ("
+        + timeout_diagnostics
+        + ")"
+    )
 
 
 def _validate_timeout_seconds(timeout_seconds: float) -> None:
