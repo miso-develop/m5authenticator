@@ -237,16 +237,21 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(f'\\"{forbidden}\\"', response.lower())
 
-    def test_response_uses_existing_one_line_fsync_writer(self) -> None:
+    def test_response_uses_serialized_one_line_fsync_writer(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
         writer = extract_braced_block(app, "void write_response(")
-        self.assertIn("std::fwrite(response.data(), 1, response.size(), stdout)", writer)
-        self.assertIn("std::fputc('\\n', stdout)", writer)
+        self.assertIn("frame.append(response)", writer)
+        self.assertIn("frame.push_back('\\n')", writer)
+        self.assertIn("::flockfile(stdout)", writer)
+        self.assertIn("std::fwrite(frame.data(), 1, frame.size(), stdout)", writer)
+        self.assertNotIn("std::fputc", writer)
         self.assertIn("std::fflush(stdout)", writer)
         self.assertIn("::fsync(STDOUT_FILENO)", writer)
-        self.assertLess(writer.index("std::fwrite("), writer.index("std::fputc('\\n', stdout)"))
-        self.assertLess(writer.index("std::fputc('\\n', stdout)"), writer.index("std::fflush(stdout)"))
+        self.assertIn("::funlockfile(stdout)", writer)
+        self.assertLess(writer.index("::flockfile(stdout)"), writer.index("std::fwrite("))
+        self.assertLess(writer.index("std::fwrite("), writer.index("std::fflush(stdout)"))
         self.assertLess(writer.index("std::fflush(stdout)"), writer.index("::fsync(STDOUT_FILENO)"))
+        self.assertLess(writer.index("::fsync(STDOUT_FILENO)"), writer.index("::funlockfile(stdout)"))
 
 
 if __name__ == "__main__":
