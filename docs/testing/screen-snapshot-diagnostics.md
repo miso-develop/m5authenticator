@@ -17,18 +17,27 @@ It never returns framebuffer pixels, rendered text, OTP digits, credential label
 
 Do **not** perform Factory Reset, re-Provisioning, site-data/IndexedDB clearing, `erase-flash`, or any eFuse read/write/burn/provisioning merely to use this diagnostic.
 
-## 1. Use a dedicated diagnostics build directory
+## 1. Build the dedicated diagnostics profile on Windows
 
 Activate the exact ESP-IDF environment required by the repository first. For #117 verification this is ESP-IDF v5.5.5.
 
-From the repository `firmware` directory, use a build directory that is **not** the normal `build` directory:
+The Windows helpers under `scripts\windows\` resolve the repository `firmware` directory from the script location, so they can be launched from any working directory.
+
+For an ordinary incremental diagnostics build, use:
 
 ```bat
-idf.py --version
-idf.py -B build-screen-snapshot set-target esp32s3
-idf.py -B build-screen-snapshot -DM5AUTH_TEST_SCREEN_SNAPSHOT=ON build
-findstr /C:"M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON" build-screen-snapshot\CMakeCache.txt
+scripts\windows\build-screen-snapshot.cmd
 ```
+
+The incremental helper reuses an existing valid `build-screen-snapshot` configuration. If that cache does not exist yet, it initializes the `esp32s3` target once. It prints the ESP-IDF version, builds with `M5AUTH_TEST_SCREEN_SNAPSHOT=ON`, verifies the cache flag, and reports PASS or FAIL.
+
+For a Human Gate or any case requiring a clean diagnostics rebuild, use this instead:
+
+```bat
+scripts\windows\rebuild-screen-snapshot.cmd
+```
+
+The clean helper prints the exact repository HEAD and ESP-IDF version, runs `set-target esp32s3` for the dedicated `build-screen-snapshot` directory, builds the diagnostics profile, verifies `M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON`, and reports PASS or FAIL. Each external command is checked before the next command runs.
 
 Expected version:
 
@@ -42,15 +51,25 @@ Expected cache guard:
 M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON
 ```
 
-Do not reuse `firmware\build` for this test profile. If a clean diagnostics rebuild is required, delete or `fullclean` **only** `build-screen-snapshot`.
+Do not reuse `firmware\build` for this test profile. The build and rebuild helpers do **not** flash a Device, start a monitor, or invoke the screen-snapshot helper. Build, flash, and Human evidence collection remain separate operator decisions.
 
-## 2. Flash only the diagnostics build
+For Human Gate evidence, prefer the checked-in helpers above rather than manually pasting a multi-command `idf.py` sequence. Manual commands should be used only for troubleshooting when Integration explicitly needs them.
 
-Identify the M5StickS3 serial port, then flash using the same dedicated build directory. Example for `COM8`:
+## 2. Flash only the verified diagnostics build
+
+Identify the M5StickS3 serial port. From the repository root, an example for `COM8` is:
 
 ```bat
-idf.py -B build-screen-snapshot -p COM8 flash
+scripts\windows\flash-screen-snapshot.cmd COM8
 ```
+
+The port argument is mandatory. Before invoking the ESP-IDF flash action, the script verifies that `firmware\build-screen-snapshot\CMakeCache.txt` exists and contains exactly:
+
+```text
+M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON
+```
+
+If that guard is missing or false, the script fails without flashing. The flash helper does not run a diagnostics build, does not start a monitor, and does not invoke `screen_snapshot.py`. A build/rebuild must therefore be completed and accepted as a separate step before flashing.
 
 Do not run `erase-flash`. This diagnostic does not require Factory Reset, re-Provisioning, browser site-data clearing, or eFuse operations.
 
@@ -98,6 +117,8 @@ From the repository root, use the read-only helper. Run it from the activated ES
 ```bat
 python tools\diagnostics\screen_snapshot.py --port COM8
 ```
+
+This helper invocation is deliberately **not** part of any build or flash script. During a Human Gate, execute it only after Integration has authorized that exact attempt, and keep each authorized invocation as a separate operator action.
 
 ### Pre-request serial synchronization
 
@@ -228,13 +249,16 @@ Use only sanitized/non-secret observations. Do not record Device ID, credential 
 
 The **first helper invocation after flash/reboot** is a distinct mandatory case and **must be tested separately** from repeat invocations. For that first-open case:
 
-1. clean-build and flash the authorized diagnostics exact head;
-2. after the flash/reset, allow the Device to reach the steady **LOCKED** screen;
-3. close the flasher/monitor and ensure Chrome/Web Serial and other terminals do not own the port;
-4. confirm the **helper has never opened the COM port** since that flash/reboot;
-5. run the helper exactly once while observing the LCD;
-6. record the sanitized `SCREEN_SNAPSHOT_SYNC` line and the sanitized snapshot or failure, including `prefix_equals_request_first64`, `request_prefix_match_len`, `suffix_json_valid`, `suffix_id_matches_current`, `suffix_allowlist_valid`, and `post_request_first_byte` when a malformed frame is reported;
-7. if the run fails or visibly perturbs the Device, stop immediately. Do not retry that first-open case into PASS.
+1. from the repository root, run `scripts\windows\rebuild-screen-snapshot.cmd` and record the exact HEAD/version/PASS output for the authorized diagnostics head;
+2. run `scripts\windows\flash-screen-snapshot.cmd COM8` with the actual authorized COM port as a separate action;
+3. after the flash/reset, allow the Device to reach the steady **LOCKED** screen;
+4. close the flasher/monitor and ensure Chrome/Web Serial and other terminals do not own the port;
+5. confirm the **helper has never opened the COM port** since that flash/reboot;
+6. only after Integration has authorized this Human evidence invocation, run `python tools\diagnostics\screen_snapshot.py --port COM8` exactly once while observing the LCD;
+7. record the sanitized `SCREEN_SNAPSHOT_SYNC` line and the sanitized snapshot or failure, including `prefix_equals_request_first64`, `request_prefix_match_len`, `suffix_json_valid`, `suffix_id_matches_current`, `suffix_allowlist_valid`, and `post_request_first_byte` when a malformed frame is reported;
+8. if the run fails or visibly perturbs the Device, stop immediately. Do not retry that first-open case into PASS.
+
+The build and flash scripts never launch the Human helper, so Integration authorization remains a distinct boundary immediately before step 6.
 
 Only if Integration accepts the first-open result may the repeated-open portion proceed:
 
