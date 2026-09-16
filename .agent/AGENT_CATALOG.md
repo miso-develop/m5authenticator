@@ -11,15 +11,15 @@ A chat activates exactly one role at a time. The role contract determines what t
 1. Current explicit human instruction
 2. Repository Agent Contract under `.agent/`
 3. Repository Map / Decision / Spec and other approved design records
-4. Assigned GitHub Issue and its accepted updates
-5. Current chat context
+4. Assigned GitHub Issue / PR and their accepted durable updates
+5. Current chat context / handoff text
 6. Historical chat context
 
 A higher-priority source may clarify or supersede a lower-priority source, but it does not automatically grant a role permission that the role contract forbids. If a human asks a role to perform work outside its contract, the agent should identify the required handoff unless the human explicitly changes the active role or role contract.
 
 ## Shared invariants
 
-- GitHub is the authoritative project state for durable decisions, Issues, PRs, code, and review evidence.
+- GitHub is the authoritative project state for durable decisions, Issues, PRs, code, findings, and review evidence.
 - Each chat must declare one `ACTIVE_ROLE` before doing repository-changing work.
 - Agents must read the current role contract before acting.
 - Agents must not silently cross role boundaries.
@@ -29,6 +29,9 @@ A higher-priority source may clarify or supersede a lower-priority source, but i
 - Review and Security findings must remain independent from the implementation that produced the change.
 - Acceptance criteria must not be silently weakened to make work pass.
 - Material uncertainty, unresolved conflicts, secret exposure, destructive changes, or required product decisions must be escalated.
+- Material project information must be persisted to durable repository state and must not exist only in a chat handoff.
+- Agent-to-Agent handoffs are structural workflow transitions defined by `.agent/HANDOFF_PROTOCOL.md`; they are not substitutes for Issue / PR / Spec evidence.
+- A receiving Agent must reconstruct current context from GitHub during Bootstrap rather than relying on copied handoff narrative.
 - A role declaration is a policy boundary, not merely a descriptive label.
 
 ## Domain model
