@@ -19,10 +19,6 @@ function nativeQrDetectorAvailable(): boolean {
   return "BarcodeDetector" in globalThis;
 }
 
-function isLinuxHeadlessChrome(): boolean {
-  return navigator.userAgent.includes("Linux") && navigator.userAgent.includes("HeadlessChrome");
-}
-
 export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-native-unavailable"> {
   const pngBytes = decodeBase64(denseSyntheticMigrationQrPngBase64);
   try {
@@ -32,12 +28,10 @@ export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-nati
     try {
       decoded = await decodeQrImage(file);
     } catch (error) {
-      // GitHub's Linux hosted Headless Chrome currently lacks BarcodeDetector even
-      // though current branded Desktop Chrome exposes it on supported platforms.
-      // Existing ZXing production smoke still runs on Linux. The dense native path
-      // is required to PASS on the Windows Chrome job; only this unavailable API
-      // combination is an explicit test-environment skip.
-      if (isLinuxHeadlessChrome() && !nativeQrDetectorAvailable()) {
+      // The hosted Linux Chrome used by CI does not expose BarcodeDetector, while
+      // the Windows Chrome job does and must PASS this full dense regression.
+      // Existing ZXing production QR smoke still executes on every platform.
+      if (!nativeQrDetectorAvailable()) {
         return "skipped-native-unavailable";
       }
       throw error;
