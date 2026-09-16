@@ -55,7 +55,7 @@ function splitOuterWhitespace(value: string): { prefix: string; source: string; 
   };
 }
 
-function localizeTextNode(node: Text, force = false): void {
+function localizeTextNode(node: Text): void {
   const existing = textBindings.get(node);
   let source: string;
   let prefix: string;
@@ -68,7 +68,7 @@ function localizeTextNode(node: Text, force = false): void {
     source = split.source;
     prefix = split.prefix;
     suffix = split.suffix;
-    if (source.length === 0 || (!force && !recognizedSource(source))) {
+    if (source.length === 0 || !recognizedSource(source)) {
       textBindings.delete(node);
       return;
     }
@@ -79,13 +79,13 @@ function localizeTextNode(node: Text, force = false): void {
   if (node.data !== rendered) node.data = rendered;
 }
 
-function localizeAttribute(element: Element, attribute: string, force = false): void {
+function localizeAttribute(element: Element, attribute: string): void {
   const current = element.getAttribute(attribute);
   if (current === null) return;
   const map = attributeBindings.get(element) ?? new Map<string, AttributeBinding>();
   const existing = map.get(attribute);
   const source = existing && current === existing.rendered ? existing.source : current;
-  if (!force && !recognizedSource(source)) {
+  if (!recognizedSource(source)) {
     map.delete(attribute);
     return;
   }
@@ -95,14 +95,14 @@ function localizeAttribute(element: Element, attribute: string, force = false): 
   if (current !== rendered) element.setAttribute(attribute, rendered);
 }
 
-function localizeNode(node: Node, force = false): void {
+function localizeNode(node: Node): void {
   if (node instanceof Text) {
-    localizeTextNode(node, force);
+    localizeTextNode(node);
     return;
   }
   if (!(node instanceof Element)) return;
-  for (const attribute of translatableAttributes) localizeAttribute(node, attribute, force);
-  for (const child of node.childNodes) localizeNode(child, force);
+  for (const attribute of translatableAttributes) localizeAttribute(node, attribute);
+  for (const child of node.childNodes) localizeNode(child);
 }
 
 export function sourceTextOf(element: Element): string {
@@ -148,8 +148,9 @@ function renderNavigation(): void {
 }
 
 function localizeExistingUi(): void {
-  localizeNode(document.documentElement, true);
-  document.title = translateUiText(document.title);
+  // Bind only known application UI strings. User-provided account names, SSIDs,
+  // identifiers, protocol values, and other unknown text remain untouched.
+  localizeNode(document.documentElement);
 }
 
 function installMutationLocalization(): MutationObserver {
