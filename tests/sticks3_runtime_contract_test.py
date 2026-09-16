@@ -91,7 +91,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
         ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertIn("session::PresenceOperation::kFactoryReset", protocol)
-        self.assertIn('M5.Display.println("ERASE DEVICE DATA");', ui)
+        self.assertIn('draw_line("ERASE DEVICE DATA"', ui)
 
     def test_idle_usb_runs_housekeeping_without_becoming_disconnect(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
