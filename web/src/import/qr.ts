@@ -18,7 +18,8 @@ export interface QrImageDecodeDependencies {
 const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
-const NATIVE_QR_DECODE_TIMEOUT_MS = 2_000;
+const NATIVE_QR_ATTEMPT_TIMEOUT_MS = 750;
+const NATIVE_QR_TOTAL_BUDGET_MS = 3_000;
 const HIGH_CONTRAST_THRESHOLD = 0x80;
 
 interface NativeBarcodeResult {
@@ -227,7 +228,7 @@ async function decodeWithNativeBarcodeDetector(bitmap: ImageBitmap): Promise<str
 
   try {
     const detector = new detectorConstructor({ formats: ["qr_code"] });
-    const detected = await withTimeout(detector.detect(bitmap), NATIVE_QR_DECODE_TIMEOUT_MS);
+    const detected = await withTimeout(detector.detect(bitmap), NATIVE_QR_ATTEMPT_TIMEOUT_MS);
     if (!detected) {
       return undefined;
     }
@@ -257,7 +258,7 @@ async function decodeNativeWithinBudget(
   if (remainingMs <= 0) {
     return undefined;
   }
-  return await withTimeout(decodeNativeQr(bitmap), remainingMs);
+  return await withTimeout(decodeNativeQr(bitmap), Math.min(NATIVE_QR_ATTEMPT_TIMEOUT_MS, remainingMs));
 }
 
 async function tryScaledNative(
@@ -343,7 +344,7 @@ export async function decodeQrImage(
       throw new ImportError("No supported QR code could be decoded from the selected image.");
     }
 
-    const nativeDeadline = performance.now() + NATIVE_QR_DECODE_TIMEOUT_MS;
+    const nativeDeadline = performance.now() + NATIVE_QR_TOTAL_BUDGET_MS;
     const originalNativeResult = await decodeNativeWithinBudget(
       dependencies.decodeNativeQr,
       bitmap,
