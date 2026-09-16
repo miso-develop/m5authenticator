@@ -55,6 +55,19 @@ class AutomaticLockProtocolContractTest(unittest.TestCase):
         self.assertLess(update.index(commit_call), update.index(due_check))
         self.assertLess(update.index(due_check), update.index("lock_security_boundary();"))
 
+    def test_vault_rekey_rechecks_original_deadline_after_commit(self) -> None:
+        start = self.protocol.index('operation == "vault.rekey"')
+        end = self.protocol.index('operation == "time.status"', start)
+        rekey = self.protocol[start:end]
+        install_call = "vmk_sink_.install_rekeyed_vault"
+        due_check = "runtime_.automatic_lock_due(now_ms)"
+        self.assertIn(install_call, rekey)
+        self.assertIn("automatic_lock_due_after_rekey", rekey)
+        self.assertIn(due_check, rekey)
+        self.assertIn("lock_security_boundary()", rekey)
+        self.assertLess(rekey.index(install_call), rekey.index(due_check))
+        self.assertLess(rekey.index(due_check), rekey.index("lock_security_boundary()"))
+
     def test_expiry_and_explicit_lock_use_same_security_boundary(self) -> None:
         self.assertIn("vault_runtime::Status lock_security_boundary();", self.protocol_header)
         housekeeping_start = self.protocol.index(
