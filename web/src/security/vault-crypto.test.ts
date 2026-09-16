@@ -109,7 +109,11 @@ describe("Web vault crypto", () => {
       new FixedRandomSource([sourceBytes]),
     );
     expect(current.vaultFormatVersion).toBe(VAULT_FORMAT_VERSION);
-    expect(current.ciphertext).not.toEqual(legacy.ciphertext);
+    // AES-GCM keystream encryption is independent of AAD, so identical
+    // key/nonce/plaintext yields identical ciphertext while the authenticated
+    // tag changes with the Format-2 AAD domain.
+    expect(current.ciphertext).toEqual(legacy.ciphertext);
+    expect(current.tag).not.toEqual(legacy.tag);
     await expect(decryptVault(current, keyBytes)).resolves.toEqual(plaintext);
     await expect(decryptVault({ ...current, vaultFormatVersion: LEGACY_VAULT_FORMAT_VERSION }, keyBytes)).rejects.toThrow();
   });
