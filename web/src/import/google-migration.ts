@@ -9,6 +9,10 @@ import {
 const GOOGLE_ALGORITHM_SHA1 = 1;
 const GOOGLE_DIGITS_SIX = 1;
 const GOOGLE_TYPE_TOTP = 2;
+const GOOGLE_MIGRATION_VERSIONS = new Set([1, 2]);
+// Defensive QR-batch bound only. V1's 32-account capacity is enforced
+// independently by MigrationBatchAssembler / ImportSession.
+const GOOGLE_MIGRATION_MAX_BATCH_PARTS = 100;
 
 export interface GoogleMigrationPart {
   version: number;
@@ -53,15 +57,7 @@ export function parseGoogleMigrationUri(source: string): GoogleMigrationPart {
 
   const accounts: ImportedTotpAccount[] = [];
   try {
-    if (
-      decoded.version !== 1 ||
-      decoded.batchSize < 1 ||
-      decoded.batchSize > V1_MAX_ACCOUNTS ||
-      decoded.batchIndex < 0 ||
-      decoded.batchIndex >= decoded.batchSize
-    ) {
-      throw new ImportError("The Google Authenticator migration metadata is unsupported.");
-    }
+    assertSupportedMetadata(decoded);
     if (decoded.otpParameters.length === 0) {
       throw new ImportError("The Google Authenticator migration QR code contains no accounts.");
     }
@@ -119,7 +115,7 @@ export class MigrationBatchAssembler {
   private active: ActiveBatch | undefined;
 
   public add(part: GoogleMigrationPart, capacity = V1_MAX_ACCOUNTS): MigrationBatchUpdate {
-    if (capacity < 1 || part.batchSize > capacity) {
+    if (capacity < 1 || part.accounts.length > capacity) {
       clearSensitiveAccounts(part.accounts);
       this.clear();
       throw new ImportError("The migration exceeds the V1 account limit.");
@@ -132,9 +128,9 @@ export class MigrationBatchAssembler {
     }
 
     if (part.batchSize === 1) {
-      if (part.batchIndex !== 0 || part.accounts.length > capacity) {
+      if (part.batchIndex !== 0) {
         clearSensitiveAccounts(part.accounts);
-        throw new ImportError("The migration exceeds the V1 account limit.");
+        throw new ImportError("The Google Authenticator migration batch metadata is invalid.");
       }
       return { complete: true, received: 1, total: 1, accounts: part.accounts };
     }
@@ -194,6 +190,25 @@ export class MigrationBatchAssembler {
     }
     this.active = undefined;
   }
+}
+
+function assertSupportedMetadata(decoded: ReturnType<typeof decodeGoogleMigrationPayload>): void {
+  const summary = metadataSummary(decoded);
+  if (!GOOGLE_MIGRATION_VERSIONS.has(decoded.version)) {
+    throw new ImportError(`Unsupported Google Authenticator migration metadata: ${summary}.`);
+  }
+  if (
+    decoded.batchSize < 1 ||
+    decoded.batchSize > GOOGLE_MIGRATION_MAX_BATCH_PARTS ||
+    decoded.batchIndex < 0 ||
+    decoded.batchIndex >= decoded.batchSize
+  ) {
+    throw new ImportError(`Invalid Google Authenticator migration metadata: ${summary}.`);
+  }
+}
+
+function metadataSummary(decoded: ReturnType<typeof decodeGoogleMigrationPayload>): string {
+  return `version=${decoded.version}, batchSize=${decoded.batchSize}, batchIndex=${decoded.batchIndex}`;
 }
 
 function decodeBase64(value: string): Uint8Array {
