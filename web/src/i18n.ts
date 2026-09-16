@@ -5,6 +5,7 @@ export const SUPPORTED_UI_LANGUAGES = ["en", "ja"] as const;
 
 const ja: Record<string, string> = {
   "M5Authenticator": "M5Authenticator",
+  "M5Authenticator sections": "M5Authenticator セクション",
   "Provisioner": "プロビジョニング",
   "Firmware Flash": "ファームウェア",
   "Help": "使い方",
@@ -105,7 +106,6 @@ const ja: Record<string, string> = {
   "Registration present": "Registrationあり",
   "Generation": "Generation",
   "Browser ownership": "Browser ownership",
-  "Unlock": "ロック解除",
   "Recovery candidates": "Recovery候補",
   "Time": "時刻",
   "Accounts": "アカウント",
