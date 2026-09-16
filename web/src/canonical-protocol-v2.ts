@@ -44,7 +44,10 @@ export interface CanonicalHelloData {
   protocol: 2;
   storageSchema: 2;
   vaultFormat: SupportedVaultFormatVersion;
-  supportedVaultFormats: readonly number[];
+  // parseCanonicalHelloData always returns an explicit array. This remains
+  // optional on the structural interface so pre-capability synthetic transports
+  // remain compatible; absence is conservatively treated as no Format-2 support.
+  supportedVaultFormats?: readonly number[];
   buildCommit: string;
   state: DeviceRuntimeState;
   storageReady: boolean;
@@ -130,7 +133,7 @@ function parseSupportedVaultFormats(value: unknown): readonly number[] {
 }
 
 export function deviceSupportsVaultFormat(hello: Pick<CanonicalHelloData, "supportedVaultFormats">, version: number): boolean {
-  return hello.supportedVaultFormats.includes(version);
+  return hello.supportedVaultFormats?.includes(version) === true;
 }
 
 export function parseCanonicalHelloData(data: Record<string, unknown>): CanonicalHelloData {
