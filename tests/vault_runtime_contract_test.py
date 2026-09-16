@@ -6,11 +6,15 @@ RUNTIME = ROOT / "firmware/components/m5auth_vault_runtime/runtime.cpp"
 HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_runtime/runtime.hpp"
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
 COMPAT_NVS = ROOT / "firmware/components/m5auth_vault_runtime/compatible_nvs_persistence.cpp"
+VAULT_HEADER = ROOT / "firmware/components/m5auth_vault/include/m5auth/vault.hpp"
 VAULT_FORMAT = ROOT / "firmware/components/m5auth_vault/vault_format.cpp"
 VAULT_CRYPTO = ROOT / "firmware/components/m5auth_vault/vault_crypto.cpp"
 TOTP_CORE = ROOT / "firmware/components/m5auth_totp/totp_core.cpp"
 TIME_SERVICE = ROOT / "firmware/components/m5auth_time/canonical_time_service.cpp"
 CORE_METADATA = ROOT / "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp"
+PROTOCOL = ROOT / "firmware/components/m5auth_provisioning/canonical_protocol_v2.cpp"
+PROTOCOL_HEADER = ROOT / "firmware/components/m5auth_provisioning/include/m5auth/provisioning/canonical_protocol_v2.hpp"
+V2_STATE = ROOT / "firmware/components/m5auth_provisioning/canonical_v2_state.cpp"
 
 
 class VaultRuntimeContractTest(unittest.TestCase):
@@ -20,22 +24,42 @@ class VaultRuntimeContractTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.nvs = NVS.read_text(encoding="utf-8")
         cls.compat_nvs = COMPAT_NVS.read_text(encoding="utf-8")
+        cls.vault_header = VAULT_HEADER.read_text(encoding="utf-8")
         cls.vault_format = VAULT_FORMAT.read_text(encoding="utf-8")
         cls.vault_crypto = VAULT_CRYPTO.read_text(encoding="utf-8")
         cls.totp_core = TOTP_CORE.read_text(encoding="utf-8")
         cls.time_service = TIME_SERVICE.read_text(encoding="utf-8")
         cls.core_metadata = CORE_METADATA.read_text(encoding="utf-8")
+        cls.protocol = PROTOCOL.read_text(encoding="utf-8")
+        cls.protocol_header = PROTOCOL_HEADER.read_text(encoding="utf-8")
+        cls.v2_state = V2_STATE.read_text(encoding="utf-8")
         cls.component = (
-            cls.runtime + "\n" + cls.header + "\n" + cls.nvs + "\n" + cls.compat_nvs
+            cls.runtime
+            + "\n"
+            + cls.header
+            + "\n"
+            + cls.nvs
+            + "\n"
+            + cls.compat_nvs
         )
 
-    def test_vmk_is_explicitly_wiped_and_destructor_wipes(self) -> None:
+    def test_vmk_and_unlock_policy_state_are_explicitly_cleared(self) -> None:
         self.assertIn("secure_zero(vmk_.data(), vmk_.size())", self.runtime)
-        self.assertIn("Runtime::~Runtime()", self.runtime)
-        destructor_start = self.runtime.index("Runtime::~Runtime()")
-        self.assertIn("wipe_vmk();", self.runtime[destructor_start:destructor_start + 120])
+        self.assertIn("void Runtime::clear_unlock_session_state()", self.runtime)
+        clear_start = self.runtime.index("void Runtime::clear_unlock_session_state()")
+        clear_body = self.runtime[clear_start : clear_start + 300]
+        self.assertIn("wipe_vmk();", clear_body)
+        self.assertIn("auto_lock_days_.reset();", clear_body)
+        self.assertIn("unlocked_since_ms_ = 0;", clear_body)
+        self.assertIn("unlock_session_active_ = false;", clear_body)
 
-    def test_all_trust_root_change_entry_points_destroy_vmk(self) -> None:
+        destructor_start = self.runtime.index("Runtime::~Runtime()")
+        self.assertIn(
+            "clear_unlock_session_state();",
+            self.runtime[destructor_start : destructor_start + 160],
+        )
+
+    def test_all_trust_root_change_entry_points_destroy_unlock_session_state(self) -> None:
         self.assertIn("Status enter_recovery_boundary();", self.header)
         self.assertIn("Status enter_registration_replacement_boundary()", self.header)
         self.assertIn("Status enter_vmk_rekey_boundary()", self.header)
@@ -44,11 +68,26 @@ class VaultRuntimeContractTest(unittest.TestCase):
             2,
         )
         recovery_start = self.runtime.index("Status Runtime::enter_recovery_boundary()")
-        self.assertIn("wipe_vmk();", self.runtime[recovery_start:recovery_start + 240])
+        self.assertIn(
+            "clear_unlock_session_state();",
+            self.runtime[recovery_start : recovery_start + 300],
+        )
+        lock_start = self.runtime.index("Status Runtime::lock()")
+        self.assertIn(
+            "clear_unlock_session_state();",
+            self.runtime[lock_start : lock_start + 240],
+        )
+        fatal_start = self.runtime.index("Status Runtime::fatal_security_error()")
+        self.assertIn(
+            "clear_unlock_session_state();",
+            self.runtime[fatal_start : fatal_start + 240],
+        )
 
     def test_locked_paths_gate_plaintext_access(self) -> None:
         self.assertGreaterEqual(
-            self.runtime.count("state_ != State::kUnlocked || !vmk_present_ || !has_vault_"),
+            self.runtime.count(
+                "state_ != State::kUnlocked || !vmk_present_ || !has_vault_"
+            ),
             3,
         )
         self.assertIn("return Status::kLocked;", self.runtime)
@@ -59,12 +98,14 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertIn("credential.credential_id.fill(0);", self.runtime)
         self.assertIn("wipe_bytes(&credential.secret);", self.runtime)
         self.assertIn("wipe_string(&plaintext->wifi->password);", self.runtime)
+        self.assertIn("plaintext->auto_lock_days.reset();", self.runtime)
 
     def test_vault_codec_zeroizes_internal_plaintext_temporaries(self) -> None:
         self.assertIn("ByteVectorWipeGuard candidate_wipe(candidate);", self.vault_format)
         self.assertIn("PlaintextWipeGuard candidate_wipe(candidate);", self.vault_format)
         self.assertIn("candidate.credentials.reserve(count);", self.vault_format)
         self.assertIn("wipe_plaintext_candidate(&value);", self.vault_format)
+        self.assertIn("value->auto_lock_days.reset();", self.vault_format)
         read_text_start = self.vault_format.index("bool read_sized_text(std::string& value)")
         read_text_end = self.vault_format.index("bool at_end() const", read_text_start)
         read_text = self.vault_format[read_text_start:read_text_end]
@@ -77,19 +118,32 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertIn("secure_zero_memory(candidate.data(), candidate.size())", self.vault_crypto)
 
         decrypt_start = self.vault_crypto.index("bool decrypt_vault(")
-        decrypt_end = self.vault_crypto.index("bool wrap_vmk_with_key_and_nonce(", decrypt_start)
+        decrypt_end = self.vault_crypto.index(
+            "bool wrap_vmk_with_key_and_nonce(", decrypt_start
+        )
         decrypt_body = self.vault_crypto[decrypt_start:decrypt_end]
         self.assertIn("clear_bytes(candidate);", decrypt_body)
         self.assertIn("plaintext.swap(candidate);", decrypt_body)
-        prefix_before_candidate = decrypt_body[:decrypt_body.index("std::vector<std::uint8_t> candidate;")]
+        prefix_before_candidate = decrypt_body[
+            : decrypt_body.index("std::vector<std::uint8_t> candidate;")
+        ]
         self.assertNotIn("clear_bytes(plaintext);", prefix_before_candidate)
         self.assertNotIn("plaintext.clear();", prefix_before_candidate)
 
         unwrap_start = self.vault_crypto.index("bool unwrap_vmk_with_key(")
         unwrap_body = self.vault_crypto[unwrap_start:]
-        prefix_before_local_candidate = unwrap_body[:unwrap_body.index("std::array<std::uint8_t, kVmkBytes> candidate{};")]
-        self.assertNotIn("secure_zero_memory(vmk.data(), vmk.size())", prefix_before_local_candidate)
-        self.assertIn("secure_zero_memory(candidate.data(), candidate.size())", unwrap_body)
+        prefix_before_local_candidate = unwrap_body[
+            : unwrap_body.index(
+                "std::array<std::uint8_t, kVmkBytes> candidate{};"
+            )
+        ]
+        self.assertNotIn(
+            "secure_zero_memory(vmk.data(), vmk.size())",
+            prefix_before_local_candidate,
+        )
+        self.assertIn(
+            "secure_zero_memory(candidate.data(), candidate.size())", unwrap_body
+        )
 
     def test_totp_working_buffers_are_zeroized(self) -> None:
         self.assertIn("clear_bytes(&key);", self.totp_core)
@@ -114,7 +168,9 @@ class VaultRuntimeContractTest(unittest.TestCase):
         self.assertLess(staged_blob, phase2)
         self.assertLess(phase2, active_pointer)
         self.assertIn("nvs_commit(handle)", self.nvs[staged_blob:phase2])
-        self.assertIn("nvs_commit(handle)", self.nvs[active_pointer:active_pointer + 240])
+        self.assertIn(
+            "nvs_commit(handle)", self.nvs[active_pointer : active_pointer + 240]
+        )
         self.assertIn("Validate the durable staged copy", self.nvs[staged_blob:phase2])
 
     def test_legacy_schema1_probe_is_read_only_and_positive_only(self) -> None:
@@ -137,22 +193,104 @@ class VaultRuntimeContractTest(unittest.TestCase):
             "wifi_password",
             "passphrase",
             "plaintext_vmk",
+            "auto_lock_days",
         ):
             self.assertNotIn(forbidden, self.nvs.lower())
 
-    def test_schema2_is_canonically_activated(self) -> None:
+    def test_schema_and_protocol_versions_stay_fixed_while_vault_support_expands(self) -> None:
         self.assertIn("kStorageSchemaVersion = 2", self.header)
-        self.assertIn("kTargetStorageSchemaVersion", self.nvs)
+        self.assertIn("kTargetStorageSchemaVersion = 2", self.vault_header)
         self.assertIn("kProtocolVersion = 2", self.core_metadata)
         self.assertIn("kStorageSchemaVersion = 2", self.core_metadata)
-        self.assertIn("kVaultFormatVersion = 1", self.core_metadata)
+        self.assertIn("kVaultFormatVersion1 = 1", self.vault_header)
+        self.assertIn("kVaultFormatVersion2 = 2", self.vault_header)
+        self.assertIn("kCurrentVaultFormatVersion = kVaultFormatVersion2", self.vault_header)
         self.assertNotIn("kProtocolVersion", self.component)
 
     def test_known_schema1_requires_reprovision_and_newer_fails_closed(self) -> None:
         self.assertIn("if (schema == 1) return Status::kReprovisionRequired;", self.nvs)
-        self.assertIn("if (schema > kStorageSchemaVersion) return Status::kUnsupportedSchema;", self.nvs)
+        self.assertIn(
+            "if (schema > kStorageSchemaVersion) return Status::kUnsupportedSchema;",
+            self.nvs,
+        )
         self.assertIn("CompatibleNvsPersistence", self.header)
-        self.assertNotIn("format_schema2();", self.runtime[self.runtime.index("Status Runtime::initialize()"):self.runtime.index("Status Runtime::reload_after_persistence()")])
+        initialize = self.runtime[
+            self.runtime.index("Status Runtime::initialize()") : self.runtime.index(
+                "Status Runtime::reload_after_persistence()"
+            )
+        ]
+        self.assertNotIn("format_schema2();", initialize)
+        self.assertIn("Status::kUnsupportedVaultFormat", initialize)
+        self.assertIn("recovery_reset_allowed_ = false;", initialize)
+
+    def test_format2_policy_is_authenticated_and_not_a_side_channel(self) -> None:
+        self.assertIn('kPlaintextMagicV2[] = "M5AUTH-VLT-PT2"', self.vault_format)
+        self.assertIn('kVaultAadMagicV2[] = "M5AUTH-VLT-AAD2"', self.vault_format)
+        self.assertIn("value.auto_lock_days.has_value()", self.vault_format)
+        self.assertIn("days < kMinAutoLockDays", self.vault_format)
+        self.assertIn("days > kMaxAutoLockDays", self.vault_format)
+        self.assertIn("if (!reader.at_end()) return false;", self.vault_format)
+        self.assertIn("decoded_format != envelope.vault_format_version", self.runtime)
+
+    def test_runtime_transition_guard_prevents_format2_downgrade(self) -> None:
+        update_start = self.runtime.index("Status Runtime::update_encrypted_vault(")
+        update_end = self.runtime.index("Status Runtime::metadata(", update_start)
+        update = self.runtime[update_start:update_end]
+        self.assertIn("vault::is_supported_vault_format", update)
+        self.assertIn("envelope_.vault_format_version == vault::kVaultFormatVersion2", update)
+        self.assertIn("envelope.vault_format_version == vault::kVaultFormatVersion1", update)
+        self.assertIn("return Status::kInvalidArgument;", update)
+        self.assertIn("auto_lock_days_ = candidate_policy;", update)
+        self.assertIn("automatic_lock_due(now_ms)", update)
+
+    def test_automatic_lock_uses_monotonic_elapsed_runtime_only(self) -> None:
+        self.assertIn("kMillisecondsPerDay = 86'400'000ULL", self.header)
+        due_start = self.runtime.index("bool Runtime::automatic_lock_due(")
+        due = self.runtime[due_start : due_start + 700]
+        self.assertIn("now_ms - unlocked_since_ms_ >= lifetime_ms", due)
+        self.assertNotIn("time(", due)
+        self.assertNotIn("unix", due.lower())
+        self.assertNotIn("ntp", due.lower())
+        self.assertIn("esp_timer_get_time()", self.v2_state)
+
+    def test_automatic_expiry_and_explicit_lock_share_one_boundary(self) -> None:
+        self.assertIn("vault_runtime::Status lock_security_boundary();", self.protocol_header)
+        lock_start = self.protocol.index(
+            "vault_runtime::Status CanonicalProtocolV2Handler::lock_security_boundary()"
+        )
+        housekeeping_start = self.protocol.index(
+            "void CanonicalProtocolV2Handler::housekeeping(", lock_start
+        )
+        lock_body = self.protocol[lock_start:housekeeping_start]
+        self.assertIn("session_handler_.disconnect();", lock_body)
+        self.assertIn("vmk_sink_.cancel_pending();", lock_body)
+        self.assertIn("cancel_recovery_reset();", lock_body)
+        self.assertIn("time_service_.with_secret_boundary", lock_body)
+        self.assertIn("runtime_.lock();", lock_body)
+        self.assertIn("notify_security_boundary();", lock_body)
+
+        housekeeping_end = self.protocol.index(
+            "RecoveryResetDecision CanonicalProtocolV2Handler::recovery_reset_decision",
+            housekeeping_start,
+        )
+        housekeeping = self.protocol[housekeeping_start:housekeeping_end]
+        self.assertIn("runtime_.automatic_lock_due(now_ms)", housekeeping)
+        self.assertIn("lock_security_boundary();", housekeeping)
+
+        explicit_lock = self.protocol[self.protocol.index('operation == "device.lock"') :]
+        explicit_lock = explicit_lock[: explicit_lock.index('operation == "factory_reset"')]
+        self.assertIn("lock_security_boundary();", explicit_lock)
+        self.assertNotIn("runtime_.lock();", explicit_lock)
+
+    def test_hello_advertises_dual_format_capability_and_persisted_format(self) -> None:
+        hello_start = self.protocol.index("std::string hello_success(")
+        hello_end = self.protocol.index("std::string time_status_success", hello_start)
+        hello = self.protocol[hello_start:hello_end]
+        self.assertIn('"supported_vault_formats"', hello)
+        self.assertIn("vault::kVaultFormatVersion1", hello)
+        self.assertIn("vault::kVaultFormatVersion2", hello)
+        self.assertIn("runtime_metadata.vault_format_version", hello)
+        self.assertIn('"vault_format_version"', hello)
 
     def test_component_has_no_project_efuse_or_secret_logging_path(self) -> None:
         lowered = self.component.lower()
