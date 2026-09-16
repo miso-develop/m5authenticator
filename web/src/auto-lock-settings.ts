@@ -69,6 +69,25 @@ export function parseAutoLockDraft(enabled: boolean, rawDays: string | number): 
   return days;
 }
 
+function bytesIdentity(value: Uint8Array | null): string {
+  if (value === null) return "-";
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function canonicalContextIdentity(snapshot: CanonicalDeviceSnapshot | null): string | null {
+  if (snapshot === null) return null;
+  const hello = snapshot.hello;
+  return [
+    hello.deviceId,
+    hello.vaultPresent ? bytesIdentity(hello.vaultId) : "no-vault",
+    hello.generation.toString(10),
+    String(hello.vaultFormat),
+    hello.registrationPresent ? bytesIdentity(hello.registrationId) : "no-registration",
+    String(hello.registrationEpoch),
+    snapshot.browserOwnership,
+  ].join(":");
+}
+
 export function createAutoLockSettingsController(onSave: AutoLockSaveHandler): AutoLockSettingsController {
   const shell = document.querySelector<HTMLElement>("#app .shell");
   if (!shell) throw new Error("Automatic LOCK settings require the provisioner shell");
@@ -111,6 +130,7 @@ export function createAutoLockSettingsController(onSave: AutoLockSaveHandler): A
   }
 
   let snapshot: CanonicalDeviceSnapshot | null = null;
+  let contextIdentity: string | null = null;
   let busy = false;
   let recoveryMode = false;
   let dirty = false;
@@ -124,6 +144,17 @@ export function createAutoLockSettingsController(onSave: AutoLockSaveHandler): A
     nextBusy = busy,
     nextRecoveryMode = recoveryMode,
   ): void => {
+    const nextContextIdentity = canonicalContextIdentity(nextSnapshot);
+    if (nextContextIdentity !== contextIdentity) {
+      contextIdentity = nextContextIdentity;
+      dirty = false;
+      saveFailed = false;
+      savedWhileLocked = false;
+      draft = nextSnapshot?.autoLock.known
+        ? autoLockDraftFromCanonical(nextSnapshot.autoLock.days)
+        : autoLockDraftFromCanonical(null);
+    }
+
     snapshot = nextSnapshot;
     busy = nextBusy;
     recoveryMode = nextRecoveryMode;
