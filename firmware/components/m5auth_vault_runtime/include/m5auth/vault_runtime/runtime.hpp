@@ -151,9 +151,7 @@ public:
     Status enter_registration_replacement_boundary() {
         return enter_recovery_boundary();
     }
-    Status enter_vmk_rekey_boundary() {
-        return enter_recovery_boundary();
-    }
+    Status enter_vmk_rekey_boundary();
     Status fatal_security_error();
 
     Status update_encrypted_vault(
