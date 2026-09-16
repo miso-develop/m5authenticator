@@ -32,9 +32,6 @@ const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const NATIVE_QR_CROP_SCALE = 2;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
-// Full screenshots do not benefit from allocating a near-global-cap 3x buffer:
-// the QR remains a small fraction of the frame. Keep full-frame scaled work to
-// 4 Mi pixels, then spend the existing 8 Mi-pixel ceiling only on bounded crops.
 const MAX_FULL_FRAME_SCALED_QR_PIXELS = 4_194_304;
 const NATIVE_QR_ATTEMPT_TIMEOUT_MS = 750;
 const NATIVE_QR_TOTAL_BUDGET_MS = 3_000;
@@ -77,11 +74,11 @@ function scaledDimensions(width: number, height: number, scale: number): ScaledD
 }
 
 function allowFullFrameScaledRetries(width: number, height: number): boolean {
-  const scale = DENSE_QR_SCALE_FACTORS[DENSE_QR_SCALE_FACTORS.length - 1];
-  if (scale === undefined) {
+  const largestScale = DENSE_QR_SCALE_FACTORS[DENSE_QR_SCALE_FACTORS.length - 1];
+  if (largestScale === undefined) {
     return false;
   }
-  const dimensions = scaledDimensions(width, height, scale);
+  const dimensions = scaledDimensions(width, height, largestScale);
   return Boolean(dimensions && dimensions.width * dimensions.height <= MAX_FULL_FRAME_SCALED_QR_PIXELS);
 }
 
@@ -93,7 +90,9 @@ function nativeCropWindows(width: number, height: number): CropWindow[] {
     Math.max(Math.ceil(longLength / 3), Math.ceil(shortLength / 2)),
   );
   const maxLongOffset = longLength - size;
-  const longOffsets = [Math.round(maxLongOffset / 2), 0, maxLongOffset];
+  // Start first keeps screenshot-like exports bounded: QR content is commonly in
+  // the upper/left content area. Center/end remain deterministic fallbacks.
+  const longOffsets = [0, Math.round(maxLongOffset / 2), maxLongOffset];
   const uniqueLongOffsets = longOffsets.filter(
     (offset, index) => longOffsets.indexOf(offset) === index,
   );
@@ -119,44 +118,40 @@ function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
     let red = data[source]!;
     let green = data[source + 1]!;
     let blue = data[source + 2]!;
-
     if (alpha !== 0xff) {
       red = Math.round((red * alpha + 0xff * (0xff - alpha)) / 0xff);
       green = Math.round((green * alpha + 0xff * (0xff - alpha)) / 0xff);
       blue = Math.round((blue * alpha + 0xff * (0xff - alpha)) / 0xff);
     }
-
     luminances[target] = (306 * red + 601 * green + 117 * blue + 0x200) >> 10;
   }
 
   return luminances;
 }
 
+function detectorHints(): Map<DecodeHintType, any> {
+  return new Map<DecodeHintType, any>([[DecodeHintType.TRY_HARDER, true]]);
+}
+
+function decodeLuminancesPrimary(luminances: Uint8ClampedArray, width: number, height: number): string {
+  const source = new RGBLuminanceSource(luminances, width, height);
+  return new QRCodeReader()
+    .decode(new BinaryBitmap(new HybridBinarizer(source)), detectorHints())
+    .getText();
+}
+
 function decodeLuminances(luminances: Uint8ClampedArray, width: number, height: number): string {
   const source = new RGBLuminanceSource(luminances, width, height);
-  const detectorHints = new Map<DecodeHintType, any>([[DecodeHintType.TRY_HARDER, true]]);
+  const normalHints = detectorHints();
   const pureHints = new Map<DecodeHintType, any>([
     [DecodeHintType.TRY_HARDER, true],
     [DecodeHintType.PURE_BARCODE, true],
   ]);
-
   const attempts: Array<() => string> = [
-    () =>
-      new QRCodeReader()
-        .decode(new BinaryBitmap(new HybridBinarizer(source)), detectorHints)
-        .getText(),
-    () =>
-      new QRCodeReader()
-        .decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), detectorHints)
-        .getText(),
-    () =>
-      new QRCodeReader()
-        .decode(new BinaryBitmap(new HybridBinarizer(source)), pureHints)
-        .getText(),
-    () =>
-      new QRCodeReader()
-        .decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), pureHints)
-        .getText(),
+    () => new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(source)), normalHints).getText(),
+    () => new QRCodeReader().decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), normalHints).getText(),
+    () => new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(source)), pureHints).getText(),
+    () => new QRCodeReader().decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)), pureHints).getText(),
   ];
 
   let lastError: unknown;
@@ -217,14 +212,15 @@ function decodeLuminanceScaleVariants(
       scaled.luminances.fill(0);
     }
   }
-
   throw lastError ?? new Error("QR decoder exhausted all strategies.");
 }
 
 function decodeQrImageDataOriginalOnly(imageData: ImageData): string {
   const luminances = toLuminanceBuffer(imageData);
   try {
-    return decodeLuminances(luminances, imageData.width, imageData.height);
+    // Large screenshots get exactly one full-frame ZXing attempt. Expensive
+    // multi-strategy / 2x / 3x work is reserved for bounded crop candidates.
+    return decodeLuminancesPrimary(luminances, imageData.width, imageData.height);
   } finally {
     luminances.fill(0);
   }
@@ -243,19 +239,12 @@ function otsuThreshold(luminances: Uint8ClampedArray): number {
     let backgroundSum = 0;
     let bestThreshold = 0x80;
     let bestBetweenClassVariance = -1;
-
     for (let threshold = 0; threshold < histogram.length; threshold += 1) {
       const count = histogram[threshold]!;
       backgroundWeight += count;
-      if (backgroundWeight === 0) {
-        continue;
-      }
-
+      if (backgroundWeight === 0) continue;
       const foregroundWeight = luminances.length - backgroundWeight;
-      if (foregroundWeight === 0) {
-        break;
-      }
-
+      if (foregroundWeight === 0) break;
       backgroundSum += threshold * count;
       const backgroundMean = backgroundSum / backgroundWeight;
       const foregroundMean = (totalSum - backgroundSum) / foregroundWeight;
@@ -266,7 +255,6 @@ function otsuThreshold(luminances: Uint8ClampedArray): number {
         bestThreshold = threshold;
       }
     }
-
     return bestThreshold;
   } finally {
     histogram.fill(0);
@@ -290,7 +278,6 @@ export function decodeQrImageData(imageData: ImageData): string {
   if (imageData.width <= 0 || imageData.height <= 0) {
     throw new Error("QR image data has invalid dimensions.");
   }
-
   const luminances = toLuminanceBuffer(imageData);
   try {
     return decodeLuminanceScaleVariants(luminances, imageData.width, imageData.height);
@@ -300,10 +287,7 @@ export function decodeQrImageData(imageData: ImageData): string {
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-  if (timeoutMs <= 0) {
-    return undefined;
-  }
-
+  if (timeoutMs <= 0) return undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -313,9 +297,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
       }),
     ]);
   } finally {
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId);
-    }
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }
 
@@ -323,21 +305,14 @@ async function decodeWithNativeBarcodeDetector(bitmap: ImageBitmap): Promise<str
   const detectorConstructor = (
     globalThis as typeof globalThis & { BarcodeDetector?: NativeBarcodeDetectorConstructor }
   ).BarcodeDetector;
-  if (!detectorConstructor) {
-    return undefined;
-  }
+  if (!detectorConstructor) return undefined;
 
   try {
     const detector = new detectorConstructor({ formats: ["qr_code"] });
     const detected = await withTimeout(detector.detect(bitmap), NATIVE_QR_ATTEMPT_TIMEOUT_MS);
-    if (!detected) {
-      return undefined;
-    }
+    if (!detected) return undefined;
     const qrCodes = detected.filter((result) => result.format === "qr_code" && Boolean(result.rawValue));
-    if (qrCodes.length !== 1) {
-      return undefined;
-    }
-    return qrCodes[0]!.rawValue;
+    return qrCodes.length === 1 ? qrCodes[0]!.rawValue : undefined;
   } catch {
     return undefined;
   }
@@ -357,9 +332,7 @@ async function decodeNativeWithinBudget(
   deadline: number,
 ): Promise<string | undefined> {
   const remainingMs = Math.ceil(deadline - performance.now());
-  if (remainingMs <= 0) {
-    return undefined;
-  }
+  if (remainingMs <= 0) return undefined;
   return await withTimeout(decodeNativeQr(bitmap), Math.min(NATIVE_QR_ATTEMPT_TIMEOUT_MS, remainingMs));
 }
 
@@ -379,24 +352,12 @@ async function tryCroppedVariant(
   canvas.height = crop.size;
   context.imageSmoothingEnabled = false;
   try {
-    context.drawImage(
-      sourceBitmap,
-      crop.x,
-      crop.y,
-      crop.size,
-      crop.size,
-      0,
-      0,
-      crop.size,
-      crop.size,
-    );
+    context.drawImage(sourceBitmap, crop.x, crop.y, crop.size, crop.size, 0, 0, crop.size, crop.size);
     cropImageData = context.getImageData(0, 0, crop.size, crop.size);
     try {
       return dependencies.decodeImageData(cropImageData);
     } catch (error) {
-      if (error instanceof ImportError) {
-        throw error;
-      }
+      if (error instanceof ImportError) throw error;
       onDiagnostic?.("crop-zxing-exhausted");
     }
 
@@ -406,9 +367,7 @@ async function tryCroppedVariant(
       onDiagnostic?.("crop-otsu-exhausted");
     }
   } catch (error) {
-    if (error instanceof ImportError) {
-      throw error;
-    }
+    if (error instanceof ImportError) throw error;
   } finally {
     cropImageData?.data.fill(0);
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -420,7 +379,6 @@ async function tryCroppedVariant(
     onDiagnostic?.("crop-native-skipped-budget");
     return undefined;
   }
-
   const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
   if (!dimensions) {
     onDiagnostic?.("crop-native-skipped-bounds");
@@ -445,9 +403,7 @@ async function tryCroppedVariant(
     scaledBitmap = await dependencies.createImageBitmap(canvas);
     onDiagnostic?.("crop-native-attempted");
     const result = await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, nativeDeadline);
-    if (!result) {
-      onDiagnostic?.("crop-native-no-result");
-    }
+    if (!result) onDiagnostic?.("crop-native-no-result");
     return result;
   } catch {
     onDiagnostic?.("crop-native-no-result");
@@ -480,7 +436,6 @@ export async function decodeQrImage(
     } catch {
       throw new ImportError("The selected image could not be rasterized by this browser.");
     }
-
     if (bitmap.width <= 0 || bitmap.height <= 0) {
       throw new ImportError("The selected image has invalid dimensions.");
     }
@@ -501,16 +456,13 @@ export async function decodeQrImage(
     }
 
     try {
-      const useScaledFullFrame = allowFullFrameScaledRetries(imageData.width, imageData.height);
-      if (!useScaledFullFrame && dependencies.decodeFullImageDataOriginalOnly) {
+      if (!allowFullFrameScaledRetries(imageData.width, imageData.height) && dependencies.decodeFullImageDataOriginalOnly) {
         onDiagnostic?.("full-zxing-scaled-skipped");
         return dependencies.decodeFullImageDataOriginalOnly(imageData);
       }
       return dependencies.decodeImageData(imageData);
     } catch (error) {
-      if (error instanceof ImportError) {
-        throw error;
-      }
+      if (error instanceof ImportError) throw error;
       onDiagnostic?.("full-zxing-exhausted");
     }
 
@@ -526,14 +478,8 @@ export async function decodeQrImage(
 
     const nativeDeadline = performance.now() + NATIVE_QR_TOTAL_BUDGET_MS;
     onDiagnostic?.("native-original-attempted");
-    const originalNativeResult = await decodeNativeWithinBudget(
-      dependencies.decodeNativeQr,
-      bitmap,
-      nativeDeadline,
-    );
-    if (originalNativeResult) {
-      return originalNativeResult;
-    }
+    const originalNativeResult = await decodeNativeWithinBudget(dependencies.decodeNativeQr, bitmap, nativeDeadline);
+    if (originalNativeResult) return originalNativeResult;
     onDiagnostic?.("native-original-no-result");
 
     for (const crop of nativeCropWindows(bitmap.width, bitmap.height)) {
@@ -546,9 +492,7 @@ export async function decodeQrImage(
         nativeDeadline,
         onDiagnostic,
       );
-      if (croppedResult) {
-        return croppedResult;
-      }
+      if (croppedResult) return croppedResult;
     }
 
     throw new ImportError("No supported QR code could be decoded from the selected image.");
