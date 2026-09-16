@@ -14,9 +14,22 @@ namespace {
 
 constexpr std::uint64_t kCredentialRefreshIntervalMs = 1'000;
 constexpr std::uint64_t kOtpRevealDurationMs = 10'000;
+constexpr std::uint64_t kLabelScrollDelayMs = 2'000;
+constexpr std::uint64_t kLabelScrollStepMs = 40;
+constexpr int kLabelScrollStepPx = 1;
 constexpr TickType_t kUiPollInterval = pdMS_TO_TICKS(20);
 constexpr std::uint8_t kReadableTextSize = 2;
+constexpr std::uint8_t kCompactTextSize = 1;
 constexpr std::uint8_t kOtpTextSize = 4;
+constexpr int kOtpDigitGapPx = 3;
+
+constexpr int kHeaderY = 0;
+constexpr int kPrimaryLineY = 20;
+constexpr int kSecondaryLineY = 40;
+constexpr int kTertiaryLineY = 60;
+constexpr int kAccountLabelY = 80;
+constexpr int kOtpY = 101;
+constexpr int kHelpY = 116;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -50,6 +63,44 @@ void prepare_readable_display() {
     M5.Display.setTextColor(0xffff, 0x0000);
     M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
+}
+
+void draw_line(const char* text, int y, std::uint8_t text_size = kReadableTextSize) {
+    M5.Display.setTextSize(text_size);
+    M5.Display.setCursor(0, y);
+    M5.Display.print(text);
+}
+
+void draw_otp(std::uint32_t revealed_code) {
+    char otp[7]{};
+    std::snprintf(
+        otp,
+        sizeof(otp),
+        "%06lu",
+        static_cast<unsigned long>(revealed_code)
+    );
+
+    M5.Display.setTextSize(kOtpTextSize);
+    const int digit_width = M5.Display.textWidth("0");
+    const int group_gap = digit_width / 2;
+    const int total_width =
+        (digit_width * 6) + (kOtpDigitGapPx * 5) + group_gap;
+    int x = std::max(0, (M5.Display.width() - total_width) / 2);
+
+    for (std::size_t index = 0; index < 6; ++index) {
+        M5.Display.setCursor(x, kOtpY);
+        M5.Display.print(otp[index]);
+        x += digit_width;
+        if (index < 5) {
+            x += kOtpDigitGapPx;
+        }
+        if (index == 2) {
+            x += group_gap;
+        }
+    }
+
+    M5.Display.setTextSize(kReadableTextSize);
+    vault_runtime::secure_zero(otp, sizeof(otp));
 }
 
 bool same_presence(const PresenceView& left, const PresenceView& right) {
@@ -186,10 +237,52 @@ std::string CanonicalUiController::display_label(const CredentialView& credentia
     return "Unnamed account";
 }
 
+void CanonicalUiController::reset_label_scroll(std::uint64_t now_ms) {
+    label_scroll_epoch_ms_ = now_ms;
+    label_scroll_offset_px_ = 0;
+}
+
+bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
+    if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) {
+        if (label_scroll_offset_px_ == 0) return false;
+        label_scroll_offset_px_ = 0;
+        return true;
+    }
+
+    std::string label = display_label(credentials_[selected_index_]);
+    M5.Display.setTextSize(kReadableTextSize);
+    const int label_width = M5.Display.textWidth(label.c_str());
+    wipe_text(&label);
+
+    const int viewport_width = M5.Display.width();
+    if (label_width <= viewport_width) {
+        if (label_scroll_offset_px_ == 0) return false;
+        label_scroll_offset_px_ = 0;
+        return true;
+    }
+
+    const std::uint64_t elapsed_ms = now_ms - label_scroll_epoch_ms_;
+    if (elapsed_ms < kLabelScrollDelayMs) return false;
+
+    const std::uint64_t scroll_elapsed_ms = elapsed_ms - kLabelScrollDelayMs;
+    const std::uint64_t steps = scroll_elapsed_ms / kLabelScrollStepMs;
+    const int max_offset = label_width - viewport_width;
+    const std::uint64_t desired_u64 =
+        steps > static_cast<std::uint64_t>(max_offset / kLabelScrollStepPx)
+        ? static_cast<std::uint64_t>(max_offset)
+        : steps * static_cast<std::uint64_t>(kLabelScrollStepPx);
+    const int desired_offset = static_cast<int>(desired_u64);
+    if (desired_offset == label_scroll_offset_px_) return false;
+
+    label_scroll_offset_px_ = desired_offset;
+    return true;
+}
+
 void CanonicalUiController::hide_reveal() {
     revealed_code_ = 0;
     reveal_deadline_ms_ = 0;
     reveal_active_ = false;
+    reset_label_scroll(monotonic_ms());
 }
 
 bool CanonicalUiController::clear_private_view() {
@@ -205,6 +298,7 @@ bool CanonicalUiController::clear_private_view() {
     selected_index_ = 0;
     visible_generation_ = 0;
     vault_visible_ = false;
+    reset_label_scroll(monotonic_ms());
     return changed;
 }
 
@@ -280,6 +374,7 @@ bool CanonicalUiController::refresh_credentials(bool force) {
     visible_generation_ = runtime_metadata.generation;
     vault_visible_ = true;
     storage_error_ = false;
+    reset_label_scroll(monotonic_ms());
     return true;
 }
 
@@ -299,6 +394,7 @@ void CanonicalUiController::select_next() {
     if (credentials_.empty()) return;
     hide_reveal();
     selected_index_ = (selected_index_ + 1) % credentials_.size();
+    reset_label_scroll(monotonic_ms());
     (void)persist_selection();
 }
 
@@ -308,6 +404,7 @@ void CanonicalUiController::select_previous() {
     selected_index_ = selected_index_ == 0
         ? credentials_.size() - 1
         : selected_index_ - 1;
+    reset_label_scroll(monotonic_ms());
     (void)persist_selection();
 }
 
@@ -332,6 +429,7 @@ void CanonicalUiController::reveal_selected(std::uint64_t now_ms) {
             ? std::numeric_limits<std::uint64_t>::max()
             : now_ms + kOtpRevealDurationMs;
     }
+    reset_label_scroll(now_ms);
     vault_runtime::secure_zero(&code, sizeof(code));
 }
 
@@ -364,63 +462,64 @@ void CanonicalUiController::render() {
 
     M5.Display.clear();
     prepare_readable_display();
-    M5.Display.println("M5 Authenticator");
+    draw_line("M5 Authenticator", kHeaderY);
 
     if (presence.active) {
-        M5.Display.println("UNLOCK REQUEST");
-        M5.Display.println(session::presence_operation_text(presence.operation));
+        draw_line("UNLOCK REQUEST", kPrimaryLineY);
+        draw_line(
+            session::presence_operation_text(presence.operation),
+            kSecondaryLineY,
+            kCompactTextSize
+        );
+        int status_y = kTertiaryLineY;
         if (presence.operation == session::PresenceOperation::kFactoryReset) {
-            M5.Display.println("ERASE DEVICE DATA");
+            draw_line("ERASE DEVICE DATA", status_y, kCompactTextSize);
+            status_y += 18;
         }
         if (presence.confirmed) {
-            M5.Display.println("Confirmed");
-            M5.Display.println("Waiting for browser");
+            draw_line("Confirmed", status_y);
+            draw_line("Waiting for browser", status_y + 20, kCompactTextSize);
         } else {
-            M5.Display.println("Press A to confirm");
-            M5.Display.println("Expires in 30 sec");
+            draw_line("Press A to confirm", status_y, kCompactTextSize);
+            draw_line("Expires in 30 sec", status_y + 18, kCompactTextSize);
         }
     } else {
-        M5.Display.printf("State: %s\n", runtime_state_text(runtime_state_));
-        M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
+        M5.Display.setTextSize(kReadableTextSize);
+        M5.Display.setCursor(0, kPrimaryLineY);
+        M5.Display.printf("State: %s", runtime_state_text(runtime_state_));
+        M5.Display.setCursor(0, kSecondaryLineY);
+        M5.Display.printf("Time: %s", readiness_text(time_status.readiness));
 
         if (storage_error_) {
-            M5.Display.println("Vault unavailable");
+            draw_line("Vault unavailable", kTertiaryLineY);
         } else if (!vault_visible_) {
-            M5.Display.println("Open Web app");
+            draw_line("Open Web app", kTertiaryLineY);
         } else if (credentials_.empty()) {
-            M5.Display.println("No accounts");
+            draw_line("No accounts", kTertiaryLineY);
         } else {
             const CredentialView& selected = credentials_[selected_index_];
-            std::string label = display_label(selected);
+            M5.Display.setTextSize(kReadableTextSize);
+            M5.Display.setCursor(0, kTertiaryLineY);
             M5.Display.printf(
-                "%u / %u\n",
+                "%u / %u",
                 static_cast<unsigned>(selected_index_ + 1),
                 static_cast<unsigned>(credentials_.size())
             );
-            M5.Display.println(label.c_str());
+
+            std::string label = display_label(selected);
+            M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
+            M5.Display.print(label.c_str());
             wipe_text(&label);
 
             if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
-                char otp[7]{};
-                std::snprintf(
-                    otp,
-                    sizeof(otp),
-                    "%06lu",
-                    static_cast<unsigned long>(revealed_code_)
-                );
-                M5.Display.setTextSize(kOtpTextSize);
-                M5.Display.println(otp);
-                M5.Display.setTextSize(kReadableTextSize);
-                vault_runtime::secure_zero(otp, sizeof(otp));
+                draw_otp(revealed_code_);
             } else {
                 if (last_generate_result_ != totp::GenerateResult::kOk &&
                     last_generate_result_ != totp::GenerateResult::kNotSynced &&
                     last_generate_result_ != totp::GenerateResult::kTimeStale) {
-                    M5.Display.println("OTP unavailable");
+                    draw_line("OTP unavailable", 100, kCompactTextSize);
                 }
-                M5.Display.println("Click: next");
-                M5.Display.println("2x: previous");
-                M5.Display.println("Hold: reveal OTP");
+                draw_line("1x next / 2x prev / hold OTP", kHelpY, kCompactTextSize);
             }
         }
     }
@@ -440,6 +539,7 @@ void CanonicalUiController::run() {
     {
         std::lock_guard<std::mutex> view(view_mutex_);
         (void)refresh_credentials(true);
+        reset_label_scroll(last_refresh_ms);
         render();
     }
 
@@ -452,6 +552,7 @@ void CanonicalUiController::run() {
         PresenceView current_presence = presence_.view();
         if (!same_presence(current_presence, previous_presence)) {
             previous_presence = current_presence;
+            reset_label_scroll(now_ms);
             dirty = true;
         }
 
@@ -478,6 +579,7 @@ void CanonicalUiController::run() {
             const time::Readiness readiness = time_service_.status().readiness;
             if (readiness != previous_readiness) {
                 previous_readiness = readiness;
+                reset_label_scroll(now_ms);
                 dirty = true;
             }
 
@@ -491,6 +593,7 @@ void CanonicalUiController::run() {
             }
             if (observed_state != runtime_state_) {
                 runtime_state_ = observed_state;
+                reset_label_scroll(now_ms);
                 dirty = true;
             }
             if (observed_state != vault_runtime::State::kUnlocked && vault_visible_) {
@@ -512,7 +615,11 @@ void CanonicalUiController::run() {
                     select_previous();
                     dirty = true;
                 } else if (M5.BtnA.wasSingleClicked()) {
-                    select_next();
+                    if (reveal_active_) {
+                        hide_reveal();
+                    } else {
+                        select_next();
+                    }
                     dirty = true;
                 }
             }
@@ -522,6 +629,10 @@ void CanonicalUiController::run() {
                 now_ms - last_refresh_ms >= kCredentialRefreshIntervalMs) {
                 dirty = refresh_credentials(false) || dirty;
                 last_refresh_ms = now_ms;
+            }
+
+            if (!current_presence.active && observed_state == vault_runtime::State::kUnlocked) {
+                dirty = update_label_scroll(now_ms) || dirty;
             }
 
             if (dirty) render();
