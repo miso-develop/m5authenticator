@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => {
         input: {
           provisioner: "index.html",
           flasher: "flash.html",
+          help: "help.html",
           ...(qrSmoke ? { qrSmoke: "tests/browser/qr-smoke.html" } : {}),
         },
       },
