@@ -10,15 +10,16 @@ interface SyntheticOtp {
   algorithm?: number;
   digits?: number;
   type?: number;
+  uniqueId?: string;
 }
 
 function migrationUri(
   accounts: SyntheticOtp[],
-  options: { batchSize?: number; batchIndex?: number; batchId?: number } = {},
+  options: { version?: number; batchSize?: number; batchIndex?: number; batchId?: number } = {},
 ): string {
   const payload = concat(
     ...accounts.map((account) => fieldBytes(1, otpParameters(account))),
-    fieldVarint(2, 1),
+    fieldVarint(2, options.version ?? 2),
     fieldVarint(3, options.batchSize ?? 1),
     fieldVarint(4, options.batchIndex ?? 0),
     fieldVarint(5, options.batchId ?? 12345),
@@ -36,6 +37,7 @@ function otpParameters(account: SyntheticOtp): Uint8Array {
     fieldVarint(4, account.algorithm ?? 1),
     fieldVarint(5, account.digits ?? 1),
     fieldVarint(6, account.type ?? 2),
+    ...(account.uniqueId === undefined ? [] : [fieldString(8, account.uniqueId)]),
   );
 }
 
@@ -73,6 +75,14 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return result;
 }
 
+function syntheticAccounts(count: number, offset = 0): SyntheticOtp[] {
+  return Array.from({ length: count }, (_, index) => ({
+    secret: [((offset + index) % 200) + 1, 0x51],
+    name: `synthetic-${offset + index}@example.invalid`,
+    issuer: "Synthetic",
+  }));
+}
+
 const firstAccount: SyntheticOtp = {
   secret: [1, 2, 3, 4, 5],
   name: "alice@example.invalid",
@@ -80,9 +90,14 @@ const firstAccount: SyntheticOtp = {
 };
 
 describe("Google Authenticator migration import", () => {
-  it("decodes a synthetic V1-compatible migration payload", () => {
-    const part = parseGoogleMigrationUri(migrationUri([firstAccount]));
-    expect(part).toMatchObject({ version: 1, batchSize: 1, batchIndex: 0, batchId: 12345 });
+  it("decodes a current-compatible version 2 single-QR payload and ignores additive account fields", () => {
+    const part = parseGoogleMigrationUri(migrationUri([{ ...firstAccount, uniqueId: "synthetic-entry-id" }], {
+      version: 2,
+      batchSize: 1,
+      batchIndex: 0,
+      batchId: 0,
+    }));
+    expect(part).toMatchObject({ version: 2, batchSize: 1, batchIndex: 0, batchId: 0 });
     expect(part.accounts[0]).toMatchObject({
       issuer: "Example",
       account: "alice@example.invalid",
@@ -93,10 +108,17 @@ describe("Google Authenticator migration import", () => {
     expect([...part.accounts[0]!.secret]).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it("assembles multi-QR batches by batch index even when scanned out of order", () => {
+  it("retains legacy version 1 migration compatibility", () => {
+    const part = parseGoogleMigrationUri(migrationUri([firstAccount], { version: 1 }));
+    expect(part.version).toBe(1);
+    expect(part.accounts).toHaveLength(1);
+  });
+
+  it("assembles current-compatible version 2 multi-QR batches by index when scanned out of order", () => {
     const assembler = new MigrationBatchAssembler();
     const second = parseGoogleMigrationUri(
       migrationUri([{ ...firstAccount, name: "second@example.invalid", secret: [8, 9] }], {
+        version: 2,
         batchSize: 2,
         batchIndex: 1,
         batchId: 77,
@@ -104,6 +126,7 @@ describe("Google Authenticator migration import", () => {
     );
     const first = parseGoogleMigrationUri(
       migrationUri([{ ...firstAccount, name: "first@example.invalid", secret: [6, 7] }], {
+        version: 2,
         batchSize: 2,
         batchIndex: 0,
         batchId: 77,
@@ -117,6 +140,51 @@ describe("Google Authenticator migration import", () => {
       "first@example.invalid",
       "second@example.invalid",
     ]);
+  });
+
+  it("treats batch size as QR-part metadata rather than as the V1 account count", () => {
+    const part = parseGoogleMigrationUri(migrationUri([firstAccount], {
+      version: 2,
+      batchSize: 33,
+      batchIndex: 0,
+      batchId: 123,
+    }));
+    expect(part.batchSize).toBe(33);
+
+    const assembler = new MigrationBatchAssembler();
+    expect(assembler.add(part)).toEqual({ complete: false, received: 1, total: 33 });
+    assembler.clear();
+  });
+
+  it("rejects unknown migration versions with secret-free numeric diagnostics", () => {
+    const source = migrationUri([firstAccount], { version: 3, batchSize: 1, batchIndex: 0 });
+    let message = "";
+    try {
+      parseGoogleMigrationUri(source);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("Unsupported Google Authenticator migration metadata");
+    expect(message).toContain("version=3, batchSize=1, batchIndex=0");
+    expect(message).not.toContain(source);
+    expect(message).not.toContain("alice@example.invalid");
+  });
+
+  it.each([
+    [{ batchSize: 0, batchIndex: 0 }, "batchSize=0, batchIndex=0"],
+    [{ batchSize: 101, batchIndex: 0 }, "batchSize=101, batchIndex=0"],
+    [{ batchSize: 2, batchIndex: 2 }, "batchSize=2, batchIndex=2"],
+  ])("rejects malformed batch metadata without echoing the source", (metadata, expected) => {
+    const source = migrationUri([firstAccount], { version: 2, ...metadata });
+    let message = "";
+    try {
+      parseGoogleMigrationUri(source);
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("Invalid Google Authenticator migration metadata");
+    expect(message).toContain(expected);
+    expect(message).not.toContain(source);
   });
 
   it.each([
@@ -133,19 +201,40 @@ describe("Google Authenticator migration import", () => {
     }
   });
 
-  it("rejects impossible batch sizes before retaining account secrets", () => {
-    const source = migrationUri([firstAccount], { batchSize: 33, batchIndex: 0, batchId: 91 });
-    expect(() => parseGoogleMigrationUri(source)).toThrow("metadata is unsupported");
+  it("enforces the 32-account limit independently from QR batch size and clears rejected secrets", () => {
+    const assembler = new MigrationBatchAssembler();
+    const first = parseGoogleMigrationUri(migrationUri(syntheticAccounts(16), {
+      batchSize: 2,
+      batchIndex: 0,
+      batchId: 444,
+    }));
+    const second = parseGoogleMigrationUri(migrationUri(syntheticAccounts(17, 16), {
+      batchSize: 2,
+      batchIndex: 1,
+      batchId: 444,
+    }));
+    const heldSecrets = first.accounts.map((account) => account.secret);
+    const rejectedSecrets = second.accounts.map((account) => account.secret);
+
+    expect(assembler.add(first)).toEqual({ complete: false, received: 1, total: 2 });
+    expect(() => assembler.add(second)).toThrow("exceeds the V1 account limit");
+    for (const secret of [...heldSecrets, ...rejectedSecrets]) {
+      expect([...secret].every((byte) => byte === 0)).toBe(true);
+    }
+    expect(assembler.hasPending()).toBe(false);
   });
 
-  it("rejects mixed batch metadata and clears secrets held by the partial batch", () => {
+  it("rejects mixed batch metadata and clears both held and rejected part secrets", () => {
     const assembler = new MigrationBatchAssembler();
     const first = parseGoogleMigrationUri(migrationUri([firstAccount], { batchSize: 2, batchIndex: 0, batchId: 1 }));
     const heldSecret = first.accounts[0]!.secret;
     assembler.add(first);
 
     const other = parseGoogleMigrationUri(migrationUri([firstAccount], { batchSize: 2, batchIndex: 1, batchId: 2 }));
+    const rejectedSecret = other.accounts[0]!.secret;
     expect(() => assembler.add(other)).toThrow("does not belong");
     expect([...heldSecret]).toEqual([0, 0, 0, 0, 0]);
+    expect([...rejectedSecret]).toEqual([0, 0, 0, 0, 0]);
+    expect(assembler.hasPending()).toBe(false);
   });
 });
