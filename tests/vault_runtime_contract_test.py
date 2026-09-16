@@ -3,6 +3,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "firmware/components/m5auth_vault_runtime/runtime.cpp"
+REKEY = ROOT / "firmware/components/m5auth_vault_runtime/rekey.cpp"
 HEADER = ROOT / "firmware/components/m5auth_vault_runtime/include/m5auth/vault_runtime/runtime.hpp"
 NVS = ROOT / "firmware/components/m5auth_vault_runtime/nvs_persistence.cpp"
 COMPAT_NVS = ROOT / "firmware/components/m5auth_vault_runtime/compatible_nvs_persistence.cpp"
@@ -21,6 +22,7 @@ class VaultRuntimeContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.runtime = RUNTIME.read_text(encoding="utf-8")
+        cls.rekey = REKEY.read_text(encoding="utf-8")
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.nvs = NVS.read_text(encoding="utf-8")
         cls.compat_nvs = COMPAT_NVS.read_text(encoding="utf-8")
@@ -59,13 +61,13 @@ class VaultRuntimeContractTest(unittest.TestCase):
             self.runtime[destructor_start : destructor_start + 160],
         )
 
-    def test_all_trust_root_change_entry_points_destroy_unlock_session_state(self) -> None:
+    def test_trust_root_change_boundaries_preserve_only_rekey_lifetime_origin(self) -> None:
         self.assertIn("Status enter_recovery_boundary();", self.header)
         self.assertIn("Status enter_registration_replacement_boundary()", self.header)
-        self.assertIn("Status enter_vmk_rekey_boundary()", self.header)
-        self.assertGreaterEqual(
+        self.assertIn("Status enter_vmk_rekey_boundary();", self.header)
+        self.assertEqual(
             self.header.count("return enter_recovery_boundary();"),
-            2,
+            1,
         )
         recovery_start = self.runtime.index("Status Runtime::enter_recovery_boundary()")
         self.assertIn(
@@ -82,6 +84,19 @@ class VaultRuntimeContractTest(unittest.TestCase):
             "clear_unlock_session_state();",
             self.runtime[fatal_start : fatal_start + 240],
         )
+
+        rekey_start = self.rekey.index("Status Runtime::enter_vmk_rekey_boundary()")
+        rekey_end = self.rekey.index("Status Runtime::rekey_encrypted_vault(", rekey_start)
+        rekey_boundary = self.rekey[rekey_start:rekey_end]
+        self.assertIn("wipe_vmk();", rekey_boundary)
+        self.assertIn("state_ = State::kLocked;", rekey_boundary)
+        self.assertIn("unlock_session_active_", rekey_boundary)
+        self.assertNotIn("clear_unlock_session_state();", rekey_boundary)
+
+        successful_rekey = self.rekey[rekey_end:]
+        self.assertIn("auto_lock_days_ = policy;", successful_rekey)
+        self.assertNotIn("begin_unlock_session(policy, now_ms);", successful_rekey)
+        self.assertNotIn("unlocked_since_ms_ = now_ms", successful_rekey)
 
     def test_locked_paths_gate_plaintext_access(self) -> None:
         self.assertGreaterEqual(
