@@ -9,7 +9,7 @@ import {
 import { ImportError } from "./types";
 
 export interface QrImageDecodeDependencies {
-  createImageBitmap(file: Blob): Promise<ImageBitmap>;
+  createImageBitmap(source: ImageBitmapSource): Promise<ImageBitmap>;
   createCanvas(): HTMLCanvasElement;
   decodeImageData(imageData: ImageData): string;
   decodeNativeQr?(bitmap: ImageBitmap): Promise<string | undefined>;
@@ -30,6 +30,25 @@ interface NativeBarcodeDetector {
 }
 
 type NativeBarcodeDetectorConstructor = new (options: { formats: string[] }) => NativeBarcodeDetector;
+
+interface ScaledDimensions {
+  width: number;
+  height: number;
+}
+
+function scaledDimensions(width: number, height: number, scale: number): ScaledDimensions | undefined {
+  const scaledWidth = width * scale;
+  const scaledHeight = height * scale;
+  const scaledPixels = scaledWidth * scaledHeight;
+  if (
+    scaledWidth > MAX_SCALED_QR_DIMENSION ||
+    scaledHeight > MAX_SCALED_QR_DIMENSION ||
+    scaledPixels > MAX_SCALED_QR_PIXELS
+  ) {
+    return undefined;
+  }
+  return { width: scaledWidth, height: scaledHeight };
+}
 
 function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   const { data, width, height } = imageData;
@@ -103,26 +122,20 @@ function nearestNeighborUpscale(
   height: number,
   scale: number,
 ): { luminances: Uint8ClampedArray; width: number; height: number } | undefined {
-  const scaledWidth = width * scale;
-  const scaledHeight = height * scale;
-  const scaledPixels = scaledWidth * scaledHeight;
-  if (
-    scaledWidth > MAX_SCALED_QR_DIMENSION ||
-    scaledHeight > MAX_SCALED_QR_DIMENSION ||
-    scaledPixels > MAX_SCALED_QR_PIXELS
-  ) {
+  const dimensions = scaledDimensions(width, height, scale);
+  if (!dimensions) {
     return undefined;
   }
 
-  const scaled = new Uint8ClampedArray(scaledPixels);
-  for (let y = 0; y < scaledHeight; y += 1) {
+  const scaled = new Uint8ClampedArray(dimensions.width * dimensions.height);
+  for (let y = 0; y < dimensions.height; y += 1) {
     const sourceRow = Math.floor(y / scale) * width;
-    const targetRow = y * scaledWidth;
-    for (let x = 0; x < scaledWidth; x += 1) {
+    const targetRow = y * dimensions.width;
+    for (let x = 0; x < dimensions.width; x += 1) {
       scaled[targetRow + x] = source[sourceRow + Math.floor(x / scale)]!;
     }
   }
-  return { luminances: scaled, width: scaledWidth, height: scaledHeight };
+  return { luminances: scaled, width: dimensions.width, height: dimensions.height };
 }
 
 export function decodeQrImageData(imageData: ImageData): string {
@@ -207,7 +220,7 @@ async function decodeWithNativeBarcodeDetector(bitmap: ImageBitmap): Promise<str
 }
 
 const defaultDependencies: QrImageDecodeDependencies = {
-  createImageBitmap: (file) => createImageBitmap(file),
+  createImageBitmap: (source) => createImageBitmap(source),
   createCanvas: () => document.createElement("canvas"),
   decodeImageData: decodeQrImageData,
   decodeNativeQr: decodeWithNativeBarcodeDetector,
@@ -222,6 +235,7 @@ export async function decodeQrImage(
   }
 
   let bitmap: ImageBitmap | undefined;
+  let scaledBitmap: ImageBitmap | undefined;
   let canvas: HTMLCanvasElement | undefined;
   let context: CanvasRenderingContext2D | null = null;
   let imageData: ImageData | undefined;
@@ -260,13 +274,55 @@ export async function decodeQrImage(
       }
     }
 
-    const nativeResult = await dependencies.decodeNativeQr?.(bitmap);
-    if (nativeResult) {
-      return nativeResult;
+    // The native path does not need the copied RGBA buffer. Clear it before
+    // retaining only the source ImageBitmap for native original/scaled attempts.
+    imageData.data.fill(0);
+    imageData = undefined;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    const originalNativeResult = await dependencies.decodeNativeQr?.(bitmap);
+    if (originalNativeResult) {
+      return originalNativeResult;
     }
+
+    if (dependencies.decodeNativeQr) {
+      // PR #131 only gave BarcodeDetector the original bitmap. Real screenshot
+      // acceptance still failed even though ZXing already had 2x/3x luminance
+      // retries. Reuse the same canvas to expose the same two bounded scales to
+      // Chrome's native detector, one temporary bitmap at a time.
+      for (const scale of DENSE_QR_SCALE_FACTORS) {
+        const dimensions = scaledDimensions(bitmap.width, bitmap.height, scale);
+        if (!dimensions) {
+          continue;
+        }
+
+        canvas.width = dimensions.width;
+        canvas.height = dimensions.height;
+        context.imageSmoothingEnabled = false;
+        try {
+          context.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
+          scaledBitmap = await dependencies.createImageBitmap(canvas);
+          const scaledNativeResult = await dependencies.decodeNativeQr(scaledBitmap);
+          if (scaledNativeResult) {
+            return scaledNativeResult;
+          }
+        } catch {
+          // A failed local raster/native attempt is equivalent to no decode. Keep
+          // the generic secret-free failure boundary after all bounded attempts.
+        } finally {
+          scaledBitmap?.close();
+          scaledBitmap = undefined;
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+      }
+    }
+
     throw new ImportError("No supported QR code could be decoded from the selected image.");
   } finally {
     imageData?.data.fill(0);
+    scaledBitmap?.close();
     bitmap?.close();
     if (canvas) {
       context?.clearRect(0, 0, canvas.width, canvas.height);
