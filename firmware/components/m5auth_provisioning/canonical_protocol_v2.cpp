@@ -696,9 +696,26 @@ std::string CanonicalProtocolV2Handler::handle_line(
             vmk_sink_.cancel_pending();
             response = error_response(id, "invalid_request");
         } else {
-            response = vmk_sink_.install_rekeyed_vault(expected_generation, std::move(envelope), now_ms)
-                ? empty_success(id)
-                : error_response(id, "invalid_state");
+            const bool installed = vmk_sink_.install_rekeyed_vault(
+                expected_generation,
+                std::move(envelope),
+                now_ms
+            );
+            if (!installed) {
+                response = error_response(id, "invalid_state");
+            } else {
+                bool automatic_lock_due_after_rekey = false;
+                {
+                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                    automatic_lock_due_after_rekey = runtime_.automatic_lock_due(now_ms);
+                }
+                const vault_runtime::Status lock_status = automatic_lock_due_after_rekey
+                    ? lock_security_boundary()
+                    : vault_runtime::Status::kOk;
+                response = lock_status == vault_runtime::Status::kOk
+                    ? empty_success(id)
+                    : error_response(id, vault_runtime::status_code(lock_status));
+            }
         }
     } else if (operation == "time.status") {
         response = time_status_success(id, time_service_.status());
