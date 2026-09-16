@@ -24,6 +24,8 @@ interface AttributeBinding {
 const textBindings = new WeakMap<Text, TextBinding>();
 const attributeBindings = new WeakMap<Element, Map<string, AttributeBinding>>();
 const translatableAttributes = ["aria-label", "title", "placeholder"] as const;
+const PRODUCT_NAME_LEGACY = "M5 Authenticator";
+const PRODUCT_NAME = "M5Authenticator";
 
 export type NavigationPage = "provisioner" | "flash" | "help";
 
@@ -41,8 +43,18 @@ export function navigationLabels(language: UiLanguage): Record<NavigationPage, s
   };
 }
 
+export function displayUiText(source: string, language: UiLanguage = getLanguage()): string {
+  if (source === PRODUCT_NAME_LEGACY) return PRODUCT_NAME;
+  return translateUiText(source, language);
+}
+
+export function pageTitle(page: NavigationPage, language: UiLanguage): string {
+  if (page === "provisioner") return PRODUCT_NAME;
+  return `${PRODUCT_NAME} — ${navigationLabels(language)[page]}`;
+}
+
 function recognizedSource(source: string): boolean {
-  return translateUiText(source, "en") !== source || hasJapaneseTranslation(source);
+  return source === PRODUCT_NAME_LEGACY || translateUiText(source, "en") !== source || hasJapaneseTranslation(source);
 }
 
 function splitOuterWhitespace(value: string): { prefix: string; source: string; suffix: string } {
@@ -74,7 +86,7 @@ function localizeTextNode(node: Text): void {
     }
   }
 
-  const rendered = `${prefix}${translateUiText(source)}${suffix}`;
+  const rendered = `${prefix}${displayUiText(source)}${suffix}`;
   textBindings.set(node, { source, rendered, prefix, suffix });
   if (node.data !== rendered) node.data = rendered;
 }
@@ -89,7 +101,7 @@ function localizeAttribute(element: Element, attribute: string): void {
     map.delete(attribute);
     return;
   }
-  const rendered = translateUiText(source);
+  const rendered = displayUiText(source);
   map.set(attribute, { source, rendered });
   attributeBindings.set(element, map);
   if (current !== rendered) element.setAttribute(attribute, rendered);
@@ -127,7 +139,7 @@ function renderNavigation(): void {
   const labels = navigationLabels(language);
   root.innerHTML = `
     <div class="site-nav-shell">
-      <a class="product-mark" href="./">M5Authenticator</a>
+      <a class="product-mark" href="./">${PRODUCT_NAME}</a>
       <nav class="site-tabs" aria-label="${translateUiText("M5Authenticator sections", language)}">
         <a href="./" ${active === "provisioner" ? 'aria-current="page"' : ""}>${labels.provisioner}</a>
         <a href="./flash.html" ${active === "flash" ? 'aria-current="page"' : ""}>${labels.flash}</a>
@@ -148,9 +160,15 @@ function renderNavigation(): void {
 }
 
 function localizeExistingUi(): void {
-  // Bind only known application UI strings. User-provided account names, SSIDs,
-  // identifiers, protocol values, and other unknown text remain untouched.
+  // Only known application UI strings are bound. User-provided account names,
+  // SSIDs, identifiers, machine-readable states, and secret-bearing values are untouched.
   localizeNode(document.documentElement);
+}
+
+function renderDocumentMetadata(): void {
+  const language = getLanguage();
+  document.documentElement.lang = language;
+  document.title = pageTitle(navigationPageFromPath(window.location.pathname), language);
 }
 
 function installMutationLocalization(): MutationObserver {
@@ -174,11 +192,13 @@ function installLocalizedConfirm(): void {
 
 function install(): void {
   renderNavigation();
+  renderDocumentMetadata();
   localizeExistingUi();
   const observer = installMutationLocalization();
   installLocalizedConfirm();
   onLanguageChange(() => {
     renderNavigation();
+    renderDocumentMetadata();
     localizeExistingUi();
   });
   window.addEventListener("pagehide", () => observer.disconnect(), { once: true });
