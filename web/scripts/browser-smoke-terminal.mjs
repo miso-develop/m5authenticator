@@ -131,12 +131,11 @@ async function waitForDevToolsPort(profileDir, deadline) {
       if (Number.isInteger(port) && port > 0 && port <= 65_535) {
         return port;
       }
-      throw new SmokeTerminalError("DEVTOOLS_PORT", "Chrome DevTools port file was invalid.");
-    } catch (error) {
-      if (error instanceof SmokeTerminalError) throw error;
-      if (error && typeof error === "object" && error.code !== "ENOENT") {
-        throw new SmokeTerminalError("DEVTOOLS_PORT", "Chrome DevTools port file could not be read.");
-      }
+      // Chrome creates and updates this file asynchronously. A transient empty or
+      // partial read is nonterminal; keep polling within the same real-time budget.
+    } catch {
+      // On Windows the file can briefly be missing or locked while Chrome writes
+      // it. Treat every read failure as transient until the finite deadline.
     }
     await sleepReal(DEVTOOLS_FILE_POLL_MS);
   }
