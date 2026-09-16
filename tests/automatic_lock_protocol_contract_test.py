@@ -43,13 +43,17 @@ class AutomaticLockProtocolContractTest(unittest.TestCase):
         start = self.protocol.index('operation == "vault.update"')
         end = self.protocol.index('operation == "vault.rekey"', start)
         update = self.protocol[start:end]
-        self.assertIn("runtime_.update_encrypted_vault", update)
-        self.assertIn("automatic_lock_due_after_commit", update)
-        self.assertIn("lock_security_boundary();", update)
-        self.assertLess(
-            update.index("runtime_.update_encrypted_vault"),
-            update.index("automatic_lock_due_after_commit"),
+        commit_call = "runtime_.update_encrypted_vault"
+        due_check = (
+            "if (status == vault_runtime::Status::kOk && "
+            "automatic_lock_due_after_commit)"
         )
+        self.assertIn(commit_call, update)
+        self.assertIn("automatic_lock_due_after_commit", update)
+        self.assertIn(due_check, update)
+        self.assertIn("lock_security_boundary();", update)
+        self.assertLess(update.index(commit_call), update.index(due_check))
+        self.assertLess(update.index(due_check), update.index("lock_security_boundary();"))
 
     def test_expiry_and_explicit_lock_use_same_security_boundary(self) -> None:
         self.assertIn("vault_runtime::Status lock_security_boundary();", self.protocol_header)
