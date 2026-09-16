@@ -121,6 +121,7 @@ def package_firmware(
     output_dir: Path,
     build_commit: str,
     require_production: bool = False,
+    exact_release: bool = False,
 ) -> list[Path]:
     result = validate_release(require_production=require_production)
     profile = result["profile"]
@@ -175,13 +176,19 @@ def package_firmware(
             }
         )
 
+    artifact_identity = {
+        "name": "M5Authenticator",
+        "version": version,
+        "build_commit": build_commit,
+        "exact_release": exact_release,
+    }
+
     factory_manifest = output_dir / "factory-manifest.json"
     update_manifest = output_dir / "update-manifest.json"
     write_json(
         factory_manifest,
         {
-            "name": "M5Authenticator",
-            "version": version,
+            **artifact_identity,
             "new_install_prompt_erase": False,
             "improv": False,
             "builds": [
@@ -195,8 +202,7 @@ def package_firmware(
     write_json(
         update_manifest,
         {
-            "name": "M5Authenticator",
-            "version": version,
+            **artifact_identity,
             # Normal Update is executed only by the M5Authenticator low-level
             # flasher with eraseFirst=false. Retain the generic erase warning if
             # the manifest is opened outside that UI.
@@ -228,6 +234,7 @@ def package_firmware(
             "vmk_persistence": profile["vmk_persistence"],
             "post_update_state": profile["post_update_state"],
             "build_commit": build_commit,
+            "exact_release": exact_release,
             "production_release_allowed": profile["production_release_allowed"],
             "flash_offset": 0,
             "merged_image_bytes": merged_size,
@@ -268,6 +275,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-commit", required=True)
     parser.add_argument("--require-production", action="store_true")
+    parser.add_argument("--exact-release", action="store_true")
     args = parser.parse_args()
 
     build_dir = args.merged_binary.parent
@@ -284,6 +292,7 @@ def main() -> int:
             args.output_dir,
             args.build_commit,
             args.require_production,
+            args.exact_release,
         )
     except ReleaseValidationError as exc:
         print(f"firmware packaging failed: {exc}")
