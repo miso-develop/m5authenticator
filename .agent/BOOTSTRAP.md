@@ -11,6 +11,7 @@ Confirm:
 - `ACTIVE_ROLE`
 - Role Contract path
 - project/repository
+- target repository visibility (`public` / `private`) before any write
 - assigned Issue(s), if any
 - referenced PR / handoff, if any
 - `DOMAIN`, according to the active Role's Domain mode
@@ -50,10 +51,11 @@ If the current PR head differs from `HANDOFF.HEAD`, classify the handoff as stal
 
 Material context that exists only in a chat handoff must not be treated as a substitute for repository evidence. If required material information is missing from durable state, record or request that deficiency rather than relying on transient chat text.
 
-## 4. Inspect current repository state
+## 4. Inspect current repository state and information boundary
 
 Before repository-changing work, inspect the relevant current state:
 
+- repository visibility (`public` or `private`);
 - assigned Issue and recent comments;
 - related PRs and exact current head;
 - active branches or ownership markers when available;
@@ -61,6 +63,13 @@ Before repository-changing work, inspect the relevant current state:
 - CI/check status when relevant;
 - durable Review / Security / Human Gate findings;
 - recent changes that may invalidate the task context.
+
+Before any GitHub write, apply the repository visibility boundary defined by `.agent/AGENT_CATALOG.md`:
+
+- do not copy private-repository names, URLs, paths, Issue/PR identifiers, branch names, internal artifact names, or other private-source metadata into a public repository without explicit human approval;
+- when public work is derived from a private source, write only the public-safe resulting decision, specification, evidence, or status to the public repository;
+- keep private provenance/traceability in an approved private durable location;
+- durable-first does not mean that private material should be moved into a public repository.
 
 Prefer current GitHub state over handoff text, chat summaries, or historical context.
 
