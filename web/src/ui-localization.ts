@@ -1,5 +1,9 @@
 import "./style.css";
 import {
+  hasCoreValidationTranslation,
+  translateCoreValidationText,
+} from "./core-validation-i18n";
+import {
   getLanguage,
   hasJapaneseTranslation,
   onLanguageChange,
@@ -26,6 +30,11 @@ const attributeBindings = new WeakMap<Element, Map<string, AttributeBinding>>();
 const translatableAttributes = ["aria-label", "title", "placeholder"] as const;
 const PRODUCT_NAME_LEGACY = "M5 Authenticator";
 const PRODUCT_NAME = "M5Authenticator";
+const LITERAL_UI_SELECTOR = [
+  "[data-i18n-literal]",
+  "#import-account-list > li > strong",
+  "#stored-account-list > li > strong",
+].join(", ");
 
 export type NavigationPage = "provisioner" | "flash" | "help";
 
@@ -45,7 +54,11 @@ export function navigationLabels(language: UiLanguage): Record<NavigationPage, s
 
 export function displayUiText(source: string, language: UiLanguage = getLanguage()): string {
   if (source === PRODUCT_NAME_LEGACY) return PRODUCT_NAME;
-  return translateUiText(source, language);
+  const canonical = translateUiText(source, "en");
+  if (language === "en") return canonical;
+  const translated = translateUiText(canonical, "ja");
+  if (translated !== canonical || hasJapaneseTranslation(canonical)) return translated;
+  return translateCoreValidationText(canonical, "ja") ?? canonical;
 }
 
 export function pageTitle(page: NavigationPage, language: UiLanguage): string {
@@ -54,7 +67,10 @@ export function pageTitle(page: NavigationPage, language: UiLanguage): string {
 }
 
 function recognizedSource(source: string): boolean {
-  return source === PRODUCT_NAME_LEGACY || translateUiText(source, "en") !== source || hasJapaneseTranslation(source);
+  return source === PRODUCT_NAME_LEGACY ||
+    translateUiText(source, "en") !== source ||
+    hasJapaneseTranslation(source) ||
+    hasCoreValidationTranslation(source);
 }
 
 function splitOuterWhitespace(value: string): { prefix: string; source: string; suffix: string } {
@@ -67,7 +83,21 @@ function splitOuterWhitespace(value: string): { prefix: string; source: string; 
   };
 }
 
+function localizationBoundaryElement(node: Node): Element | null {
+  if (node instanceof Element) return node;
+  return node.parentElement;
+}
+
+function isLocalizationExcluded(node: Node): boolean {
+  return localizationBoundaryElement(node)?.closest(LITERAL_UI_SELECTOR) !== null;
+}
+
 function localizeTextNode(node: Text): void {
+  if (isLocalizationExcluded(node)) {
+    textBindings.delete(node);
+    return;
+  }
+
   const existing = textBindings.get(node);
   let source: string;
   let prefix: string;
@@ -92,6 +122,7 @@ function localizeTextNode(node: Text): void {
 }
 
 function localizeAttribute(element: Element, attribute: string): void {
+  if (isLocalizationExcluded(element)) return;
   const current = element.getAttribute(attribute);
   if (current === null) return;
   const map = attributeBindings.get(element) ?? new Map<string, AttributeBinding>();
@@ -108,6 +139,7 @@ function localizeAttribute(element: Element, attribute: string): void {
 }
 
 function localizeNode(node: Node): void {
+  if (isLocalizationExcluded(node)) return;
   if (node instanceof Text) {
     localizeTextNode(node);
     return;
@@ -160,8 +192,8 @@ function renderNavigation(): void {
 }
 
 function localizeExistingUi(): void {
-  // Only known application UI strings are bound. User-provided account names,
-  // SSIDs, identifiers, machine-readable states, and secret-bearing values are untouched.
+  // Only application-owned UI copy is localized. Credential/user metadata
+  // inside literal boundaries is never translated based on value collisions.
   localizeNode(document.documentElement);
 }
 
@@ -187,7 +219,7 @@ function installMutationLocalization(): MutationObserver {
 
 function installLocalizedConfirm(): void {
   const nativeConfirm = window.confirm.bind(window);
-  window.confirm = (message?: string): boolean => nativeConfirm(translateConfirmation(String(message ?? "")));
+  window.confirm = (message?: string): boolean => nativeConfirm(displayUiText(String(message ?? "")));
 }
 
 function install(): void {
