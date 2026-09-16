@@ -84,7 +84,7 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("tries the bounded center crop with the existing core decoder before native crop scaling", async () => {
+  it("tries the bounded start crop with the existing core decoder before native crop scaling", async () => {
     const fixture = createFixture(new Error("synthetic full-frame failure"));
     fixture.decodeImageData
       .mockImplementationOnce(() => {
@@ -101,7 +101,7 @@ describe("decodeQrImage", () => {
     expect(fixture.decodeImageData).toHaveBeenCalledTimes(2);
     expect(fixture.drawImage).toHaveBeenCalledWith(
       fixture.bitmap,
-      100,
+      0,
       60,
       120,
       120,
@@ -116,7 +116,7 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("tries the same bounded crop at native 2x after crop-local core decoding fails", async () => {
+  it("tries the same bounded start crop at native 2x after crop-local core decoding fails", async () => {
     const fixture = createFixture(new Error("synthetic core failure"));
     const cropClose = vi.fn();
     const cropBitmap = { width: 240, height: 240, close: cropClose } as unknown as ImageBitmap;
@@ -140,7 +140,7 @@ describe("decodeQrImage", () => {
     expect(fixture.createImageBitmap.mock.calls[1]?.[0]).toBe(fixture.canvas);
     expect(fixture.drawImage).toHaveBeenCalledWith(
       fixture.bitmap,
-      100,
+      0,
       60,
       120,
       120,
@@ -156,21 +156,21 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("tries at most center, start, and end crops and closes each native temporary bitmap", async () => {
+  it("tries at most start, center, and end crops and closes each native temporary bitmap", async () => {
     const fixture = createFixture(new Error("synthetic core failure"));
-    const centerClose = vi.fn();
-    const startClose = vi.fn();
-    const endClose = vi.fn();
-    const centerBitmap = { width: 240, height: 240, close: centerClose } as unknown as ImageBitmap;
-    const startBitmap = { width: 240, height: 240, close: startClose } as unknown as ImageBitmap;
-    const endBitmap = { width: 240, height: 240, close: endClose } as unknown as ImageBitmap;
+    const firstClose = vi.fn();
+    const secondClose = vi.fn();
+    const thirdClose = vi.fn();
+    const firstBitmap = { width: 240, height: 240, close: firstClose } as unknown as ImageBitmap;
+    const secondBitmap = { width: 240, height: 240, close: secondClose } as unknown as ImageBitmap;
+    const thirdBitmap = { width: 240, height: 240, close: thirdClose } as unknown as ImageBitmap;
     let cropBitmapCall = 0;
     fixture.createImageBitmap.mockImplementation(async (source: ImageBitmapSource) => {
       if (source instanceof File) return fixture.bitmap;
       cropBitmapCall += 1;
-      if (cropBitmapCall === 1) return centerBitmap;
-      if (cropBitmapCall === 2) return startBitmap;
-      return endBitmap;
+      if (cropBitmapCall === 1) return firstBitmap;
+      if (cropBitmapCall === 2) return secondBitmap;
+      return thirdBitmap;
     });
     const decodeNativeQr = vi.fn(async () => undefined);
     fixture.dependencies.decodeNativeQr = decodeNativeQr;
@@ -182,7 +182,7 @@ describe("decodeQrImage", () => {
     expect(decodeNativeQr).toHaveBeenCalledTimes(4);
     expect(fixture.createImageBitmap).toHaveBeenCalledTimes(4);
 
-    for (const x of [100, 0, 200]) {
+    for (const x of [0, 100, 200]) {
       expect(fixture.drawImage).toHaveBeenCalledWith(
         fixture.bitmap,
         x,
@@ -207,16 +207,16 @@ describe("decodeQrImage", () => {
       );
     }
 
-    expect(centerClose).toHaveBeenCalledOnce();
-    expect(startClose).toHaveBeenCalledOnce();
-    expect(endClose).toHaveBeenCalledOnce();
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(secondClose).toHaveBeenCalledOnce();
+    expect(thirdClose).toHaveBeenCalledOnce();
     expect(fixture.close).toHaveBeenCalledOnce();
     expect(fixture.canvas.width).toBe(0);
     expect(fixture.canvas.height).toBe(0);
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("uses vertical center, start, and end crop geometry for portrait screenshots", async () => {
+  it("uses vertical start, center, and end crop geometry for portrait screenshots", async () => {
     const fixture = createFixture(new Error("synthetic core failure"));
     Object.defineProperties(fixture.bitmap, {
       width: { value: 240 },
@@ -233,7 +233,7 @@ describe("decodeQrImage", () => {
 
     await expect(decodeQrImage(file, fixture.dependencies)).rejects.toThrow("No supported QR code");
 
-    for (const y of [100, 0, 200]) {
+    for (const y of [0, 100, 200]) {
       expect(fixture.drawImage).toHaveBeenCalledWith(
         fixture.bitmap,
         60,
@@ -272,8 +272,6 @@ describe("decodeQrImage", () => {
 
     await expect(decodeQrImage(file, fixture.dependencies)).rejects.toThrow("No supported QR code");
 
-    // Full-frame native remains allowed, while each 1667x1667 crop's 2x native
-    // raster exceeds MAX_SCALED_QR_PIXELS and is therefore skipped.
     expect(decodeNativeQr).toHaveBeenCalledTimes(1);
     expect(fixture.decodeImageData).toHaveBeenCalledTimes(4);
     expect(fixture.createImageBitmap).toHaveBeenCalledTimes(1);
