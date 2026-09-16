@@ -93,8 +93,13 @@ const COPY: Record<UiLanguage, HelpCopy> = {
   },
 };
 
-const root = document.querySelector<HTMLElement>("#help-app");
-if (!root) throw new Error("Help root is missing");
+function queryHelpRoot(): HTMLElement {
+  const element = document.querySelector<HTMLElement>("#help-app");
+  if (!element) throw new Error("Help root is missing");
+  return element;
+}
+
+const root = queryHelpRoot();
 
 export function helpCopy(language: UiLanguage): HelpCopy {
   return COPY[language];
