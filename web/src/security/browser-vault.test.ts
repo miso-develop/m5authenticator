@@ -145,8 +145,9 @@ describe("browser canonical Vault", () => {
     vmk.fill(0);
   });
 
-  it("preserves current browser security state while accepting an F1-to-F2 generation advance", async () => {
+  it("preserves a concurrent Passphrase re-wrap while accepting an F1-to-F2 generation advance", async () => {
     const { vmk, state } = await fixture(LEGACY_VAULT_FORMAT_VERSION);
+    const changed = await changeRecoveryPassphrase(state, oldPassphrase, newPassphrase);
     const plaintext = await decryptVault(state.vault, vmk);
     const logical = decodeVaultPlaintext(plaintext, LEGACY_VAULT_FORMAT_VERSION);
     const encodedV2 = encodeVaultPlaintext({ ...logical, autoLockDays: 1 }, VAULT_FORMAT_VERSION);
@@ -163,11 +164,17 @@ describe("browser canonical Vault", () => {
         vault: nextVault,
         recoveryWrappedVmk: { ...state.recoveryWrappedVmk, vaultFormatVersion: VAULT_FORMAT_VERSION },
       });
-      const merged = mergeVaultAdvanceWithCurrentBrowserState(state, incoming, state.vault.generation);
+      const merged = mergeVaultAdvanceWithCurrentBrowserState(changed, incoming, state.vault.generation);
       expect(merged.vault.generation).toBe(8n);
-      expect(merged.vault.vaultFormatVersion).toBe(2);
-      expect(merged.recoveryWrappedVmk.vaultFormatVersion).toBe(2);
-      expect(merged.trustedBrowser.registrationId).toEqual(state.trustedBrowser.registrationId);
+      expect(merged.vault.vaultFormatVersion).toBe(VAULT_FORMAT_VERSION);
+      expect(merged.recoveryWrappedVmk.vaultFormatVersion).toBe(VAULT_FORMAT_VERSION);
+      expect(merged.trustedBrowser.registrationId).toEqual(changed.trustedBrowser.registrationId);
+      expect(merged.trustedBrowser.wrappedVmk).toEqual(changed.trustedBrowser.wrappedVmk);
+
+      const recovered = await unwrapVmkWithPassphrase(merged.recoveryWrappedVmk, newPassphrase);
+      expect(recovered).toEqual(vmk);
+      recovered.fill(0);
+      await expect(unwrapVmkWithPassphrase(merged.recoveryWrappedVmk, oldPassphrase)).rejects.toThrow();
     } finally {
       for (const credential of logical.credentials) credential.secret.fill(0);
       plaintext.fill(0);
