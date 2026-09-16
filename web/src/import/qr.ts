@@ -15,6 +15,17 @@ export interface QrImageDecodeDependencies {
   decodeNativeQr?(bitmap: ImageBitmap): Promise<string | undefined>;
 }
 
+export type QrDecodeDiagnostic =
+  | "full-zxing-exhausted"
+  | "native-original-attempted"
+  | "native-original-no-result"
+  | "crop-zxing-exhausted"
+  | "crop-otsu-exhausted"
+  | "crop-native-attempted"
+  | "crop-native-no-result"
+  | "crop-native-skipped-bounds"
+  | "crop-native-skipped-budget";
+
 const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const NATIVE_QR_CROP_SCALE = 2;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
@@ -32,6 +43,7 @@ interface NativeBarcodeDetector {
 }
 
 type NativeBarcodeDetectorConstructor = new (options: { formats: string[] }) => NativeBarcodeDetector;
+type QrDecodeDiagnosticSink = (event: QrDecodeDiagnostic) => void;
 
 interface ScaledDimensions {
   width: number;
@@ -199,7 +211,7 @@ function otsuThreshold(luminances: Uint8ClampedArray): number {
   try {
     let totalSum = 0;
     for (const luminance of luminances) {
-      histogram[luminance] += 1;
+      histogram[luminance] = (histogram[luminance] ?? 0) + 1;
       totalSum += luminance;
     }
 
@@ -333,6 +345,7 @@ async function tryCroppedVariant(
   context: CanvasRenderingContext2D,
   dependencies: QrImageDecodeDependencies,
   nativeDeadline: number,
+  onDiagnostic?: QrDecodeDiagnosticSink,
 ): Promise<string | undefined> {
   let cropImageData: ImageData | undefined;
   let scaledBitmap: ImageBitmap | undefined;
@@ -359,15 +372,13 @@ async function tryCroppedVariant(
       if (error instanceof ImportError) {
         throw error;
       }
+      onDiagnostic?.("crop-zxing-exhausted");
     }
 
-    // Screenshot interpolation can leave finder/module edges as intermediate
-    // gray values even after cropping. Retry exactly one local Otsu-binarized
-    // representation, then reuse the same existing 1x/2x/3x ZXing variants.
     try {
       return decodeBinarizedQrImageData(cropImageData);
     } catch {
-      // Continue to the bounded native crop fallback.
+      onDiagnostic?.("crop-otsu-exhausted");
     }
   } catch (error) {
     if (error instanceof ImportError) {
@@ -381,11 +392,13 @@ async function tryCroppedVariant(
   }
 
   if (!dependencies.decodeNativeQr || performance.now() >= nativeDeadline) {
+    onDiagnostic?.("crop-native-skipped-budget");
     return undefined;
   }
 
   const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
   if (!dimensions) {
+    onDiagnostic?.("crop-native-skipped-bounds");
     return undefined;
   }
 
@@ -405,8 +418,14 @@ async function tryCroppedVariant(
       dimensions.height,
     );
     scaledBitmap = await dependencies.createImageBitmap(canvas);
-    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, nativeDeadline);
+    onDiagnostic?.("crop-native-attempted");
+    const result = await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, nativeDeadline);
+    if (!result) {
+      onDiagnostic?.("crop-native-no-result");
+    }
+    return result;
   } catch {
+    onDiagnostic?.("crop-native-no-result");
     return undefined;
   } finally {
     scaledBitmap?.close();
@@ -419,6 +438,7 @@ async function tryCroppedVariant(
 export async function decodeQrImage(
   file: File,
   dependencies: QrImageDecodeDependencies = defaultDependencies,
+  onDiagnostic?: QrDecodeDiagnosticSink,
 ): Promise<string> {
   if (!file.type.startsWith("image/")) {
     throw new ImportError("Select an image file containing a QR code.");
@@ -461,6 +481,7 @@ export async function decodeQrImage(
       if (error instanceof ImportError) {
         throw error;
       }
+      onDiagnostic?.("full-zxing-exhausted");
     }
 
     imageData.data.fill(0);
@@ -474,6 +495,7 @@ export async function decodeQrImage(
     }
 
     const nativeDeadline = performance.now() + NATIVE_QR_TOTAL_BUDGET_MS;
+    onDiagnostic?.("native-original-attempted");
     const originalNativeResult = await decodeNativeWithinBudget(
       dependencies.decodeNativeQr,
       bitmap,
@@ -482,6 +504,7 @@ export async function decodeQrImage(
     if (originalNativeResult) {
       return originalNativeResult;
     }
+    onDiagnostic?.("native-original-no-result");
 
     for (const crop of nativeCropWindows(bitmap.width, bitmap.height)) {
       const croppedResult = await tryCroppedVariant(
@@ -491,6 +514,7 @@ export async function decodeQrImage(
         context,
         dependencies,
         nativeDeadline,
+        onDiagnostic,
       );
       if (croppedResult) {
         return croppedResult;
