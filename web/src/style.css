@@ -1,15 +1,83 @@
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #171717;
   background: #f5f5f5;
 }
 
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
+a { color: inherit; }
 
-#app {
-  min-height: 100vh;
+#site-header {
+  padding: 20px 24px 0;
+}
+
+.site-nav-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  padding: 12px 16px;
+  border: 1px solid #d4d4d4;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.product-mark {
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.site-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.site-tabs a {
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: #404040;
+  text-decoration: none;
+}
+
+.site-tabs a[aria-current="page"] {
+  background: #171717;
+  color: #ffffff;
+}
+
+.language-switcher {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #d4d4d4;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.language-button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #404040;
+}
+
+.language-button[aria-pressed="true"] {
+  background: #171717;
+  color: #ffffff;
+}
+
+#app,
+#flash-app,
+#help-app {
+  min-height: calc(100vh - 92px);
   display: grid;
   place-items: start center;
   padding: 24px;
@@ -33,6 +101,7 @@ button, input { font: inherit; }
 
 h1 { margin: 0; font-size: 2rem; }
 h2 { margin: 0; font-size: 1.2rem; }
+h3 { margin-top: 24px; }
 .description, .hint { line-height: 1.6; }
 
 .panel {
@@ -67,11 +136,11 @@ label, .file-label {
   font-weight: 600;
 }
 
-input[type="file"], input[type="text"], input[type="password"] {
+input[type="file"], input[type="text"], input[type="password"], select {
   width: 100%;
 }
 
-input[type="text"], input[type="password"] {
+input[type="text"], input[type="password"], select {
   padding: 9px 10px;
   border: 1px solid #a3a3a3;
   border-radius: 8px;
@@ -102,7 +171,7 @@ button.secondary { background: #ffffff; color: #171717; }
 button.small { min-height: 34px; padding: 6px 10px; }
 button.danger-button { background: #7f1d1d; border-color: #7f1d1d; }
 
-button:disabled, input:disabled {
+button:disabled, input:disabled, select:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -142,9 +211,16 @@ button:disabled, input:disabled {
 .status dd { margin: 0; overflow-wrap: anywhere; }
 
 .danger { border-top-color: #fecaca; }
+.help-list { margin: 12px 0 0; padding-left: 24px; }
+.help-list li { margin: 10px 0; line-height: 1.65; }
+.help-warning { padding-bottom: 4px; }
 
 @media (max-width: 560px) {
-  #app { padding: 12px; }
+  #site-header { padding: 12px 12px 0; }
+  .site-nav-shell { align-items: flex-start; }
+  .site-tabs { order: 3; flex-basis: 100%; }
+  .language-switcher { margin-left: auto; }
+  #app, #flash-app, #help-app { padding: 12px; }
   .shell { padding: 24px; }
   .status div { grid-template-columns: 1fr; gap: 4px; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
