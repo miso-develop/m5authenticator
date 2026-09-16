@@ -109,14 +109,24 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         self.assertGreater(render.index(ready_commit), render.index(snapshot_commit))
 
         # view_mutex_ is held by both run()/security_boundary_clear() callers, so
-        # a reader blocks during a later render and can only see completed caches.
+        # a reader blocks during a later full render and can only see completed
+        # snapshot caches. Scroll-only label-band redraws intentionally do not
+        # publish a new sanitized snapshot because they do not change its fields.
         run = extract_braced_block(ui, "void CanonicalUiController::run()")
         security_clear = extract_braced_block(
             ui,
             "void CanonicalUiController::security_boundary_clear()",
         )
         self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", run)
-        self.assertIn("if (dirty) render();", run)
+        self.assertIn("if (dirty) {", run)
+        self.assertIn("render();", run)
+        self.assertIn("else if (label_scroll_changed)", run)
+        scroll_start = run.index("else if (label_scroll_changed)")
+        scroll_end = run.index("vTaskDelay(kUiPollInterval)", scroll_start)
+        scroll_branch = run[scroll_start:scroll_end]
+        self.assertIn("render_account_label();", scroll_branch)
+        self.assertNotIn("render();", scroll_branch)
+        self.assertNotIn("rendered_snapshot_ready_", scroll_branch)
         self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", security_clear)
         self.assertIn("render();", security_clear)
 
