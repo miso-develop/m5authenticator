@@ -16,6 +16,7 @@ import {
   encryptVault,
   wrapVmkWithPassphrase,
 } from "./security/vault-crypto";
+import { encodeVaultPlaintext, type VaultPlaintext } from "./security/vault-format";
 import {
   encodeBase64UrlCanonical,
   type SessionWireOperation,
@@ -177,7 +178,11 @@ describe("canonical VMK re-key integration", () => {
   it("stages Browser state, requires a fresh authenticated session, and commits generation +1", async () => {
     const vaultId = bytes(16, 0x30);
     const oldVmk = bytes(32, 0x40);
-    const plaintext = new TextEncoder().encode("synthetic-rekey-payload");
+    const plaintextModel: VaultPlaintext = {
+      credentials: [],
+      wifi: null,
+    };
+    const plaintext = encodeVaultPlaintext(plaintextModel);
     const vault = await encryptVault(plaintext, oldVmk, vaultId, 4n);
     const recovery = await wrapVmkWithPassphrase(oldVmk, vaultId, recoveryPassphrase);
     const state = await createBrowserCanonicalState({

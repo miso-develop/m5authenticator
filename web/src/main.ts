@@ -1,4 +1,5 @@
 import "./style.css";
+import { createAutoLockSettingsController } from "./auto-lock-settings";
 import {
   CANONICAL_BROWSER_STATE_CHANGED_EVENT,
   CanonicalDeviceManagement,
@@ -135,6 +136,24 @@ let management: CanonicalDeviceManagement | null = null;
 let recoveryReset: CanonicalRecoveryResetController | null = null;
 let snapshot: CanonicalDeviceSnapshot | null = null;
 let deviceActionInProgress = false;
+
+const autoLockSettings = createAutoLockSettingsController(async (days) => {
+  if (deviceActionInProgress || recoveryReset || !management) {
+    throw new Error("Automatic LOCK settings require an active canonical Device connection");
+  }
+  setDeviceBusy(true);
+  try {
+    await requireManagement().setAutoLockDays(days);
+    await refreshDevice();
+  } catch (error) {
+    const errorMessage = userFacingError(error, "Automatic LOCK update failed.");
+    if (serialSession?.isClosed()) await disconnectDevice(false);
+    deviceNotice.textContent = errorMessage;
+    throw error;
+  } finally {
+    setDeviceBusy(false);
+  }
+});
 
 renderDevice();
 renderImportedAccounts([]);
@@ -446,6 +465,7 @@ function updateControls(): void {
   recoveryFactoryResetButton.hidden = !recoveryMode;
   recoveryResetHint.hidden = !recoveryMode;
   recoveryFactoryResetButton.disabled = deviceActionInProgress || !recoveryMode;
+  autoLockSettings.render(snapshot, deviceActionInProgress, recoveryMode);
 }
 
 function renderDevice(): void {

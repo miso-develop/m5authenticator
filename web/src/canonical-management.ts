@@ -1,4 +1,5 @@
 import {
+  deviceSupportsVaultFormat,
   encryptedVaultParams,
   parseCanonicalHelloData,
   parseCanonicalTimeStatus,
@@ -30,16 +31,20 @@ import { rekeyTrustedBrowserState } from "./security/browser-vmk-rekey";
 import { deliverVmkOverSessionV2, absentBrkIdentity, registrationMatches } from "./security/session-flow-v2";
 import {
   CREDENTIAL_ID_BYTES,
+  LEGACY_VAULT_FORMAT_VERSION,
   MAX_VAULT_CREDENTIALS,
+  VAULT_FORMAT_VERSION,
   decodeVaultPlaintext,
   encodeVaultPlaintext,
+  normalizeAutoLockDays,
+  type SupportedVaultFormatVersion,
   type VaultPlaintext,
 } from "./security/vault-format";
 import {
   decryptVault,
-  encryptVault,
+  encryptVaultForFormat,
   unwrapVmkWithPassphrase,
-  wrapVmkWithPassphrase,
+  wrapVmkWithPassphraseForFormat,
 } from "./security/vault-crypto";
 import { encodeBase64UrlCanonical } from "./security/session-protocol-v2";
 import type { CanonicalV2Transport } from "./serial";
@@ -54,6 +59,12 @@ export interface CanonicalAccountView {
   order: number;
 }
 
+export interface CanonicalAutoLockView {
+  known: boolean;
+  days: number | null;
+  format2Writable: boolean;
+}
+
 export interface CanonicalDeviceSnapshot {
   hello: CanonicalHelloData;
   time: CanonicalTimeStatus;
@@ -63,6 +74,7 @@ export interface CanonicalDeviceSnapshot {
   recoveryProvisioningCandidates: number;
   accounts: CanonicalAccountView[];
   wifi: { configured: boolean; ssid: string };
+  autoLock: CanonicalAutoLockView;
 }
 
 interface ImportedCredential {
@@ -101,6 +113,7 @@ function wipeVaultPlaintext(plaintext: VaultPlaintext | null): void {
     plaintext.wifi.password = "";
     plaintext.wifi = null;
   }
+  plaintext.autoLockDays = null;
 }
 
 function wipeImported(values: ImportedCredential[]): void {
@@ -128,7 +141,11 @@ function assertActiveDeviceBinding(state: BrowserCanonicalState, hello: Canonica
   if (state.deviceMetadata?.deviceId !== hello.deviceId) {
     throw new Error("Browser Vault belongs to a different Device ID");
   }
-  assertCanonicalGeneration(state, { vaultId: hello.vaultId, generation: hello.generation });
+  assertCanonicalGeneration(state, {
+    vaultId: hello.vaultId,
+    generation: hello.generation,
+    vaultFormatVersion: hello.vaultFormat,
+  });
   if (!registrationMatches(
     {
       registrationId: state.trustedBrowser.registrationId,
@@ -152,6 +169,56 @@ function exactBindingMatches(state: BrowserCanonicalState, hello: CanonicalHello
   } catch {
     return false;
   }
+}
+
+function deviceCanWriteFormat2(hello: CanonicalHelloData): boolean {
+  return deviceSupportsVaultFormat(hello, VAULT_FORMAT_VERSION);
+}
+
+function nextMutationVaultFormat(
+  state: BrowserCanonicalState,
+  hello: CanonicalHelloData,
+  requireFormat2: boolean,
+): SupportedVaultFormatVersion {
+  if (state.vault.vaultFormatVersion === VAULT_FORMAT_VERSION) {
+    if (!deviceCanWriteFormat2(hello)) {
+      throw new Error("Device does not advertise Vault Format 2 write support for the active canonical Vault");
+    }
+    return VAULT_FORMAT_VERSION;
+  }
+  if (state.vault.vaultFormatVersion !== LEGACY_VAULT_FORMAT_VERSION) {
+    throw new Error("Unsupported canonical Vault format");
+  }
+  if (deviceCanWriteFormat2(hello)) return VAULT_FORMAT_VERSION;
+  if (requireFormat2) {
+    throw new Error("Automatic LOCK settings require Device firmware that explicitly supports Vault Format 2");
+  }
+  return LEGACY_VAULT_FORMAT_VERSION;
+}
+
+function initialVaultFormat(hello: CanonicalHelloData): SupportedVaultFormatVersion {
+  return deviceCanWriteFormat2(hello) ? VAULT_FORMAT_VERSION : LEGACY_VAULT_FORMAT_VERSION;
+}
+
+function assertRecoveryVaultSupportedByDevice(state: BrowserCanonicalState, hello: CanonicalHelloData): void {
+  if (state.vault.vaultFormatVersion === VAULT_FORMAT_VERSION && !deviceCanWriteFormat2(hello)) {
+    throw new Error("This Recovery Package contains Vault Format 2, but the connected Device does not advertise Format 2 support");
+  }
+}
+
+function migratedRecoveryWrapper(
+  state: BrowserCanonicalState,
+  targetFormat: SupportedVaultFormatVersion,
+): BrowserCanonicalState["recoveryWrappedVmk"] {
+  return {
+    ...state.recoveryWrappedVmk,
+    vaultFormatVersion: targetFormat,
+    vaultId: state.recoveryWrappedVmk.vaultId.slice(),
+    kdf: { ...state.recoveryWrappedVmk.kdf, salt: state.recoveryWrappedVmk.kdf.salt.slice() },
+    nonce: state.recoveryWrappedVmk.nonce.slice(),
+    ciphertext: state.recoveryWrappedVmk.ciphertext.slice(),
+    tag: state.recoveryWrappedVmk.tag.slice(),
+  };
 }
 
 export class CanonicalDeviceManagement {
@@ -200,9 +267,6 @@ export class CanonicalDeviceManagement {
 
       this.ownership = "active";
       if (this.hello.state === "locked") {
-        // Ordinary connection is read-only with respect to unlock. A valid
-        // Trusted Browser remains eligible, but VMK delivery/session.begin is
-        // reserved for the explicit requestUnlock() user action.
         this.unlockRequired = true;
       } else if (this.hello.state === "unlocked") {
         this.unlockRequired = false;
@@ -252,10 +316,20 @@ export class CanonicalDeviceManagement {
 
       let accounts: CanonicalAccountView[] = [];
       let wifi = { configured: false, ssid: "" };
+      let autoLock: CanonicalAutoLockView = {
+        known: false,
+        days: null,
+        format2Writable: deviceCanWriteFormat2(this.hello),
+      };
       if (this.state && this.ownership === "active" && this.hello.state === "unlocked") {
         const view = await this.readBrowserVaultView(this.state);
         accounts = view.accounts;
         wifi = view.wifi;
+        autoLock = {
+          known: true,
+          days: view.autoLockDays,
+          format2Writable: deviceCanWriteFormat2(this.hello),
+        };
       }
       const recoveryCandidates = !this.hello.vaultPresent &&
           !this.hello.registrationPresent && this.hello.state === "unprovisioned"
@@ -271,6 +345,7 @@ export class CanonicalDeviceManagement {
         recoveryProvisioningCandidates: recoveryCandidates.length,
         accounts,
         wifi,
+        autoLock,
       };
     });
   }
@@ -289,15 +364,12 @@ export class CanonicalDeviceManagement {
       }
 
       const state = candidates[0]!;
+      assertRecoveryVaultSupportedByDevice(state, this.hello);
       const existingPending = await this.journal.get(state.vault.vaultId);
       if (existingPending) throw new PendingBrowserTransactionError();
       const vmk = await unwrapVmkForTrustedBrowser(state);
       let candidate: BrowserCanonicalState | null = null;
       try {
-        // A clean replacement Device starts a new registration lifetime at epoch 1.
-        // BUK wrapping AAD binds registration ID + epoch, so never rewrite the
-        // imported epoch in-place: generate fresh BUK/BRK/registration and wrap
-        // the recovered VMK again under the new epoch-1 identity.
         candidate = await createBrowserCanonicalState({
           vault: state.vault,
           recoveryWrappedVmk: state.recoveryWrappedVmk,
@@ -428,16 +500,26 @@ export class CanonicalDeviceManagement {
     });
   }
 
+  public async setAutoLockDays(days: number | null): Promise<void> {
+    const normalized = normalizeAutoLockDays(days);
+    await this.mutateVault((plaintext) => {
+      plaintext.autoLockDays = normalized;
+    }, true);
+  }
+
   public async rotateVmk(recoveryPassphrase: string): Promise<void> {
     if (recoveryPassphrase.length === 0) throw new Error("VMK re-key requires the Recovery Passphrase");
     await withCanonicalBrowserStateLock(async () => {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
       const state = this.state!;
+      const targetFormat = nextMutationVaultFormat(state, this.hello, false);
       const currentVmk = await unwrapVmkForTrustedBrowser(state);
       const nextVmk = randomBytes(32);
       let verifiedRecoveryVmk: Uint8Array | null = null;
       let decrypted: Uint8Array | null = null;
+      let encoded: Uint8Array | null = null;
+      let plaintext: VaultPlaintext | null = null;
       let candidate: BrowserCanonicalState | null = null;
       const nextGeneration = state.vault.generation + 1n;
       if (nextGeneration > 0xffff_ffff_ffff_ffffn) {
@@ -452,8 +534,21 @@ export class CanonicalDeviceManagement {
           throw new Error("Recovery Passphrase does not match the current canonical Vault");
         }
         decrypted = await decryptVault(state.vault, currentVmk);
-        const nextVault = await encryptVault(decrypted, nextVmk, state.vault.vaultId, nextGeneration);
-        const nextRecoveryWrappedVmk = await wrapVmkWithPassphrase(nextVmk, state.vault.vaultId, recoveryPassphrase);
+        plaintext = decodeVaultPlaintext(decrypted, state.vault.vaultFormatVersion);
+        encoded = encodeVaultPlaintext(plaintext, targetFormat);
+        const nextVault = await encryptVaultForFormat(
+          encoded,
+          nextVmk,
+          state.vault.vaultId,
+          nextGeneration,
+          targetFormat,
+        );
+        const nextRecoveryWrappedVmk = await wrapVmkWithPassphraseForFormat(
+          nextVmk,
+          state.vault.vaultId,
+          recoveryPassphrase,
+          targetFormat,
+        );
         candidate = await rekeyTrustedBrowserState({
           current: state,
           nextVault,
@@ -493,8 +588,10 @@ export class CanonicalDeviceManagement {
       } finally {
         verifiedRecoveryVmk?.fill(0);
         decrypted?.fill(0);
+        encoded?.fill(0);
         currentVmk.fill(0);
         nextVmk.fill(0);
+        wipeVaultPlaintext(plaintext);
         candidate = null;
       }
     });
@@ -593,8 +690,6 @@ export class CanonicalDeviceManagement {
       const affected = intent.affectedVaults[0]!;
       const current = await this.store.get(affected.vaultId);
       if (current && current.vault.generation === affected.generation && exactBindingMatches(current, this.hello)) {
-        // Exact old binding proves the reset did not commit; the canonical state
-        // is still valid, so clear only the durable reset intent.
         await this.resetIntents.delete(intent.deviceId);
         return;
       }
@@ -614,7 +709,6 @@ export class CanonicalDeviceManagement {
         const pendingForDevice = await this.journal.listForDevice(this.hello.deviceId);
         for (const pending of pendingForDevice) {
           if (pending.kind === "factory-reset") {
-            // Backward-compatible cleanup for pre-reset-intent builds.
             const current = await this.store.get(pending.candidate.vault.vaultId);
             if (current) {
               if (current.vault.generation !== pending.expectedGeneration) {
@@ -805,7 +899,11 @@ export class CanonicalDeviceManagement {
       this.ownership = "conflict";
       throw new Error("Recovery replacement requires an existing canonical Device registration");
     }
-    assertCanonicalGeneration(state, { vaultId: this.hello.vaultId, generation: this.hello.generation });
+    assertCanonicalGeneration(state, {
+      vaultId: this.hello.vaultId,
+      generation: this.hello.generation,
+      vaultFormatVersion: this.hello.vaultFormat,
+    });
 
     const exactPendingAlreadyConfirmed = state.deviceMetadata?.deviceId === this.hello.deviceId &&
       registrationMatches(
@@ -884,6 +982,7 @@ export class CanonicalDeviceManagement {
         throw new Error("Initial provisioning requires 1 to 32 accounts");
       }
 
+      const format = initialVaultFormat(this.hello);
       const vmk = randomBytes(32);
       const vaultId = randomBytes(16);
       const plaintext: VaultPlaintext = {
@@ -899,13 +998,14 @@ export class CanonicalDeviceManagement {
           manualOrder: order,
         })),
         wifi: null,
+        autoLockDays: null,
       };
       let encoded: Uint8Array | null = null;
       let candidate: BrowserCanonicalState | null = null;
       try {
-        encoded = encodeVaultPlaintext(plaintext);
-        const vault = await encryptVault(encoded, vmk, vaultId, 1n);
-        const recoveryWrappedVmk = await wrapVmkWithPassphrase(vmk, vaultId, passphrase);
+        encoded = encodeVaultPlaintext(plaintext, format);
+        const vault = await encryptVaultForFormat(encoded, vmk, vaultId, 1n, format);
+        const recoveryWrappedVmk = await wrapVmkWithPassphraseForFormat(vmk, vaultId, passphrase, format);
         candidate = await createBrowserCanonicalState({
           vault,
           recoveryWrappedVmk,
@@ -972,24 +1072,35 @@ export class CanonicalDeviceManagement {
     assertActiveDeviceBinding(this.state, this.hello);
   }
 
-  private async mutateVault(mutator: (plaintext: VaultPlaintext) => void): Promise<void> {
+  private async mutateVault(mutator: (plaintext: VaultPlaintext) => void, requireFormat2 = false): Promise<void> {
     await withCanonicalBrowserStateLock(async () => {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
       const state = this.state!;
+      const targetFormat = nextMutationVaultFormat(state, this.hello, requireFormat2);
       const vmk = await unwrapVmkForTrustedBrowser(state);
       let decrypted: Uint8Array | null = null;
       let encoded: Uint8Array | null = null;
       let plaintext: VaultPlaintext | null = null;
       try {
         decrypted = await decryptVault(state.vault, vmk);
-        plaintext = decodeVaultPlaintext(decrypted);
+        plaintext = decodeVaultPlaintext(decrypted, state.vault.vaultFormatVersion);
         mutator(plaintext);
-        encoded = encodeVaultPlaintext(plaintext);
+        encoded = encodeVaultPlaintext(plaintext, targetFormat);
         const nextGeneration = state.vault.generation + 1n;
         if (nextGeneration > 0xffff_ffff_ffff_ffffn) throw new Error("Canonical Vault generation overflow");
-        const nextVault = await encryptVault(encoded, vmk, state.vault.vaultId, nextGeneration);
-        const candidate = sanitizeBrowserCanonicalState({ ...state, vault: nextVault });
+        const nextVault = await encryptVaultForFormat(
+          encoded,
+          vmk,
+          state.vault.vaultId,
+          nextGeneration,
+          targetFormat,
+        );
+        const candidate = sanitizeBrowserCanonicalState({
+          ...state,
+          vault: nextVault,
+          recoveryWrappedVmk: migratedRecoveryWrapper(state, targetFormat),
+        });
         const pending: BrowserPendingTransaction = {
           kind: "vault-update",
           expectedGeneration: state.vault.generation,
@@ -1019,13 +1130,14 @@ export class CanonicalDeviceManagement {
   private async readBrowserVaultView(state: BrowserCanonicalState): Promise<{
     accounts: CanonicalAccountView[];
     wifi: { configured: boolean; ssid: string };
+    autoLockDays: number | null;
   }> {
     const vmk = await unwrapVmkForTrustedBrowser(state);
     let decrypted: Uint8Array | null = null;
     let plaintext: VaultPlaintext | null = null;
     try {
       decrypted = await decryptVault(state.vault, vmk);
-      plaintext = decodeVaultPlaintext(decrypted);
+      plaintext = decodeVaultPlaintext(decrypted, state.vault.vaultFormatVersion);
       const accounts = plaintext.credentials
         .map((credential) => ({
           id: credentialViewId(credential.credentialId),
@@ -1038,6 +1150,7 @@ export class CanonicalDeviceManagement {
       return {
         accounts,
         wifi: plaintext.wifi ? { configured: true, ssid: plaintext.wifi.ssid } : { configured: false, ssid: "" },
+        autoLockDays: plaintext.autoLockDays ?? null,
       };
     } finally {
       decrypted?.fill(0);

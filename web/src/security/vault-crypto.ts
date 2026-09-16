@@ -1,12 +1,14 @@
 import { argon2id } from "hash-wasm";
 import {
+  LEGACY_VAULT_FORMAT_VERSION,
   RECOVERY_PACKAGE_VERSION,
-  VAULT_FORMAT_VERSION,
   VAULT_ID_BYTES,
   VAULT_TARGET_STORAGE_SCHEMA_VERSION,
   VMK_WRAP_VERSION,
+  assertSupportedVaultFormatVersion,
   buildVaultAad,
   buildVmkWrapAad,
+  type SupportedVaultFormatVersion,
 } from "./vault-format";
 
 export { RECOVERY_PACKAGE_VERSION, VMK_WRAP_VERSION } from "./vault-format";
@@ -24,7 +26,7 @@ export const ARGON2ID_OUTPUT_BYTES = 32;
 const textEncoder = new TextEncoder();
 
 export interface EncryptedVaultEnvelope {
-  vaultFormatVersion: number;
+  vaultFormatVersion: SupportedVaultFormatVersion;
   storageSchemaVersion: number;
   vaultId: Uint8Array;
   generation: bigint;
@@ -47,7 +49,7 @@ export interface Argon2idKdfMetadata {
 export interface PassphraseWrappedVmk {
   packageVersion: number;
   wrapVersion: number;
-  vaultFormatVersion: number;
+  vaultFormatVersion: SupportedVaultFormatVersion;
   vaultId: Uint8Array;
   kdf: Argon2idKdfMetadata;
   nonce: Uint8Array;
@@ -155,9 +157,7 @@ async function aesGcmDecrypt(
 }
 
 function validateVaultEnvelope(envelope: EncryptedVaultEnvelope): void {
-  if (envelope.vaultFormatVersion !== VAULT_FORMAT_VERSION) {
-    throw new Error(`unsupported vault format version: ${envelope.vaultFormatVersion}`);
-  }
+  assertSupportedVaultFormatVersion(envelope.vaultFormatVersion);
   if (envelope.storageSchemaVersion !== VAULT_TARGET_STORAGE_SCHEMA_VERSION) {
     throw new Error(`unsupported storage schema version: ${envelope.storageSchemaVersion}`);
   }
@@ -169,20 +169,22 @@ function validateVaultEnvelope(envelope: EncryptedVaultEnvelope): void {
   }
 }
 
-export async function encryptVault(
+export async function encryptVaultForFormat(
   plaintext: Uint8Array,
   vmk: Uint8Array,
   vaultId: Uint8Array,
   generation: bigint,
+  vaultFormatVersion: SupportedVaultFormatVersion,
   source: RandomSource = browserRandomSource,
 ): Promise<EncryptedVaultEnvelope> {
+  assertSupportedVaultFormatVersion(vaultFormatVersion);
   assertLength(vmk, AES_GCM_KEY_BYTES, "VMK");
   assertLength(vaultId, VAULT_ID_BYTES, "vaultId");
   const nonce = randomBytes(AES_GCM_NONCE_BYTES, source);
-  const aad = buildVaultAad({ vaultId, generation });
+  const aad = buildVaultAad({ vaultId, generation, vaultFormatVersion });
   const encrypted = await aesGcmEncrypt(vmk, nonce, plaintext, aad);
   return {
-    vaultFormatVersion: VAULT_FORMAT_VERSION,
+    vaultFormatVersion,
     storageSchemaVersion: VAULT_TARGET_STORAGE_SCHEMA_VERSION,
     vaultId: vaultId.slice(),
     generation,
@@ -191,6 +193,42 @@ export async function encryptVault(
     tag: encrypted.tag,
     ciphertextLength: encrypted.ciphertext.length,
   };
+}
+
+// Compatibility helper retained for existing V1 callers/fixtures. New canonical
+// writes must select a format explicitly with encryptVaultForFormat().
+export async function encryptVault(
+  plaintext: Uint8Array,
+  vmk: Uint8Array,
+  vaultId: Uint8Array,
+  generation: bigint,
+  source: RandomSource = browserRandomSource,
+): Promise<EncryptedVaultEnvelope> {
+  return encryptVaultForFormat(
+    plaintext,
+    vmk,
+    vaultId,
+    generation,
+    LEGACY_VAULT_FORMAT_VERSION,
+    source,
+  );
+}
+
+export async function encryptLegacyVault(
+  plaintext: Uint8Array,
+  vmk: Uint8Array,
+  vaultId: Uint8Array,
+  generation: bigint,
+  source: RandomSource = browserRandomSource,
+): Promise<EncryptedVaultEnvelope> {
+  return encryptVaultForFormat(
+    plaintext,
+    vmk,
+    vaultId,
+    generation,
+    LEGACY_VAULT_FORMAT_VERSION,
+    source,
+  );
 }
 
 export async function decryptVault(
@@ -281,9 +319,7 @@ function validateWrappedVmk(value: PassphraseWrappedVmk): void {
   if (value.wrapVersion !== VMK_WRAP_VERSION) {
     throw new Error(`unsupported VMK wrap version: ${value.wrapVersion}`);
   }
-  if (value.vaultFormatVersion !== VAULT_FORMAT_VERSION) {
-    throw new Error(`unsupported vault format version: ${value.vaultFormatVersion}`);
-  }
+  assertSupportedVaultFormatVersion(value.vaultFormatVersion);
   assertLength(value.vaultId, VAULT_ID_BYTES, "vaultId");
   assertLength(value.nonce, AES_GCM_NONCE_BYTES, "VMK wrap nonce");
   assertLength(value.tag, AES_GCM_TAG_BYTES, "VMK wrap tag");
@@ -293,13 +329,15 @@ function validateWrappedVmk(value: PassphraseWrappedVmk): void {
   validateKdfMetadata(value.kdf);
 }
 
-export async function wrapVmkWithPassphrase(
+export async function wrapVmkWithPassphraseForFormat(
   vmk: Uint8Array,
   vaultId: Uint8Array,
   passphrase: string,
+  vaultFormatVersion: SupportedVaultFormatVersion,
   kdf: Argon2idKdfMetadata = createArgon2idMetadata(),
   source: RandomSource = browserRandomSource,
 ): Promise<PassphraseWrappedVmk> {
+  assertSupportedVaultFormatVersion(vaultFormatVersion);
   assertLength(vmk, AES_GCM_KEY_BYTES, "VMK");
   assertLength(vaultId, VAULT_ID_BYTES, "vaultId");
   validateKdfMetadata(kdf);
@@ -315,7 +353,7 @@ export async function wrapVmkWithPassphrase(
     return {
       packageVersion: RECOVERY_PACKAGE_VERSION,
       wrapVersion: VMK_WRAP_VERSION,
-      vaultFormatVersion: VAULT_FORMAT_VERSION,
+      vaultFormatVersion,
       vaultId: vaultId.slice(),
       kdf: { ...kdf, salt: kdf.salt.slice() },
       nonce,
@@ -325,6 +363,25 @@ export async function wrapVmkWithPassphrase(
   } finally {
     kek.fill(0);
   }
+}
+
+// Compatibility helper retained for existing V1 callers/fixtures. New canonical
+// writes must select a format explicitly with wrapVmkWithPassphraseForFormat().
+export async function wrapVmkWithPassphrase(
+  vmk: Uint8Array,
+  vaultId: Uint8Array,
+  passphrase: string,
+  kdf: Argon2idKdfMetadata = createArgon2idMetadata(),
+  source: RandomSource = browserRandomSource,
+): Promise<PassphraseWrappedVmk> {
+  return wrapVmkWithPassphraseForFormat(
+    vmk,
+    vaultId,
+    passphrase,
+    LEGACY_VAULT_FORMAT_VERSION,
+    kdf,
+    source,
+  );
 }
 
 export async function unwrapVmkWithPassphrase(

@@ -5,11 +5,17 @@ import {
   SESSION_REGISTRATION_ID_BYTES,
   SESSION_VAULT_ID_BYTES,
 } from "./security/session-protocol-v2";
+import {
+  LEGACY_VAULT_FORMAT_VERSION,
+  VAULT_FORMAT_VERSION,
+  isSupportedVaultFormatVersion,
+  type SupportedVaultFormatVersion,
+} from "./security/vault-format";
 import type { EncryptedVaultEnvelope } from "./security/vault-crypto";
 
 export const CANONICAL_PROTOCOL_VERSION = 2 as const;
 export const CANONICAL_STORAGE_SCHEMA_VERSION = 2 as const;
-export const CANONICAL_VAULT_FORMAT_VERSION = 1 as const;
+export const CANONICAL_VAULT_FORMAT_VERSION = VAULT_FORMAT_VERSION;
 
 export type CanonicalWireOperation =
   | "hello"
@@ -37,7 +43,11 @@ export interface CanonicalHelloData {
   firmware: string;
   protocol: 2;
   storageSchema: 2;
-  vaultFormat: 1;
+  vaultFormat: SupportedVaultFormatVersion;
+  // parseCanonicalHelloData always returns an explicit array. This remains
+  // optional on the structural interface so pre-capability synthetic transports
+  // remain compatible; absence is conservatively treated as no Format-2 support.
+  supportedVaultFormats?: readonly number[];
   buildCommit: string;
   state: DeviceRuntimeState;
   storageReady: boolean;
@@ -105,6 +115,27 @@ export function parseCanonicalV2Response(
   return parsed.data;
 }
 
+function parseSupportedVaultFormats(value: unknown): readonly number[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 32) {
+    throw new Error("Device returned invalid supported_vault_formats");
+  }
+  const result: number[] = [];
+  const seen = new Set<number>();
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 1 || item > 0xffff || seen.has(item)) {
+      throw new Error("Device returned invalid supported_vault_formats");
+    }
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
+export function deviceSupportsVaultFormat(hello: Pick<CanonicalHelloData, "supportedVaultFormats">, version: number): boolean {
+  return hello.supportedVaultFormats?.includes(version) === true;
+}
+
 export function parseCanonicalHelloData(data: Record<string, unknown>): CanonicalHelloData {
   if (
     typeof data.device !== "string" || data.device.length === 0 ||
@@ -112,7 +143,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     typeof data.firmware !== "string" ||
     data.protocol !== CANONICAL_PROTOCOL_VERSION ||
     data.storage_schema !== CANONICAL_STORAGE_SCHEMA_VERSION ||
-    data.vault_format !== CANONICAL_VAULT_FORMAT_VERSION ||
+    typeof data.vault_format !== "number" || !isSupportedVaultFormatVersion(data.vault_format) ||
     typeof data.build_commit !== "string" ||
     !isRuntimeState(data.state) ||
     typeof data.storage_ready !== "boolean" ||
@@ -125,6 +156,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     throw new Error("Device returned incompatible canonical metadata");
   }
   const recoveryResetRequired = data.recovery_reset_required === true;
+  const supportedVaultFormats = parseSupportedVaultFormats(data.supported_vault_formats);
 
   const generation = parseU64Decimal(data.generation, "generation");
   let vaultId: Uint8Array | null = null;
@@ -157,7 +189,8 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     firmware: data.firmware,
     protocol: CANONICAL_PROTOCOL_VERSION,
     storageSchema: CANONICAL_STORAGE_SCHEMA_VERSION,
-    vaultFormat: CANONICAL_VAULT_FORMAT_VERSION,
+    vaultFormat: data.vault_format,
+    supportedVaultFormats,
     buildCommit: data.build_commit,
     state: data.state,
     storageReady: data.storage_ready,
@@ -192,7 +225,7 @@ export function parseCanonicalTimeStatus(data: Record<string, unknown>): Canonic
 
 export function encryptedVaultParams(envelope: EncryptedVaultEnvelope): Record<string, unknown> {
   if (
-    envelope.vaultFormatVersion !== CANONICAL_VAULT_FORMAT_VERSION ||
+    !isSupportedVaultFormatVersion(envelope.vaultFormatVersion) ||
     envelope.storageSchemaVersion !== CANONICAL_STORAGE_SCHEMA_VERSION ||
     envelope.vaultId.length !== SESSION_VAULT_ID_BYTES ||
     envelope.nonce.length !== 12 || envelope.tag.length !== 16 ||
@@ -211,6 +244,10 @@ export function encryptedVaultParams(envelope: EncryptedVaultEnvelope): Record<s
     tag: encodeBase64UrlCanonical(envelope.tag),
     ciphertext_length: envelope.ciphertextLength,
   };
+}
+
+export function legacyHelloHasNoFormat2WriteCapability(hello: CanonicalHelloData): boolean {
+  return hello.vaultFormat === LEGACY_VAULT_FORMAT_VERSION && !deviceSupportsVaultFormat(hello, VAULT_FORMAT_VERSION);
 }
 
 function decodeFixed(value: unknown, length: number, field: string): Uint8Array {

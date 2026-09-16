@@ -8,9 +8,16 @@ import {
   type EncryptedVaultEnvelope,
   type PassphraseWrappedVmk,
   unwrapVmkWithPassphrase,
-  wrapVmkWithPassphrase,
+  wrapVmkWithPassphraseForFormat,
 } from "./vault-crypto";
-import { VAULT_FORMAT_VERSION, VAULT_ID_BYTES, VAULT_TARGET_STORAGE_SCHEMA_VERSION } from "./vault-format";
+import {
+  VAULT_ID_BYTES,
+  VAULT_TARGET_STORAGE_SCHEMA_VERSION,
+  decodeVaultPlaintext,
+  isSupportedVaultFormatVersion,
+  type SupportedVaultFormatVersion,
+  type VaultPlaintext,
+} from "./vault-format";
 
 const BROWSER_STATE_VERSION = 1;
 const BUK_WRAP_VERSION = 1;
@@ -156,7 +163,7 @@ function cloneBrowserWrappedVmk(value: BrowserWrappedVmk): BrowserWrappedVmk {
 
 function validateStateFraming(state: BrowserCanonicalState): void {
   assert(state.stateVersion === BROWSER_STATE_VERSION, `unsupported browser state version: ${state.stateVersion}`);
-  assert(state.vault.vaultFormatVersion === VAULT_FORMAT_VERSION, "unsupported Vault format version");
+  assert(isSupportedVaultFormatVersion(state.vault.vaultFormatVersion), "unsupported Vault format version");
   assert(state.vault.storageSchemaVersion === VAULT_TARGET_STORAGE_SCHEMA_VERSION, "unsupported target storage schema");
   assertLength(state.vault.vaultId, VAULT_ID_BYTES, "vaultId");
   assertLength(state.vault.nonce, AES_GCM_NONCE_BYTES, "Vault nonce");
@@ -166,7 +173,8 @@ function validateStateFraming(state: BrowserCanonicalState): void {
   const wrapped = state.recoveryWrappedVmk;
   assert(wrapped.packageVersion === RECOVERY_PACKAGE_VERSION, "unsupported Recovery Package version");
   assert(wrapped.wrapVersion === VMK_WRAP_VERSION, "unsupported VMK wrap version");
-  assert(wrapped.vaultFormatVersion === VAULT_FORMAT_VERSION, "unsupported wrapped VMK Vault format");
+  assert(isSupportedVaultFormatVersion(wrapped.vaultFormatVersion), "unsupported wrapped VMK Vault format");
+  assert(wrapped.vaultFormatVersion === state.vault.vaultFormatVersion, "Vault and wrapped VMK format mismatch");
   assertLength(wrapped.vaultId, VAULT_ID_BYTES, "wrapped VMK vaultId");
   assert(sameBytes(state.vault.vaultId, wrapped.vaultId), "Vault and wrapped VMK vault_id mismatch");
   assertLength(wrapped.nonce, AES_GCM_NONCE_BYTES, "wrapped VMK nonce");
@@ -332,6 +340,7 @@ export async function createBrowserCanonicalState(
 ): Promise<BrowserCanonicalState> {
   assertLength(input.vmk, AES_GCM_KEY_BYTES, "VMK");
   assert(sameBytes(input.vault.vaultId, input.recoveryWrappedVmk.vaultId), "Vault and recovery wrapper vault_id mismatch");
+  assert(input.vault.vaultFormatVersion === input.recoveryWrappedVmk.vaultFormatVersion, "Vault and recovery wrapper format mismatch");
   const epoch = input.registrationEpoch ?? 1;
   const keys = await generateTrustedBrowserKeys();
   const wrappedVmk = await wrapVmkWithBuk(input.vmk, keys.buk, input.vault.vaultId, keys.registrationId, epoch);
@@ -354,9 +363,13 @@ export async function createBrowserCanonicalState(
 
 export function assertCanonicalGeneration(
   state: BrowserCanonicalState,
-  observed: { vaultId: Uint8Array; generation: bigint },
+  observed: { vaultId: Uint8Array; generation: bigint; vaultFormatVersion?: number },
 ): void {
-  if (!sameBytes(state.vault.vaultId, observed.vaultId) || state.vault.generation !== observed.generation) {
+  if (
+    !sameBytes(state.vault.vaultId, observed.vaultId) ||
+    state.vault.generation !== observed.generation ||
+    (observed.vaultFormatVersion !== undefined && state.vault.vaultFormatVersion !== observed.vaultFormatVersion)
+  ) {
     throw new GenerationConflictError();
   }
 }
@@ -402,6 +415,29 @@ function parseGeneration(value: unknown): bigint {
   const generation = BigInt(encoded);
   assert(generation <= 0xffff_ffff_ffff_ffffn, "vault.generation exceeds u64");
   return generation;
+}
+
+function parseVaultFormatVersion(value: unknown, field: string): SupportedVaultFormatVersion {
+  const version = asInteger(value, field, 1);
+  assert(isSupportedVaultFormatVersion(version), `unsupported ${field}`);
+  return version;
+}
+
+function wipeDecodedVault(value: VaultPlaintext): void {
+  for (const credential of value.credentials) {
+    credential.credentialId.fill(0);
+    credential.secret.fill(0);
+    credential.issuer = "";
+    credential.account = "";
+    credential.displayName = "";
+  }
+  value.credentials.length = 0;
+  if (value.wifi) {
+    value.wifi.ssid = "";
+    value.wifi.password = "";
+    value.wifi = null;
+  }
+  value.autoLockDays = null;
 }
 
 export function exportRecoveryPackage(state: BrowserCanonicalState): string {
@@ -463,7 +499,7 @@ export function parseRecoveryPackage(serialized: string): {
 
   const vaultJson = asObject(root.vault, "vault");
   const vault: EncryptedVaultEnvelope = {
-    vaultFormatVersion: asInteger(vaultJson.vaultFormatVersion, "vault.vaultFormatVersion", 1),
+    vaultFormatVersion: parseVaultFormatVersion(vaultJson.vaultFormatVersion, "vault.vaultFormatVersion"),
     storageSchemaVersion: asInteger(vaultJson.storageSchemaVersion, "vault.storageSchemaVersion", 1),
     vaultId: fromBase64Url(vaultJson.vaultId, "vault.vaultId"),
     generation: parseGeneration(vaultJson.generation),
@@ -480,7 +516,7 @@ export function parseRecoveryPackage(serialized: string): {
   const wrappedVmk: PassphraseWrappedVmk = {
     packageVersion: asInteger(wrappedJson.packageVersion, "wrappedVmk.packageVersion", 1),
     wrapVersion: asInteger(wrappedJson.wrapVersion, "wrappedVmk.wrapVersion", 1),
-    vaultFormatVersion: asInteger(wrappedJson.vaultFormatVersion, "wrappedVmk.vaultFormatVersion", 1),
+    vaultFormatVersion: parseVaultFormatVersion(wrappedJson.vaultFormatVersion, "wrappedVmk.vaultFormatVersion"),
     vaultId: fromBase64Url(wrappedJson.vaultId, "wrappedVmk.vaultId"),
     kdf: {
       algorithm: "argon2id",
@@ -511,35 +547,13 @@ export function parseRecoveryPackage(serialized: string): {
     deviceMetadata = { deviceId };
   }
 
-  const placeholderKey = {} as CryptoKey;
-  const placeholderState = {
-    stateVersion: BROWSER_STATE_VERSION,
-    vault,
-    recoveryWrappedVmk: wrappedVmk,
-    trustedBrowser: {
-      registrationId: previousRegistration.registrationId,
-      epoch: previousRegistration.epoch,
-      status: "replacement-pending" as const,
-      buk: placeholderKey,
-      brkPrivateKey: placeholderKey,
-      brkPublicKeyRaw: new Uint8Array(BRK_PUBLIC_RAW_BYTES),
-      wrappedVmk: {
-        version: BUK_WRAP_VERSION,
-        nonce: new Uint8Array(AES_GCM_NONCE_BYTES),
-        ciphertext: new Uint8Array(AES_GCM_KEY_BYTES),
-        tag: new Uint8Array(AES_GCM_TAG_BYTES),
-      },
-    },
-    deviceMetadata,
-  };
-  assert(vault.vaultFormatVersion === VAULT_FORMAT_VERSION, "unsupported Vault format version");
   assert(vault.storageSchemaVersion === VAULT_TARGET_STORAGE_SCHEMA_VERSION, "unsupported storage schema version");
   assertLength(vault.vaultId, VAULT_ID_BYTES, "vaultId");
   assertLength(vault.nonce, AES_GCM_NONCE_BYTES, "Vault nonce");
   assertLength(vault.tag, AES_GCM_TAG_BYTES, "Vault tag");
   assert(vault.ciphertextLength === vault.ciphertext.length, "Vault ciphertext framing mismatch");
   assert(sameBytes(vault.vaultId, wrappedVmk.vaultId), "Vault and wrapped VMK vault_id mismatch");
-  void placeholderState;
+  assert(vault.vaultFormatVersion === wrappedVmk.vaultFormatVersion, "Vault and wrapped VMK format mismatch");
   return { vault, wrappedVmk, previousRegistration, deviceMetadata };
 }
 
@@ -547,8 +561,10 @@ export async function importRecoveryPackage(serialized: string, passphrase: stri
   const parsed = parseRecoveryPackage(serialized);
   const vmk = await unwrapVmkWithPassphrase(parsed.wrappedVmk, passphrase);
   let plaintext: Uint8Array | null = null;
+  let decoded: VaultPlaintext | null = null;
   try {
     plaintext = await decryptVault(parsed.vault, vmk);
+    decoded = decodeVaultPlaintext(plaintext, parsed.vault.vaultFormatVersion);
     const nextEpoch = parsed.previousRegistration.epoch + 1;
     assert(Number.isSafeInteger(nextEpoch), "registration epoch overflow");
     return await createBrowserCanonicalState({
@@ -560,6 +576,7 @@ export async function importRecoveryPackage(serialized: string, passphrase: stri
       deviceMetadata: parsed.deviceMetadata,
     });
   } finally {
+    if (decoded) wipeDecodedVault(decoded);
     plaintext?.fill(0);
     vmk.fill(0);
   }
@@ -575,7 +592,12 @@ export async function changeRecoveryPassphrase(
   let plaintext: Uint8Array | null = null;
   try {
     plaintext = await decryptVault(safe.vault, vmk);
-    const replacement = await wrapVmkWithPassphrase(vmk, safe.vault.vaultId, newPassphrase);
+    const replacement = await wrapVmkWithPassphraseForFormat(
+      vmk,
+      safe.vault.vaultId,
+      newPassphrase,
+      safe.vault.vaultFormatVersion,
+    );
     return sanitizeBrowserCanonicalState({ ...safe, recoveryWrappedVmk: replacement });
   } finally {
     plaintext?.fill(0);
@@ -623,7 +645,18 @@ export function mergeVaultAdvanceWithCurrentBrowserState(
     safeIncoming.trustedBrowser.wrappedVmk,
   );
   if (!isSingleGenerationAdvance || !sameVault || !sameBrowserVmk) return safeIncoming;
-  return sanitizeBrowserCanonicalState({ ...safeCurrent, vault: safeIncoming.vault });
+
+  // A same-VMK generation advance may race with a same-generation browser-only
+  // Recovery Passphrase re-wrap. Preserve the current wrapper crypto/KDF and
+  // advance only its associated Vault-format metadata to match the committed
+  // envelope. VMK wrap v1 does not bind Vault format in its AAD.
+  const recoveryWrappedVmk = cloneWrappedVmk(safeCurrent.recoveryWrappedVmk);
+  recoveryWrappedVmk.vaultFormatVersion = safeIncoming.vault.vaultFormatVersion;
+  return sanitizeBrowserCanonicalState({
+    ...safeCurrent,
+    vault: safeIncoming.vault,
+    recoveryWrappedVmk,
+  });
 }
 
 export class IndexedDbBrowserVaultStore {
