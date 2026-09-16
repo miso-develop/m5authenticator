@@ -15,6 +15,15 @@ GenerateResult VaultGenerator::generate_for_credential(
     const vault_runtime::CredentialId& credential_id,
     std::uint32_t* code
 ) {
+    return generate_for_credential(credential_id, code, nullptr);
+}
+
+GenerateResult VaultGenerator::generate_for_credential(
+    const vault_runtime::CredentialId& credential_id,
+    std::uint32_t* code,
+    GenerateMetadata* metadata
+) {
+    if (metadata != nullptr) metadata->unix_seconds = 0;
     if (code == nullptr) return GenerateResult::kAccountNotFound;
 
     const time::Snapshot before_vault = time_service_.status();
@@ -65,6 +74,7 @@ GenerateResult VaultGenerator::generate_for_credential(
             switch (core) {
                 case CoreResult::kOk:
                     *code = generated;
+                    if (metadata != nullptr) metadata->unix_seconds = unix_seconds;
                     result = GenerateResult::kOk;
                     break;
                 case CoreResult::kInvalidSecret:
