@@ -30,6 +30,21 @@ bool same_envelope(
 
 }  // namespace
 
+Status Runtime::enter_vmk_rekey_boundary() {
+    if (!initialized_) return Status::kNotReady;
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_ ||
+        !unlock_session_active_) {
+        return Status::kInvalidState;
+    }
+
+    // Rekey must destroy the resident VMK immediately, but it is not a fresh
+    // unlock. Keep only the bounded non-secret automatic-lock policy/origin so
+    // a successful rekey cannot extend the current continuous UNLOCKED lifetime.
+    wipe_vmk();
+    state_ = State::kLocked;
+    return Status::kOk;
+}
+
 Status Runtime::rekey_encrypted_vault(
     std::uint64_t expected_generation,
     vault::VaultEnvelope envelope,
@@ -37,8 +52,10 @@ Status Runtime::rekey_encrypted_vault(
     std::uint64_t now_ms
 ) {
     ScopedVmkWipe wipe(vmk);
+    (void)now_ms;
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kLocked || vmk_present_ || !has_vault_) {
+    if (state_ != State::kLocked || vmk_present_ || !has_vault_ ||
+        !unlock_session_active_) {
         return Status::kInvalidState;
     }
     if (expected_generation != envelope_.generation ||
@@ -75,10 +92,14 @@ Status Runtime::rekey_encrypted_vault(
     last_used_ = snapshot.last_used;
     schema_ready_ = true;
     has_vault_ = true;
-    clear_unlock_session_state();
+
+    // The old VMK was already destroyed at enter_vmk_rekey_boundary(). Install
+    // the new VMK while deliberately retaining unlocked_since_ms_. The candidate
+    // authenticated policy becomes effective against that original session T0.
+    wipe_vmk();
     vmk_ = vmk;
     vmk_present_ = true;
-    begin_unlock_session(policy, now_ms);
+    auto_lock_days_ = policy;
     state_ = State::kUnlocked;
     recovery_reset_allowed_ = false;
     return Status::kOk;
