@@ -243,7 +243,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn('constexpr char kPartitionLabel[] = "auth_nvs";', persistence)
         self.assertIn("nvs_flash_init_partition(kPartitionLabel)", persistence)
         self.assertIn("nvs_open_from_partition(", persistence)
-        self.assertIn("kPartitionLabel, kNamespace, mode", persistence)
+        self.assertIn("kPartitionLabel, kNamespace, mode, handle", persistence)
 
     def test_issue_107_reboot_with_persisted_vault_starts_locked_without_vmk(self) -> None:
         runtime = VAULT_RUNTIME_CPP.read_text(encoding="utf-8")
