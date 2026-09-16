@@ -246,8 +246,7 @@ button:disabled, input:disabled, select:disabled {
 .help-list li { margin: 10px 0; line-height: 1.65; }
 .help-warning { padding-bottom: 4px; }
 
-@media (max-width: 560px) {
-  #site-header { padding: 12px 12px 0; }
+@media (max-width: 720px) {
   .site-nav-shell { grid-template-columns: minmax(0, 1fr) auto; }
   .site-tabs {
     grid-column: 1 / -1;
@@ -257,6 +256,10 @@ button:disabled, input:disabled, select:disabled {
     justify-content: center;
   }
   .language-switcher { justify-self: end; }
+}
+
+@media (max-width: 560px) {
+  #site-header { padding: 12px 12px 0; }
   #app, #flash-app, #help-app { padding: 12px; }
   .shell { padding: 24px; }
   .status div, .build-identity div { grid-template-columns: 1fr; gap: 4px; }
