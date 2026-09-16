@@ -168,9 +168,11 @@ Status Runtime::initialize() {
     last_used_ = snapshot.last_used;
     if (!snapshot.has_vault) return Status::kUnprovisioned;
     if (!valid_envelope_framing(snapshot.envelope)) {
+        const bool supported_format =
+            vault::is_supported_vault_format(snapshot.envelope.vault_format_version);
         state_ = State::kError;
-        recovery_reset_allowed_ = false;
-        return vault::is_supported_vault_format(snapshot.envelope.vault_format_version)
+        recovery_reset_allowed_ = supported_format;
+        return supported_format
             ? Status::kCorrupt
             : Status::kUnsupportedVaultFormat;
     }
@@ -202,10 +204,12 @@ Status Runtime::reload_after_persistence() {
         return Status::kOk;
     }
     if (!valid_envelope_framing(snapshot.envelope)) {
+        const bool supported_format =
+            vault::is_supported_vault_format(snapshot.envelope.vault_format_version);
         state_ = State::kError;
-        recovery_reset_allowed_ = false;
+        recovery_reset_allowed_ = supported_format;
         clear_unlock_session_state();
-        return vault::is_supported_vault_format(snapshot.envelope.vault_format_version)
+        return supported_format
             ? Status::kCorrupt
             : Status::kUnsupportedVaultFormat;
     }
