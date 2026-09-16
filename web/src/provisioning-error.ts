@@ -1,3 +1,5 @@
+import { sourceTextOf } from "./ui-localization";
+
 const PROVISIONING_PROGRESS = "Updating canonical Vault…";
 const PROVISIONING_SUCCESS_MARKER = "committed to the encrypted canonical Vault";
 
@@ -40,16 +42,19 @@ export function installProvisioningErrorUi(root: Document = document): HTMLEleme
 
   const deviceNoticeObserver = new MutationObserver(() => {
     if (!provisioning) return;
-    const message = deviceNotice.textContent?.trim() ?? "";
-    if (message.length === 0 || message === PROVISIONING_PROGRESS) return;
-    error.textContent = message;
+    const canonicalMessage = sourceTextOf(deviceNotice);
+    if (canonicalMessage.length === 0 || canonicalMessage === PROVISIONING_PROGRESS) return;
+    // Copy the rendered message for accessibility. If localization has not yet
+    // run for this mutation, the document-level localization observer will
+    // translate this application-owned error node immediately afterwards.
+    error.textContent = deviceNotice.textContent?.trim() || canonicalMessage;
     provisioning = false;
   });
   deviceNoticeObserver.observe(deviceNotice, { childList: true, characterData: true, subtree: true });
 
   const importStatusObserver = new MutationObserver(() => {
     if (!provisioning) return;
-    if (!(importStatus.textContent ?? "").includes(PROVISIONING_SUCCESS_MARKER)) return;
+    if (!sourceTextOf(importStatus).includes(PROVISIONING_SUCCESS_MARKER)) return;
     provisioning = false;
     clearError();
   });

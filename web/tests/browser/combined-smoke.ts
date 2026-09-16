@@ -1,10 +1,17 @@
 import { runArgon2CspSmoke, runProductionArgon2Smoke } from "./argon2-csp-smoke";
+import { runLocalizationReworkSmoke } from "./localization-rework-smoke";
 import { runDenseMigrationQrSmoke } from "./qr-dense-migration-smoke";
 
 async function run(): Promise<void> {
   document.body.dataset.stage = "csp-ui";
   await runArgon2CspSmoke();
   document.body.dataset.securityStatus = "pass";
+
+  document.body.dataset.stage = "localization-rework";
+  await runLocalizationReworkSmoke();
+  if (document.body.dataset.localizationReworkStatus !== "pass") {
+    throw new Error("Localization rework DOM smoke did not complete successfully");
+  }
 
   document.body.dataset.stage = "qr-decode";
   await import("./qr-smoke");
