@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCanonicalV2Request,
+  deviceSupportsVaultFormat,
   encryptedVaultParams,
   parseCanonicalHelloData,
   parseCanonicalTimeStatus,
@@ -35,15 +36,40 @@ function helloData() {
 }
 
 describe("canonical Protocol v2 management", () => {
-  it("parses the exact 2/2/1 hello binding", () => {
+  it("parses shipped Format-1 hello without inventing Format-2 write capability", () => {
     const parsed = parseCanonicalHelloData(helloData());
     expect(parsed.protocol).toBe(2);
     expect(parsed.storageSchema).toBe(2);
     expect(parsed.vaultFormat).toBe(1);
+    expect(parsed.supportedVaultFormats).toEqual([]);
+    expect(deviceSupportsVaultFormat(parsed, 2)).toBe(false);
     expect(parsed.generation).toBe(7n);
     expect(parsed.registrationEpoch).toBe(4);
     expect(parsed.recoveryResetRequired).toBe(false);
     expect(parsed.vaultId).toEqual(bytes(16, 0x10));
+  });
+
+  it("accepts additive [1,2] capability metadata independently from the persisted format", () => {
+    const parsed = parseCanonicalHelloData({ ...helloData(), supported_vault_formats: [1, 2] });
+    expect(parsed.vaultFormat).toBe(1);
+    expect(parsed.supportedVaultFormats).toEqual([1, 2]);
+    expect(deviceSupportsVaultFormat(parsed, 2)).toBe(true);
+
+    const migrated = parseCanonicalHelloData({
+      ...helloData(),
+      vault_format: 2,
+      supported_vault_formats: [1, 2],
+    });
+    expect(migrated.vaultFormat).toBe(2);
+  });
+
+  it("rejects malformed capability metadata and unknown persisted formats", () => {
+    expect(() => parseCanonicalHelloData({ ...helloData(), supported_vault_formats: [1, 2, 2] }))
+      .toThrow(/supported_vault_formats/);
+    expect(() => parseCanonicalHelloData({ ...helloData(), supported_vault_formats: "1,2" }))
+      .toThrow(/supported_vault_formats/);
+    expect(() => parseCanonicalHelloData({ ...helloData(), vault_format: 3 }))
+      .toThrow(/incompatible canonical metadata/);
   });
 
   it("rejects partial Vault / registration state unless Device exposes bounded recovery reset", () => {
@@ -70,7 +96,7 @@ describe("canonical Protocol v2 management", () => {
       .toThrow(/invalid_state/);
   });
 
-  it("parses trusted-time framing and serializes encrypted Vault metadata", () => {
+  it("parses trusted-time framing and serializes both supported encrypted Vault formats", () => {
     expect(parseCanonicalTimeStatus({
       readiness: "ready",
       source: "usb",
@@ -86,18 +112,21 @@ describe("canonical Protocol v2 management", () => {
     });
 
     const vaultId = bytes(16, 0x10);
-    const params = encryptedVaultParams({
-      vaultFormatVersion: 1,
-      storageSchemaVersion: 2,
-      vaultId,
-      generation: 8n,
-      nonce: bytes(12, 0x20),
-      ciphertext: bytes(32, 0x40),
-      tag: bytes(16, 0x60),
-      ciphertextLength: 32,
-    });
-    expect(params.generation).toBe("8");
-    expect(params.vault_id).toBe(encodeBase64UrlCanonical(vaultId));
-    expect(params.ciphertext_length).toBe(32);
+    for (const vaultFormatVersion of [1, 2] as const) {
+      const params = encryptedVaultParams({
+        vaultFormatVersion,
+        storageSchemaVersion: 2,
+        vaultId,
+        generation: 8n,
+        nonce: bytes(12, 0x20),
+        ciphertext: bytes(32, 0x40),
+        tag: bytes(16, 0x60),
+        ciphertextLength: 32,
+      });
+      expect(params.vault_format_version).toBe(vaultFormatVersion);
+      expect(params.generation).toBe("8");
+      expect(params.vault_id).toBe(encodeBase64UrlCanonical(vaultId));
+      expect(params.ciphertext_length).toBe(32);
+    }
   });
 });
