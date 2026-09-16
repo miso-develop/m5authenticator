@@ -267,11 +267,12 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
     const std::uint64_t scroll_elapsed_ms = elapsed_ms - kLabelScrollDelayMs;
     const std::uint64_t steps = scroll_elapsed_ms / kLabelScrollStepMs;
     const int max_offset = label_width - viewport_width;
-    const std::uint64_t desired_u64 =
-        steps > static_cast<std::uint64_t>(max_offset / kLabelScrollStepPx)
-        ? static_cast<std::uint64_t>(max_offset)
-        : steps * static_cast<std::uint64_t>(kLabelScrollStepPx);
-    const int desired_offset = static_cast<int>(desired_u64);
+    const std::uint64_t max_steps =
+        static_cast<std::uint64_t>(max_offset / kLabelScrollStepPx);
+    const std::uint64_t bounded_steps = std::min(steps, max_steps);
+    const int desired_offset = static_cast<int>(
+        bounded_steps * static_cast<std::uint64_t>(kLabelScrollStepPx)
+    );
     if (desired_offset == label_scroll_offset_px_) return false;
 
     label_scroll_offset_px_ = desired_offset;
@@ -545,6 +546,7 @@ void CanonicalUiController::run() {
 
     while (true) {
         bool dirty = false;
+        bool presence_changed = false;
         M5.update();
         const std::uint64_t now_ms = monotonic_ms();
 
@@ -552,7 +554,7 @@ void CanonicalUiController::run() {
         PresenceView current_presence = presence_.view();
         if (!same_presence(current_presence, previous_presence)) {
             previous_presence = current_presence;
-            reset_label_scroll(now_ms);
+            presence_changed = true;
             dirty = true;
         }
 
@@ -566,6 +568,9 @@ void CanonicalUiController::run() {
                 presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());
             }
             current_presence = presence_.view();
+            if (!same_presence(current_presence, previous_presence)) {
+                presence_changed = true;
+            }
             previous_presence = current_presence;
         }
         presence_gesture_quarantine_.observe(
@@ -576,6 +581,10 @@ void CanonicalUiController::run() {
 
         {
             std::lock_guard<std::mutex> view(view_mutex_);
+            if (presence_changed) {
+                reset_label_scroll(now_ms);
+            }
+
             const time::Readiness readiness = time_service_.status().readiness;
             if (readiness != previous_readiness) {
                 previous_readiness = readiness;
