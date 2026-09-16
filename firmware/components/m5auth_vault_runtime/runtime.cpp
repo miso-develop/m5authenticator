@@ -31,7 +31,7 @@ void wipe_bytes(std::vector<std::uint8_t>* value) {
 }
 
 bool valid_envelope_framing(const vault::VaultEnvelope& envelope) {
-    return envelope.vault_format_version == vault::kVaultFormatVersion &&
+    return vault::is_supported_vault_format(envelope.vault_format_version) &&
            envelope.storage_schema_version == vault::kTargetStorageSchemaVersion &&
            envelope.generation != 0 &&
            !envelope.ciphertext.empty() &&
@@ -70,6 +70,7 @@ const char* status_code(Status status) {
         case Status::kNotFound: return "not_found";
         case Status::kReprovisionRequired: return "reprovision_required";
         case Status::kUnsupportedSchema: return "unsupported_schema";
+        case Status::kUnsupportedVaultFormat: return "unsupported_vault_format";
         case Status::kGenerationMismatch: return "generation_mismatch";
         case Status::kAuthenticationFailed: return "authentication_failed";
         case Status::kCorrupt: return "corrupt";
@@ -104,12 +105,13 @@ void wipe_plaintext(vault::VaultPlaintext* plaintext) {
         wipe_string(&plaintext->wifi->password);
         plaintext->wifi.reset();
     }
+    plaintext->auto_lock_days.reset();
 }
 
 Runtime::Runtime(Persistence& persistence) : persistence_(persistence) {}
 
 Runtime::~Runtime() {
-    wipe_vmk();
+    clear_unlock_session_state();
 }
 
 void Runtime::wipe_vmk() {
@@ -117,8 +119,24 @@ void Runtime::wipe_vmk() {
     vmk_present_ = false;
 }
 
-Status Runtime::initialize() {
+void Runtime::clear_unlock_session_state() {
     wipe_vmk();
+    auto_lock_days_.reset();
+    unlocked_since_ms_ = 0;
+    unlock_session_active_ = false;
+}
+
+void Runtime::begin_unlock_session(
+    const std::optional<std::uint8_t>& auto_lock_days,
+    std::uint64_t now_ms
+) {
+    auto_lock_days_ = auto_lock_days;
+    unlocked_since_ms_ = now_ms;
+    unlock_session_active_ = true;
+}
+
+Status Runtime::initialize() {
+    clear_unlock_session_state();
     initialized_ = true;
     schema_ready_ = false;
     has_vault_ = false;
@@ -150,9 +168,13 @@ Status Runtime::initialize() {
     last_used_ = snapshot.last_used;
     if (!snapshot.has_vault) return Status::kUnprovisioned;
     if (!valid_envelope_framing(snapshot.envelope)) {
+        const bool supported_format =
+            vault::is_supported_vault_format(snapshot.envelope.vault_format_version);
         state_ = State::kError;
-        recovery_reset_allowed_ = true;
-        return Status::kCorrupt;
+        recovery_reset_allowed_ = supported_format;
+        return supported_format
+            ? Status::kCorrupt
+            : Status::kUnsupportedVaultFormat;
     }
 
     has_vault_ = true;
@@ -167,7 +189,7 @@ Status Runtime::reload_after_persistence() {
     if (status != Status::kOk || !snapshot.schema_ready) {
         state_ = State::kError;
         recovery_reset_allowed_ = status == Status::kOk || explicit_reset_recovery_status(status);
-        wipe_vmk();
+        clear_unlock_session_state();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
 
@@ -178,26 +200,30 @@ Status Runtime::reload_after_persistence() {
     if (!has_vault_) {
         envelope_ = vault::VaultEnvelope{};
         state_ = State::kUnprovisioned;
-        wipe_vmk();
+        clear_unlock_session_state();
         return Status::kOk;
     }
     if (!valid_envelope_framing(snapshot.envelope)) {
+        const bool supported_format =
+            vault::is_supported_vault_format(snapshot.envelope.vault_format_version);
         state_ = State::kError;
-        recovery_reset_allowed_ = true;
-        wipe_vmk();
-        return Status::kCorrupt;
+        recovery_reset_allowed_ = supported_format;
+        clear_unlock_session_state();
+        return supported_format
+            ? Status::kCorrupt
+            : Status::kUnsupportedVaultFormat;
     }
 
     envelope_ = std::move(snapshot.envelope);
     state_ = State::kLocked;
-    wipe_vmk();
+    clear_unlock_session_state();
     return Status::kOk;
 }
 
 Status Runtime::format_for_schema2() {
     if (!initialized_) return Status::kNotReady;
 
-    wipe_vmk();
+    clear_unlock_session_state();
     const Status status = persistence_.format_schema2();
     if (status != Status::kOk) {
         state_ = State::kError;
@@ -209,9 +235,14 @@ Status Runtime::format_for_schema2() {
 
 Status Runtime::validate_envelope_with_key(
     const vault::VaultEnvelope& envelope,
-    const Vmk& vmk
+    const Vmk& vmk,
+    std::optional<std::uint8_t>* auto_lock_days
 ) const {
-    if (!valid_envelope_framing(envelope)) return Status::kInvalidArgument;
+    if (!valid_envelope_framing(envelope)) {
+        return vault::is_supported_vault_format(envelope.vault_format_version)
+            ? Status::kInvalidArgument
+            : Status::kUnsupportedVaultFormat;
+    }
 
     std::vector<std::uint8_t> encoded_plaintext;
     if (!vault::decrypt_vault(envelope, vmk, encoded_plaintext)) {
@@ -220,10 +251,20 @@ Status Runtime::validate_envelope_with_key(
     }
 
     vault::VaultPlaintext plaintext;
-    const bool decoded = vault::decode_plaintext(encoded_plaintext, plaintext);
+    std::uint16_t decoded_format = 0;
+    const bool decoded = vault::decode_plaintext(
+        encoded_plaintext,
+        plaintext,
+        &decoded_format
+    );
     wipe_bytes(&encoded_plaintext);
+    if (!decoded || decoded_format != envelope.vault_format_version) {
+        wipe_plaintext(&plaintext);
+        return Status::kCorrupt;
+    }
+    if (auto_lock_days != nullptr) *auto_lock_days = plaintext.auto_lock_days;
     wipe_plaintext(&plaintext);
-    return decoded ? Status::kOk : Status::kCorrupt;
+    return Status::kOk;
 }
 
 Status Runtime::install_encrypted_vault(vault::VaultEnvelope envelope, Vmk vmk) {
@@ -242,23 +283,25 @@ Status Runtime::install_encrypted_vault(vault::VaultEnvelope envelope, Vmk vmk) 
     if (status != Status::kOk || !has_vault_ || !same_envelope(envelope_, envelope)) {
         state_ = State::kError;
         recovery_reset_allowed_ = status == Status::kOk || explicit_reset_recovery_status(status);
-        wipe_vmk();
+        clear_unlock_session_state();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
     return Status::kOk;
 }
 
-Status Runtime::unlock(Vmk vmk) {
+Status Runtime::unlock(Vmk vmk, std::uint64_t now_ms) {
     ScopedKeyWipe wipe(vmk);
     if (!initialized_) return Status::kNotReady;
     if (state_ != State::kLocked || !has_vault_) return Status::kInvalidState;
 
-    const Status status = validate_envelope_with_key(envelope_, vmk);
+    std::optional<std::uint8_t> policy;
+    const Status status = validate_envelope_with_key(envelope_, vmk, &policy);
     if (status != Status::kOk) return status;
 
-    wipe_vmk();
+    clear_unlock_session_state();
     vmk_ = vmk;
     vmk_present_ = true;
+    begin_unlock_session(policy, now_ms);
     state_ = State::kUnlocked;
     recovery_reset_allowed_ = false;
     return Status::kOk;
@@ -266,7 +309,7 @@ Status Runtime::unlock(Vmk vmk) {
 
 Status Runtime::lock() {
     if (!initialized_) return Status::kNotReady;
-    wipe_vmk();
+    clear_unlock_session_state();
     if (state_ == State::kError) return Status::kInvalidState;
     state_ = has_vault_ ? State::kLocked : State::kUnprovisioned;
     return Status::kOk;
@@ -274,7 +317,7 @@ Status Runtime::lock() {
 
 Status Runtime::enter_recovery_boundary() {
     if (!initialized_) return Status::kNotReady;
-    wipe_vmk();
+    clear_unlock_session_state();
     if (state_ == State::kError) return Status::kInvalidState;
     state_ = has_vault_ ? State::kLocked : State::kUnprovisioned;
     return Status::kOk;
@@ -282,7 +325,7 @@ Status Runtime::enter_recovery_boundary() {
 
 Status Runtime::fatal_security_error() {
     if (!initialized_) return Status::kNotReady;
-    wipe_vmk();
+    clear_unlock_session_state();
     state_ = State::kError;
     recovery_reset_allowed_ = true;
     return Status::kOk;
@@ -290,8 +333,13 @@ Status Runtime::fatal_security_error() {
 
 Status Runtime::update_encrypted_vault(
     std::uint64_t expected_generation,
-    vault::VaultEnvelope envelope
+    vault::VaultEnvelope envelope,
+    std::uint64_t now_ms,
+    bool* automatic_lock_due_after_commit
 ) {
+    if (automatic_lock_due_after_commit != nullptr) {
+        *automatic_lock_due_after_commit = false;
+    }
     if (!initialized_) return Status::kNotReady;
     if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_) return Status::kLocked;
     if (expected_generation != envelope_.generation ||
@@ -300,8 +348,16 @@ Status Runtime::update_encrypted_vault(
         envelope.vault_id != envelope_.vault_id) {
         return Status::kGenerationMismatch;
     }
+    if (!vault::is_supported_vault_format(envelope.vault_format_version)) {
+        return Status::kUnsupportedVaultFormat;
+    }
+    if (envelope_.vault_format_version == vault::kVaultFormatVersion2 &&
+        envelope.vault_format_version == vault::kVaultFormatVersion1) {
+        return Status::kInvalidArgument;
+    }
 
-    Status status = validate_envelope_with_key(envelope, vmk_);
+    std::optional<std::uint8_t> candidate_policy;
+    Status status = validate_envelope_with_key(envelope, vmk_, &candidate_policy);
     if (status != Status::kOk) return status;
 
     status = persistence_.replace_envelope(expected_generation, envelope);
@@ -321,6 +377,11 @@ Status Runtime::update_encrypted_vault(
     has_vault_ = true;
     recovery_reset_allowed_ = false;
     state_ = State::kUnlocked;
+    // Keep the original unlock timestamp. Only the committed policy changes.
+    auto_lock_days_ = candidate_policy;
+    if (automatic_lock_due_after_commit != nullptr) {
+        *automatic_lock_due_after_commit = automatic_lock_due(now_ms);
+    }
     return Status::kOk;
 }
 
@@ -360,7 +421,9 @@ Status Runtime::with_credential(
     }
 
     vault::VaultPlaintext plaintext;
-    if (!vault::decode_plaintext(encoded_plaintext, plaintext)) {
+    std::uint16_t decoded_format = 0;
+    if (!vault::decode_plaintext(encoded_plaintext, plaintext, &decoded_format) ||
+        decoded_format != envelope_.vault_format_version) {
         wipe_bytes(&encoded_plaintext);
         wipe_plaintext(&plaintext);
         fatal_security_error();
@@ -403,7 +466,9 @@ Status Runtime::with_wifi(const WifiConsumer& consumer) {
     }
 
     vault::VaultPlaintext plaintext;
-    if (!vault::decode_plaintext(encoded_plaintext, plaintext)) {
+    std::uint16_t decoded_format = 0;
+    if (!vault::decode_plaintext(encoded_plaintext, plaintext, &decoded_format) ||
+        decoded_format != envelope_.vault_format_version) {
         wipe_bytes(&encoded_plaintext);
         wipe_plaintext(&plaintext);
         fatal_security_error();
@@ -432,7 +497,9 @@ Status Runtime::set_last_used(const CredentialId& credential_id) {
         return Status::kAuthenticationFailed;
     }
     vault::VaultPlaintext plaintext;
-    if (!vault::decode_plaintext(encoded_plaintext, plaintext)) {
+    std::uint16_t decoded_format = 0;
+    if (!vault::decode_plaintext(encoded_plaintext, plaintext, &decoded_format) ||
+        decoded_format != envelope_.vault_format_version) {
         wipe_bytes(&encoded_plaintext);
         wipe_plaintext(&plaintext);
         fatal_security_error();
@@ -458,7 +525,7 @@ Status Runtime::set_last_used(const CredentialId& credential_id) {
 Status Runtime::factory_reset() {
     if (!initialized_) return Status::kNotReady;
 
-    wipe_vmk();
+    clear_unlock_session_state();
     const Status status = persistence_.erase_all();
     if (status != Status::kOk) {
         state_ = State::kError;
@@ -477,6 +544,14 @@ Status Runtime::factory_reset() {
 
 bool Runtime::unlocked() const {
     return initialized_ && state_ == State::kUnlocked && vmk_present_;
+}
+
+bool Runtime::automatic_lock_due(std::uint64_t now_ms) const {
+    if (!unlocked() || !unlock_session_active_ || !auto_lock_days_.has_value()) return false;
+    if (now_ms < unlocked_since_ms_) return false;
+    const std::uint64_t lifetime_ms =
+        static_cast<std::uint64_t>(*auto_lock_days_) * kMillisecondsPerDay;
+    return now_ms - unlocked_since_ms_ >= lifetime_ms;
 }
 
 }  // namespace m5auth::vault_runtime

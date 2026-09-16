@@ -30,14 +30,32 @@ bool same_envelope(
 
 }  // namespace
 
+Status Runtime::enter_vmk_rekey_boundary() {
+    if (!initialized_) return Status::kNotReady;
+    if (state_ != State::kUnlocked || !vmk_present_ || !has_vault_ ||
+        !unlock_session_active_) {
+        return Status::kInvalidState;
+    }
+
+    // Rekey must destroy the resident VMK immediately, but it is not a fresh
+    // unlock. Keep only the bounded non-secret automatic-lock policy/origin so
+    // a successful rekey cannot extend the current continuous UNLOCKED lifetime.
+    wipe_vmk();
+    state_ = State::kLocked;
+    return Status::kOk;
+}
+
 Status Runtime::rekey_encrypted_vault(
     std::uint64_t expected_generation,
     vault::VaultEnvelope envelope,
-    Vmk vmk
+    Vmk vmk,
+    std::uint64_t now_ms
 ) {
     ScopedVmkWipe wipe(vmk);
+    (void)now_ms;
     if (!initialized_) return Status::kNotReady;
-    if (state_ != State::kLocked || vmk_present_ || !has_vault_) {
+    if (state_ != State::kLocked || vmk_present_ || !has_vault_ ||
+        !unlock_session_active_) {
         return Status::kInvalidState;
     }
     if (expected_generation != envelope_.generation ||
@@ -46,8 +64,16 @@ Status Runtime::rekey_encrypted_vault(
         envelope.vault_id != envelope_.vault_id) {
         return Status::kGenerationMismatch;
     }
+    if (!vault::is_supported_vault_format(envelope.vault_format_version)) {
+        return Status::kUnsupportedVaultFormat;
+    }
+    if (envelope_.vault_format_version == vault::kVaultFormatVersion2 &&
+        envelope.vault_format_version == vault::kVaultFormatVersion1) {
+        return Status::kInvalidArgument;
+    }
 
-    Status status = validate_envelope_with_key(envelope, vmk);
+    std::optional<std::uint8_t> policy;
+    Status status = validate_envelope_with_key(envelope, vmk, &policy);
     if (status != Status::kOk) return status;
 
     status = persistence_.replace_envelope(expected_generation, envelope);
@@ -58,7 +84,7 @@ Status Runtime::rekey_encrypted_vault(
     if (status != Status::kOk || !snapshot.schema_ready || !snapshot.has_vault ||
         !same_envelope(snapshot.envelope, envelope)) {
         state_ = State::kError;
-        wipe_vmk();
+        clear_unlock_session_state();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
 
@@ -66,10 +92,16 @@ Status Runtime::rekey_encrypted_vault(
     last_used_ = snapshot.last_used;
     schema_ready_ = true;
     has_vault_ = true;
+
+    // The old VMK was already destroyed at enter_vmk_rekey_boundary(). Install
+    // the new VMK while deliberately retaining unlocked_since_ms_. The candidate
+    // authenticated policy becomes effective against that original session T0.
     wipe_vmk();
     vmk_ = vmk;
     vmk_present_ = true;
+    auto_lock_days_ = policy;
     state_ = State::kUnlocked;
+    recovery_reset_allowed_ = false;
     return Status::kOk;
 }
 

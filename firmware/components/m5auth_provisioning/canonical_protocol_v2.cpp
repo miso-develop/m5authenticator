@@ -179,7 +179,8 @@ bool read_envelope(cJSON* params, vault::VaultEnvelope* envelope) {
     vault::VaultEnvelope parsed{};
     if (!read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(params, "vault_format_version"), &vault_format) ||
         !read_nonnegative_int(cJSON_GetObjectItemCaseSensitive(params, "storage_schema_version"), &storage_schema) ||
-        vault_format != vault::kVaultFormatVersion ||
+        (vault_format != vault::kVaultFormatVersion1 &&
+         vault_format != vault::kVaultFormatVersion2) ||
         storage_schema != vault::kTargetStorageSchemaVersion ||
         !read_binary(params, "vault_id", &parsed.vault_id) ||
         !read_u64_decimal(cJSON_GetObjectItemCaseSensitive(params, "generation"), &generation) ||
@@ -260,12 +261,25 @@ std::string hello_success(
     }
 
     const std::string device_id = registration::device_id_text(registration_snapshot.device_id);
+    const std::uint16_t persisted_format = runtime_metadata.has_vault
+        ? runtime_metadata.vault_format_version
+        : vault::kCurrentVaultFormatVersion;
     cJSON_AddStringToObject(data, "device", metadata.device);
     cJSON_AddStringToObject(data, "device_id", device_id.c_str());
     cJSON_AddStringToObject(data, "firmware", metadata.firmware);
     cJSON_AddNumberToObject(data, "protocol", session::protocol_v2::kProtocolVersion);
     cJSON_AddNumberToObject(data, "storage_schema", vault::kTargetStorageSchemaVersion);
-    cJSON_AddNumberToObject(data, "vault_format", vault::kVaultFormatVersion);
+    // Preserve the existing field while also exposing the specification's
+    // explicit version name for consumers that adopt the dual-format contract.
+    cJSON_AddNumberToObject(data, "vault_format", persisted_format);
+    cJSON_AddNumberToObject(data, "vault_format_version", persisted_format);
+    cJSON* supported_formats = cJSON_AddArrayToObject(data, "supported_vault_formats");
+    if (supported_formats == nullptr) {
+        cJSON_Delete(root);
+        return serialize(nullptr);
+    }
+    cJSON_AddItemToArray(supported_formats, cJSON_CreateNumber(vault::kVaultFormatVersion1));
+    cJSON_AddItemToArray(supported_formats, cJSON_CreateNumber(vault::kVaultFormatVersion2));
     cJSON_AddStringToObject(data, "build_commit", metadata.build_commit);
     cJSON_AddStringToObject(data, "state", runtime_state_name(runtime_metadata.state));
     cJSON_AddBoolToObject(data, "storage_ready", runtime_metadata.schema_ready);
@@ -353,6 +367,38 @@ void CanonicalProtocolV2Handler::cancel_recovery_reset() {
 
 void CanonicalProtocolV2Handler::notify_security_boundary() {
     if (security_boundary_clear_) security_boundary_clear_();
+}
+
+vault_runtime::Status CanonicalProtocolV2Handler::lock_security_boundary() {
+    session_handler_.disconnect();
+    vmk_sink_.cancel_pending();
+    cancel_recovery_reset();
+    return time_service_.with_secret_boundary([&]() {
+        vault_runtime::Status result = vault_runtime::Status::kIo;
+        {
+            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+            result = runtime_.lock();
+        }
+        if (result == vault_runtime::Status::kOk) notify_security_boundary();
+        return result;
+    });
+}
+
+void CanonicalProtocolV2Handler::housekeeping(std::uint64_t now_ms) {
+    (void)session_handler_.expire(now_ms);
+    (void)vmk_sink_.expire_pending(now_ms);
+    if (recovery_reset_active_ && now_ms >= recovery_reset_deadline_ms_) {
+        cancel_recovery_reset();
+    }
+
+    bool automatic_lock_due = false;
+    {
+        std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+        automatic_lock_due = runtime_.automatic_lock_due(now_ms);
+    }
+    if (automatic_lock_due) {
+        (void)lock_security_boundary();
+    }
 }
 
 RecoveryResetDecision CanonicalProtocolV2Handler::recovery_reset_decision(
@@ -625,9 +671,18 @@ std::string CanonicalProtocolV2Handler::handle_line(
             response = error_response(id, "invalid_request");
         } else {
             vault_runtime::Status status = vault_runtime::Status::kIo;
+            bool automatic_lock_due_after_commit = false;
             {
                 std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                status = runtime_.update_encrypted_vault(expected_generation, std::move(envelope));
+                status = runtime_.update_encrypted_vault(
+                    expected_generation,
+                    std::move(envelope),
+                    now_ms,
+                    &automatic_lock_due_after_commit
+                );
+            }
+            if (status == vault_runtime::Status::kOk && automatic_lock_due_after_commit) {
+                status = lock_security_boundary();
             }
             response = status == vault_runtime::Status::kOk
                 ? empty_success(id)
@@ -641,9 +696,26 @@ std::string CanonicalProtocolV2Handler::handle_line(
             vmk_sink_.cancel_pending();
             response = error_response(id, "invalid_request");
         } else {
-            response = vmk_sink_.install_rekeyed_vault(expected_generation, std::move(envelope), now_ms)
-                ? empty_success(id)
-                : error_response(id, "invalid_state");
+            const bool installed = vmk_sink_.install_rekeyed_vault(
+                expected_generation,
+                std::move(envelope),
+                now_ms
+            );
+            if (!installed) {
+                response = error_response(id, "invalid_state");
+            } else {
+                bool automatic_lock_due_after_rekey = false;
+                {
+                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                    automatic_lock_due_after_rekey = runtime_.automatic_lock_due(now_ms);
+                }
+                const vault_runtime::Status lock_status = automatic_lock_due_after_rekey
+                    ? lock_security_boundary()
+                    : vault_runtime::Status::kOk;
+                response = lock_status == vault_runtime::Status::kOk
+                    ? empty_success(id)
+                    : error_response(id, vault_runtime::status_code(lock_status));
+            }
         }
     } else if (operation == "time.status") {
         response = time_status_success(id, time_service_.status());
@@ -658,18 +730,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 : error_response(id, time::sync_result_code(status));
         }
     } else if (operation == "device.lock") {
-        session_handler_.disconnect();
-        vmk_sink_.cancel_pending();
-        cancel_recovery_reset();
-        const vault_runtime::Status status = time_service_.with_secret_boundary([&]() {
-            vault_runtime::Status result = vault_runtime::Status::kIo;
-            {
-                std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                result = runtime_.lock();
-            }
-            if (result == vault_runtime::Status::kOk) notify_security_boundary();
-            return result;
-        });
+        const vault_runtime::Status status = lock_security_boundary();
         response = status == vault_runtime::Status::kOk
             ? empty_success(id)
             : error_response(id, vault_runtime::status_code(status));

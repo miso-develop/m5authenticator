@@ -14,6 +14,7 @@ namespace m5auth::vault_runtime {
 
 inline constexpr std::uint32_t kStorageSchemaVersion = 2;
 inline constexpr std::size_t kMaxPersistedCiphertextBytes = 64 * 1024;
+inline constexpr std::uint64_t kMillisecondsPerDay = 86'400'000ULL;
 
 using CredentialId = std::array<std::uint8_t, vault::kCredentialIdBytes>;
 using Vmk = std::array<std::uint8_t, vault::kVmkBytes>;
@@ -28,6 +29,7 @@ enum class Status {
     kNotFound,
     kReprovisionRequired,
     kUnsupportedSchema,
+    kUnsupportedVaultFormat,
     kGenerationMismatch,
     kAuthenticationFailed,
     kCorrupt,
@@ -57,7 +59,7 @@ public:
 
     // Returns kOk for a readable Schema 2 partition, kUnprovisioned when no
     // schema exists, kReprovisionRequired for known development Schema 1, and
-    // kUnsupportedSchema for a newer schema.
+    // kUnsupportedSchema/kUnsupportedVaultFormat for newer unsupported data.
     virtual Status load(PersistedSnapshot* snapshot) = 0;
 
     // Explicitly destructive reprovision/Factory-Reset preparation. This is
@@ -107,9 +109,9 @@ struct Metadata {
     bool schema_ready{false};
     bool has_vault{false};
     // True only when Runtime classified the fail-closed persisted state as a
-    // structural/unsupported/reprovision condition for which an explicitly
-    // user-confirmed destructive reset is a valid recovery. Generic I/O does
-    // not set this bit and must not become erase-authorizing metadata.
+    // structural/reprovision condition for which an explicitly user-confirmed
+    // destructive reset is a valid recovery. An unknown newer Vault format is
+    // deliberately excluded: firmware must not erase data it cannot interpret.
     bool recovery_reset_allowed{false};
     std::uint32_t storage_schema_version{0};
     std::uint16_t vault_format_version{0};
@@ -142,27 +144,28 @@ public:
     Status initialize();
     Status format_for_schema2();
     Status install_encrypted_vault(vault::VaultEnvelope envelope, Vmk vmk);
-    Status unlock(Vmk vmk);
+    Status unlock(Vmk vmk, std::uint64_t now_ms = 0);
     Status lock();
 
     Status enter_recovery_boundary();
     Status enter_registration_replacement_boundary() {
         return enter_recovery_boundary();
     }
-    Status enter_vmk_rekey_boundary() {
-        return enter_recovery_boundary();
-    }
+    Status enter_vmk_rekey_boundary();
     Status fatal_security_error();
 
     Status update_encrypted_vault(
         std::uint64_t expected_generation,
-        vault::VaultEnvelope envelope
+        vault::VaultEnvelope envelope,
+        std::uint64_t now_ms = 0,
+        bool* automatic_lock_due_after_commit = nullptr
     );
 
     Status rekey_encrypted_vault(
         std::uint64_t expected_generation,
         vault::VaultEnvelope envelope,
-        Vmk vmk
+        Vmk vmk,
+        std::uint64_t now_ms = 0
     );
 
     Status metadata(Metadata* metadata) const;
@@ -178,14 +181,23 @@ public:
     Status factory_reset();
 
     bool unlocked() const;
+    bool automatic_lock_due(std::uint64_t now_ms) const;
+    std::optional<std::uint8_t> auto_lock_days() const { return auto_lock_days_; }
+    std::uint64_t unlocked_since_ms() const { return unlocked_since_ms_; }
 
 private:
     Status reload_after_persistence();
     Status validate_envelope_with_key(
         const vault::VaultEnvelope& envelope,
-        const Vmk& vmk
+        const Vmk& vmk,
+        std::optional<std::uint8_t>* auto_lock_days = nullptr
     ) const;
     void wipe_vmk();
+    void clear_unlock_session_state();
+    void begin_unlock_session(
+        const std::optional<std::uint8_t>& auto_lock_days,
+        std::uint64_t now_ms
+    );
 
     Persistence& persistence_;
     bool initialized_{false};
@@ -197,6 +209,9 @@ private:
     std::optional<CredentialId> last_used_;
     Vmk vmk_{};
     bool vmk_present_{false};
+    std::optional<std::uint8_t> auto_lock_days_;
+    std::uint64_t unlocked_since_ms_{0};
+    bool unlock_session_active_{false};
 };
 
 void secure_zero(void* data, std::size_t size);

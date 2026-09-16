@@ -66,6 +66,7 @@ VaultPlaintext sample_vault() {
 int main() {
     const auto vault_id = sequence<kVaultIdBytes>(0x00);
 
+    // Shipped v0.1.0 PT1/AAD1 remains byte-for-byte unchanged.
     std::vector<std::uint8_t> aad;
     assert(build_vault_aad(vault_id, 7, aad));
     assert(
@@ -82,7 +83,10 @@ int main() {
     assert(encode_plaintext(original, encoded));
 
     VaultPlaintext decoded;
-    assert(decode_plaintext(encoded, decoded));
+    std::uint16_t decoded_format = 0;
+    assert(decode_plaintext(encoded, decoded, &decoded_format));
+    assert(decoded_format == kVaultFormatVersion1);
+    assert(!decoded.auto_lock_days.has_value());
     assert(decoded.credentials.size() == 1);
     assert(decoded.credentials[0].secret == original.credentials[0].secret);
     assert(decoded.credentials[0].issuer == original.credentials[0].issuer);
@@ -94,6 +98,99 @@ int main() {
     assert(decoded.wifi.has_value());
     assert(decoded.wifi->ssid == original.wifi->ssid);
     assert(decoded.wifi->password == original.wifi->password);
+
+    // PT1 exact-end remains mandatory; it is not retrofitted with extensions.
+    std::vector<std::uint8_t> pt1_trailing = encoded;
+    pt1_trailing.push_back(0x00);
+    VaultPlaintext rejected_plaintext;
+    assert(!decode_plaintext(pt1_trailing, rejected_plaintext));
+
+    // Format 2 has a distinct framing/AAD domain and carries only the bounded
+    // optional automatic-lock policy after the unchanged credential/Wi-Fi body.
+    std::vector<std::uint8_t> aad2;
+    assert(build_vault_aad(
+        vault_id,
+        7,
+        aad2,
+        kVaultFormatVersion2,
+        kTargetStorageSchemaVersion
+    ));
+    assert(
+        hex(aad2.data(), aad2.size()) ==
+        "4d35415554482d564c542d4141443200"
+        "0002"
+        "0002"
+        "000102030405060708090a0b0c0d0e0f"
+        "0000000000000007"
+    );
+    assert(aad2 != aad);
+
+    VaultPlaintext format2_unset = sample_vault();
+    std::vector<std::uint8_t> encoded2_unset;
+    assert(encode_plaintext(format2_unset, encoded2_unset, kVaultFormatVersion2));
+    VaultPlaintext decoded2_unset;
+    decoded_format = 0;
+    assert(decode_plaintext(encoded2_unset, decoded2_unset, &decoded_format));
+    assert(decoded_format == kVaultFormatVersion2);
+    assert(!decoded2_unset.auto_lock_days.has_value());
+
+    VaultPlaintext format2_one = sample_vault();
+    format2_one.auto_lock_days = 1;
+    std::vector<std::uint8_t> encoded2_one;
+    assert(encode_plaintext(format2_one, encoded2_one, kVaultFormatVersion2));
+    VaultPlaintext decoded2_one;
+    decoded_format = 0;
+    assert(decode_plaintext(encoded2_one, decoded2_one, &decoded_format));
+    assert(decoded_format == kVaultFormatVersion2);
+    assert(decoded2_one.auto_lock_days == std::optional<std::uint8_t>{1});
+
+    VaultPlaintext format2_thirty_one = sample_vault();
+    format2_thirty_one.auto_lock_days = 31;
+    std::vector<std::uint8_t> encoded2_thirty_one;
+    assert(encode_plaintext(
+        format2_thirty_one,
+        encoded2_thirty_one,
+        kVaultFormatVersion2
+    ));
+    VaultPlaintext decoded2_thirty_one;
+    assert(decode_plaintext(encoded2_thirty_one, decoded2_thirty_one));
+    assert(decoded2_thirty_one.auto_lock_days == std::optional<std::uint8_t>{31});
+
+    VaultPlaintext invalid_auto_lock = sample_vault();
+    invalid_auto_lock.auto_lock_days = 0;
+    std::vector<std::uint8_t> invalid_auto_lock_encoded;
+    assert(!encode_plaintext(
+        invalid_auto_lock,
+        invalid_auto_lock_encoded,
+        kVaultFormatVersion2
+    ));
+    invalid_auto_lock.auto_lock_days = 32;
+    assert(!encode_plaintext(
+        invalid_auto_lock,
+        invalid_auto_lock_encoded,
+        kVaultFormatVersion2
+    ));
+    // F1 cannot silently discard a Format-2-only logical setting.
+    invalid_auto_lock.auto_lock_days = 1;
+    assert(!encode_plaintext(
+        invalid_auto_lock,
+        invalid_auto_lock_encoded,
+        kVaultFormatVersion1
+    ));
+
+    std::vector<std::uint8_t> invalid_presence = encoded2_unset;
+    assert(!invalid_presence.empty());
+    invalid_presence.back() = 2;
+    assert(!decode_plaintext(invalid_presence, rejected_plaintext));
+
+    std::vector<std::uint8_t> truncated_setting = encoded2_one;
+    assert(!truncated_setting.empty());
+    truncated_setting.pop_back();
+    assert(!decode_plaintext(truncated_setting, rejected_plaintext));
+
+    std::vector<std::uint8_t> pt2_trailing = encoded2_unset;
+    pt2_trailing.push_back(0xaa);
+    assert(!decode_plaintext(pt2_trailing, rejected_plaintext));
 
     const auto vmk = sequence<kVmkBytes>(0x00);
 
@@ -133,6 +230,7 @@ int main() {
 
     VaultEnvelope known_answer;
     assert(encrypt_vault_with_nonce(payload, vmk, vault_id, 7, nonce, known_answer));
+    assert(known_answer.vault_format_version == kVaultFormatVersion1);
     assert(
         hex(known_answer.ciphertext.data(), known_answer.ciphertext.size()) ==
         "956112592dae76d60148f1b27216b4f300cd207cfdd62641f3604aff"
@@ -156,18 +254,37 @@ int main() {
     ++wrong_generation.generation;
     assert(!decrypt_vault(wrong_generation, vmk, opened));
 
+    VaultEnvelope format2_answer;
+    assert(encrypt_vault_with_nonce(
+        encoded2_one,
+        vmk,
+        vault_id,
+        7,
+        nonce,
+        format2_answer,
+        kVaultFormatVersion2
+    ));
+    assert(format2_answer.vault_format_version == kVaultFormatVersion2);
+    opened.clear();
+    assert(decrypt_vault(format2_answer, vmk, opened));
+    assert(opened == encoded2_one);
+    // Merely substituting the envelope version cannot cross-authenticate AAD1/AAD2.
+    VaultEnvelope cross_domain = format2_answer;
+    cross_domain.vault_format_version = kVaultFormatVersion1;
+    assert(!decrypt_vault(cross_domain, vmk, opened));
+
     assert(!build_vault_aad(
         vault_id,
         1,
         aad,
-        kVaultFormatVersion + 1,
+        kVaultFormatVersion2 + 1,
         kTargetStorageSchemaVersion
     ));
     assert(!build_vault_aad(
         vault_id,
         1,
         aad,
-        kVaultFormatVersion,
+        kVaultFormatVersion1,
         kTargetStorageSchemaVersion + 1
     ));
 

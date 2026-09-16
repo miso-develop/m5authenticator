@@ -3,12 +3,27 @@
 #include <algorithm>
 #include <limits>
 
+#ifdef ESP_PLATFORM
+#include "esp_timer.h"
+#endif
+
 namespace m5auth::provisioning {
 namespace {
 
 template <typename Container>
 bool all_zero(const Container& value) {
     return std::all_of(value.begin(), value.end(), [](std::uint8_t byte) { return byte == 0; });
+}
+
+std::uint64_t runtime_monotonic_ms() {
+#ifdef ESP_PLATFORM
+    const std::int64_t microseconds = esp_timer_get_time();
+    return microseconds <= 0 ? 0 : static_cast<std::uint64_t>(microseconds / 1'000);
+#else
+    // Native protocol tests have no ESP monotonic source. Runtime unit tests pass
+    // explicit timestamps directly; production firmware always uses esp_timer.
+    return 0;
+#endif
 }
 
 class ScopedVmkWipe final {
@@ -43,7 +58,7 @@ bool envelope_matches_pending(
     const session::protocol_v2::BeginContext& context,
     std::uint64_t generation
 ) {
-    return envelope.vault_format_version == vault::kVaultFormatVersion &&
+    return vault::is_supported_vault_format(envelope.vault_format_version) &&
         envelope.storage_schema_version == vault::kTargetStorageSchemaVersion &&
         envelope.vault_id == context.vault_id &&
         envelope.generation == generation &&
@@ -144,10 +159,11 @@ bool CanonicalVmkSink::install_vmk(
 ) {
     std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
     cancel_pending();
+    const std::uint64_t now_ms = runtime_monotonic_ms();
 
     switch (context.operation) {
         case session::protocol_v2::Operation::kTrustedBrowserUnlock:
-            return runtime_.unlock(vmk) == vault_runtime::Status::kOk;
+            return runtime_.unlock(vmk, now_ms) == vault_runtime::Status::kOk;
 
         case session::protocol_v2::Operation::kRecovery: {
             vault_runtime::Metadata metadata{};
@@ -168,7 +184,7 @@ bool CanonicalVmkSink::install_vmk(
                 return true;
             }
             if (context.registration_epoch == 0) return false;
-            if (runtime_.unlock(vmk) != vault_runtime::Status::kOk) return false;
+            if (runtime_.unlock(vmk, now_ms) != vault_runtime::Status::kOk) return false;
             const registration::Status registration_status = registration_.replace(
                 context.vault_id,
                 context.registration_epoch - 1,
@@ -185,7 +201,7 @@ bool CanonicalVmkSink::install_vmk(
 
         case session::protocol_v2::Operation::kBrowserReplacement: {
             if (context.registration_epoch == 0) return false;
-            if (runtime_.unlock(vmk) != vault_runtime::Status::kOk) return false;
+            if (runtime_.unlock(vmk, now_ms) != vault_runtime::Status::kOk) return false;
             const registration::Status registration_status = registration_.replace(
                 context.vault_id,
                 context.registration_epoch - 1,
@@ -270,7 +286,7 @@ bool CanonicalVmkSink::install_initial_vault(
         status = runtime_.install_encrypted_vault(envelope, vmk);
     }
     if (status == vault_runtime::Status::kOk) {
-        status = runtime_.unlock(vmk);
+        status = runtime_.unlock(vmk, now_ms);
     }
     if (status != vault_runtime::Status::kOk) {
         (void)runtime_.factory_reset();
@@ -322,7 +338,7 @@ bool CanonicalVmkSink::install_recovered_vault(
         status = runtime_.install_encrypted_vault(envelope, vmk);
     }
     if (status == vault_runtime::Status::kOk) {
-        status = runtime_.unlock(vmk);
+        status = runtime_.unlock(vmk, now_ms);
     }
     if (status != vault_runtime::Status::kOk) {
         (void)runtime_.factory_reset();
@@ -365,7 +381,8 @@ bool CanonicalVmkSink::install_rekeyed_vault(
     const vault_runtime::Status status = runtime_.rekey_encrypted_vault(
         expected_generation,
         std::move(envelope),
-        vmk
+        vmk,
+        now_ms
     );
     cancel_pending();
     return status == vault_runtime::Status::kOk;

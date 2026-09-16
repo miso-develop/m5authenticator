@@ -250,8 +250,12 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         start = runtime.index("Status Runtime::initialize()")
         end = runtime.index("\nStatus Runtime::reload_after_persistence()", start)
         initialize = runtime[start:end]
+        clear_start = runtime.index("void Runtime::clear_unlock_session_state()")
+        clear_end = runtime.index("\nvoid Runtime::begin_unlock_session(", clear_start)
+        clear = runtime[clear_start:clear_end]
 
-        self.assertIn("wipe_vmk();", initialize)
+        self.assertIn("clear_unlock_session_state();", initialize)
+        self.assertIn("wipe_vmk();", clear)
         self.assertIn("if (!snapshot.has_vault) return Status::kUnprovisioned;", initialize)
         self.assertIn("has_vault_ = true;", initialize)
         self.assertIn("state_ = State::kLocked;", initialize)

@@ -10,8 +10,10 @@ namespace {
 
 constexpr std::size_t kMaxFieldBytes = 1024;
 constexpr std::size_t kMaxSecretBytes = 512;
-constexpr char kPlaintextMagic[] = "M5AUTH-VLT-PT1";
-constexpr char kVaultAadMagic[] = "M5AUTH-VLT-AAD1";
+constexpr char kPlaintextMagicV1[] = "M5AUTH-VLT-PT1";
+constexpr char kPlaintextMagicV2[] = "M5AUTH-VLT-PT2";
+constexpr char kVaultAadMagicV1[] = "M5AUTH-VLT-AAD1";
+constexpr char kVaultAadMagicV2[] = "M5AUTH-VLT-AAD2";
 constexpr char kVmkWrapAadMagic[] = "M5AUTH-VMK-WRAP1";
 
 void secure_zero_memory(void* data, std::size_t size) {
@@ -51,6 +53,7 @@ void wipe_plaintext_candidate(VaultPlaintext* value) {
         wipe_string(&value->wifi->password);
         value->wifi.reset();
     }
+    value->auto_lock_days.reset();
 }
 
 class ByteVectorWipeGuard final {
@@ -167,7 +170,7 @@ public:
     explicit Reader(const std::vector<std::uint8_t>& input) : input_(input) {}
 
     bool read_bytes(std::size_t length, std::uint8_t* output) {
-        if (length > input_.size() - offset_) return false;
+        if (offset_ > input_.size() || length > input_.size() - offset_) return false;
         if (length != 0) {
             std::copy_n(input_.data() + offset_, length, output);
         }
@@ -190,7 +193,8 @@ public:
 
     bool read_sized_bytes(std::vector<std::uint8_t>& value, std::size_t maximum) {
         std::uint16_t length = 0;
-        if (!read_u16(length) || length > maximum || length > input_.size() - offset_) {
+        if (!read_u16(length) || offset_ > input_.size() ||
+            length > maximum || length > input_.size() - offset_) {
             return false;
         }
         value.assign(input_.begin() + static_cast<std::ptrdiff_t>(offset_),
@@ -201,8 +205,8 @@ public:
 
     bool read_sized_text(std::string& value) {
         std::uint16_t length = 0;
-        if (!read_u16(length) || length > kMaxFieldBytes ||
-            length > input_.size() - offset_) {
+        if (!read_u16(length) || offset_ > input_.size() ||
+            length > kMaxFieldBytes || length > input_.size() - offset_) {
             return false;
         }
         if (length == 0) {
@@ -239,76 +243,27 @@ bool valid_credential(const CredentialRecord& record) {
            record.period_seconds >= 1;
 }
 
-}  // namespace
-
-bool encode_plaintext(const VaultPlaintext& value, std::vector<std::uint8_t>& encoded) {
-    if (value.credentials.size() > kMaxCredentials) return false;
-
-    std::vector<std::uint8_t> candidate;
-    ByteVectorWipeGuard candidate_wipe(candidate);
-    candidate.insert(
-        candidate.end(),
-        reinterpret_cast<const std::uint8_t*>(kPlaintextMagic),
-        reinterpret_cast<const std::uint8_t*>(kPlaintextMagic) + sizeof(kPlaintextMagic)
-    );
-    append_u16(candidate, kVaultFormatVersion);
-    append_u16(candidate, static_cast<std::uint16_t>(value.credentials.size()));
-
-    std::set<std::array<std::uint8_t, kCredentialIdBytes>> ids;
-    for (const auto& record : value.credentials) {
-        if (!valid_credential(record) || !ids.insert(record.credential_id).second) {
-            return false;
-        }
-
-        candidate.insert(
-            candidate.end(),
-            record.credential_id.begin(),
-            record.credential_id.end()
-        );
-        if (!append_sized_bytes(candidate, record.secret, kMaxSecretBytes) ||
-            !append_sized_text(candidate, record.issuer) ||
-            !append_sized_text(candidate, record.account) ||
-            !append_sized_text(candidate, record.display_name)) {
-            return false;
-        }
-        candidate.push_back(static_cast<std::uint8_t>(record.algorithm));
-        candidate.push_back(record.digits);
-        append_u16(candidate, record.period_seconds);
-        append_u16(candidate, record.manual_order);
-    }
-
-    candidate.push_back(value.wifi.has_value() ? 1 : 0);
-    if (value.wifi.has_value() &&
-        (!append_sized_text(candidate, value.wifi->ssid) ||
-         !append_sized_text(candidate, value.wifi->password))) {
-        return false;
-    }
-
-    encoded.swap(candidate);
-    return true;
+bool valid_auto_lock_days(const std::optional<std::uint8_t>& days) {
+    return !days.has_value() ||
+        (*days >= kMinAutoLockDays && *days <= kMaxAutoLockDays);
 }
 
-bool decode_plaintext(const std::vector<std::uint8_t>& encoded, VaultPlaintext& value) {
-    Reader reader(encoded);
-    std::array<std::uint8_t, sizeof(kPlaintextMagic)> magic{};
-    if (!reader.read_bytes(magic.size(), magic.data()) ||
-        !std::equal(
-            magic.begin(),
-            magic.end(),
-            reinterpret_cast<const std::uint8_t*>(kPlaintextMagic)
-        )) {
-        return false;
-    }
+const char* plaintext_magic(std::uint16_t format) {
+    if (format == kVaultFormatVersion1) return kPlaintextMagicV1;
+    if (format == kVaultFormatVersion2) return kPlaintextMagicV2;
+    return nullptr;
+}
 
-    std::uint16_t version = 0;
+const char* aad_magic(std::uint16_t format) {
+    if (format == kVaultFormatVersion1) return kVaultAadMagicV1;
+    if (format == kVaultFormatVersion2) return kVaultAadMagicV2;
+    return nullptr;
+}
+
+bool decode_common_body(Reader& reader, VaultPlaintext& candidate) {
     std::uint16_t count = 0;
-    if (!reader.read_u16(version) || version != kVaultFormatVersion ||
-        !reader.read_u16(count) || count > kMaxCredentials) {
-        return false;
-    }
+    if (!reader.read_u16(count) || count > kMaxCredentials) return false;
 
-    VaultPlaintext candidate;
-    PlaintextWipeGuard candidate_wipe(candidate);
     candidate.credentials.reserve(count);
     std::set<std::array<std::uint8_t, kCredentialIdBytes>> ids;
     for (std::uint16_t index = 0; index < count; ++index) {
@@ -345,10 +300,128 @@ bool decode_plaintext(const std::vector<std::uint8_t>& encoded, VaultPlaintext& 
             return false;
         }
     }
+    return true;
+}
+
+}  // namespace
+
+bool encode_plaintext(
+    const VaultPlaintext& value,
+    std::vector<std::uint8_t>& encoded,
+    std::uint16_t vault_format_version
+) {
+    if (!is_supported_vault_format(vault_format_version) ||
+        value.credentials.size() > kMaxCredentials ||
+        !valid_auto_lock_days(value.auto_lock_days) ||
+        (vault_format_version == kVaultFormatVersion1 && value.auto_lock_days.has_value())) {
+        return false;
+    }
+
+    const char* magic = plaintext_magic(vault_format_version);
+    if (magic == nullptr) return false;
+
+    std::vector<std::uint8_t> candidate;
+    ByteVectorWipeGuard candidate_wipe(candidate);
+    const std::size_t magic_size = sizeof(kPlaintextMagicV1);
+    candidate.insert(
+        candidate.end(),
+        reinterpret_cast<const std::uint8_t*>(magic),
+        reinterpret_cast<const std::uint8_t*>(magic) + magic_size
+    );
+    append_u16(candidate, vault_format_version);
+    append_u16(candidate, static_cast<std::uint16_t>(value.credentials.size()));
+
+    std::set<std::array<std::uint8_t, kCredentialIdBytes>> ids;
+    for (const auto& record : value.credentials) {
+        if (!valid_credential(record) || !ids.insert(record.credential_id).second) {
+            return false;
+        }
+
+        candidate.insert(
+            candidate.end(),
+            record.credential_id.begin(),
+            record.credential_id.end()
+        );
+        if (!append_sized_bytes(candidate, record.secret, kMaxSecretBytes) ||
+            !append_sized_text(candidate, record.issuer) ||
+            !append_sized_text(candidate, record.account) ||
+            !append_sized_text(candidate, record.display_name)) {
+            return false;
+        }
+        candidate.push_back(static_cast<std::uint8_t>(record.algorithm));
+        candidate.push_back(record.digits);
+        append_u16(candidate, record.period_seconds);
+        append_u16(candidate, record.manual_order);
+    }
+
+    candidate.push_back(value.wifi.has_value() ? 1 : 0);
+    if (value.wifi.has_value() &&
+        (!append_sized_text(candidate, value.wifi->ssid) ||
+         !append_sized_text(candidate, value.wifi->password))) {
+        return false;
+    }
+
+    if (vault_format_version == kVaultFormatVersion2) {
+        candidate.push_back(value.auto_lock_days.has_value() ? 1 : 0);
+        if (value.auto_lock_days.has_value()) candidate.push_back(*value.auto_lock_days);
+    }
+
+    encoded.swap(candidate);
+    return true;
+}
+
+bool decode_plaintext(
+    const std::vector<std::uint8_t>& encoded,
+    VaultPlaintext& value,
+    std::uint16_t* vault_format_version
+) {
+    Reader reader(encoded);
+    std::array<std::uint8_t, sizeof(kPlaintextMagicV1)> magic{};
+    if (!reader.read_bytes(magic.size(), magic.data())) return false;
+
+    std::uint16_t detected_format = 0;
+    if (std::equal(
+            magic.begin(),
+            magic.end(),
+            reinterpret_cast<const std::uint8_t*>(kPlaintextMagicV1)
+        )) {
+        detected_format = kVaultFormatVersion1;
+    } else if (std::equal(
+            magic.begin(),
+            magic.end(),
+            reinterpret_cast<const std::uint8_t*>(kPlaintextMagicV2)
+        )) {
+        detected_format = kVaultFormatVersion2;
+    } else {
+        return false;
+    }
+
+    std::uint16_t encoded_version = 0;
+    if (!reader.read_u16(encoded_version) || encoded_version != detected_format) return false;
+
+    VaultPlaintext candidate;
+    PlaintextWipeGuard candidate_wipe(candidate);
+    if (!decode_common_body(reader, candidate)) return false;
+
+    if (detected_format == kVaultFormatVersion1) {
+        candidate.auto_lock_days.reset();
+    } else {
+        std::uint8_t present = 0;
+        if (!reader.read_u8(present) || present > 1) return false;
+        if (present == 1) {
+            std::uint8_t days = 0;
+            if (!reader.read_u8(days) ||
+                days < kMinAutoLockDays || days > kMaxAutoLockDays) {
+                return false;
+            }
+            candidate.auto_lock_days = days;
+        }
+    }
 
     if (!reader.at_end()) return false;
     wipe_plaintext_candidate(&value);
     value = std::move(candidate);
+    if (vault_format_version != nullptr) *vault_format_version = detected_format;
     return true;
 }
 
@@ -359,16 +432,20 @@ bool build_vault_aad(
     std::uint16_t vault_format_version,
     std::uint16_t storage_schema_version
 ) {
-    if (vault_format_version != kVaultFormatVersion ||
+    if (!is_supported_vault_format(vault_format_version) ||
         storage_schema_version != kTargetStorageSchemaVersion) {
         return false;
     }
 
+    const char* magic = aad_magic(vault_format_version);
+    if (magic == nullptr) return false;
+    const std::size_t magic_size = sizeof(kVaultAadMagicV1);
+
     std::vector<std::uint8_t> candidate;
     candidate.insert(
         candidate.end(),
-        reinterpret_cast<const std::uint8_t*>(kVaultAadMagic),
-        reinterpret_cast<const std::uint8_t*>(kVaultAadMagic) + sizeof(kVaultAadMagic)
+        reinterpret_cast<const std::uint8_t*>(magic),
+        reinterpret_cast<const std::uint8_t*>(magic) + magic_size
     );
     append_u16(candidate, vault_format_version);
     append_u16(candidate, storage_schema_version);

@@ -23,7 +23,9 @@ Status Runtime::list_credentials(std::vector<CredentialMetadata>* credentials) {
     }
 
     vault::VaultPlaintext plaintext;
-    if (!vault::decode_plaintext(encoded_plaintext, plaintext)) {
+    std::uint16_t decoded_format = 0;
+    if (!vault::decode_plaintext(encoded_plaintext, plaintext, &decoded_format) ||
+        decoded_format != envelope_.vault_format_version) {
         if (!encoded_plaintext.empty()) secure_zero(encoded_plaintext.data(), encoded_plaintext.size());
         encoded_plaintext.clear();
         wipe_plaintext(&plaintext);
