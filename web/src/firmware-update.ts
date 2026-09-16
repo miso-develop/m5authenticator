@@ -18,6 +18,11 @@ export type FirmwareFlashFunction = (
 export type FirmwarePartSizeLoader = (url: URL) => Promise<number>;
 export type FirmwareJsonLoader = (url: URL) => Promise<unknown>;
 
+export interface FirmwareTargetLocation {
+  readonly href: string;
+  readonly origin: string;
+}
+
 export interface PinnedFirmwareManifest {
   readonly url: URL;
   readonly manifest: Manifest;
@@ -48,6 +53,10 @@ interface StatePreservingPart {
 
 function browserSerial(): SerialChooser | undefined {
   return (navigator as Navigator & { readonly serial?: SerialChooser }).serial;
+}
+
+function browserLocation(): FirmwareTargetLocation {
+  return { href: window.location.href, origin: window.location.origin };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -243,9 +252,10 @@ function resolvePinnedManifestUrl(value: unknown, key: "factory_manifest" | "upd
 export async function loadPinnedFirmwareTarget(
   targetPath: string,
   loadJson: FirmwareJsonLoader = fetchFirmwareJson,
+  location: FirmwareTargetLocation = browserLocation(),
 ): Promise<PinnedFirmwareTarget> {
-  const targetUrl = new URL(targetPath, window.location.href);
-  if (targetUrl.origin !== window.location.origin) {
+  const targetUrl = new URL(targetPath, location.href);
+  if (targetUrl.origin !== location.origin) {
     throw new Error("Firmware target metadata must be same-origin");
   }
 
@@ -258,8 +268,8 @@ export async function loadPinnedFirmwareTarget(
   }
 
   const [factoryValue, updateValue] = await Promise.all([loadJson(factoryUrl), loadJson(updateUrl)]);
-  const factoryManifest = validateFactoryManifest(factoryValue, factoryUrl, window.location.origin, identity);
-  const updateManifest = validateStatePreservingManifest(updateValue, updateUrl, window.location.origin, identity);
+  const factoryManifest = validateFactoryManifest(factoryValue, factoryUrl, location.origin, identity);
+  const updateManifest = validateStatePreservingManifest(updateValue, updateUrl, location.origin, identity);
 
   return Object.freeze({
     identity: Object.freeze({ ...identity }),
