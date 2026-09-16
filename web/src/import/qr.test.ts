@@ -67,7 +67,20 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("cleans up bitmap, pixels, and canvas when core decoding fails", async () => {
+  it("uses the local native QR fallback only after the core decoder fails", async () => {
+    const fixture = createFixture(new Error("synthetic core failure"));
+    const decodeNativeQr = vi.fn(async () => "synthetic-native-result");
+    fixture.dependencies.decodeNativeQr = decodeNativeQr;
+    const file = new File(["not-a-real-image"], "synthetic.png", { type: "image/png" });
+
+    await expect(decodeQrImage(file, fixture.dependencies)).resolves.toBe("synthetic-native-result");
+    expect(fixture.decodeImageData).toHaveBeenCalledWith(fixture.imageData);
+    expect(decodeNativeQr).toHaveBeenCalledWith(fixture.bitmap);
+    expect(fixture.close).toHaveBeenCalledOnce();
+    expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
+  });
+
+  it("cleans up bitmap, pixels, and canvas when all decoding fails", async () => {
     const fixture = createFixture(new Error("decoder internals must not escape"));
     const file = new File(["not-a-real-image"], "synthetic.png", { type: "image/png" });
 
@@ -79,7 +92,7 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("keeps a real non-QR pixel buffer fail-closed through all decode strategies", () => {
+  it("keeps a real non-QR pixel buffer fail-closed through all core decode strategies", () => {
     const width = 64;
     const height = 64;
     const data = new Uint8ClampedArray(width * height * 4).fill(0xff);
