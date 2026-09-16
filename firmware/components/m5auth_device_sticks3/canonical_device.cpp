@@ -85,7 +85,8 @@ void draw_otp(std::uint32_t revealed_code) {
     const int group_gap = digit_width / 2;
     const int total_width =
         (digit_width * 6) + (kOtpDigitGapPx * 5) + group_gap;
-    int x = std::max(0, (M5.Display.width() - total_width) / 2);
+    const int display_width = static_cast<int>(M5.Display.width());
+    int x = std::max(0, (display_width - total_width) / 2);
 
     for (std::size_t index = 0; index < 6; ++index) {
         M5.Display.setCursor(x, kOtpY);
@@ -254,7 +255,7 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
     const int label_width = M5.Display.textWidth(label.c_str());
     wipe_text(&label);
 
-    const int viewport_width = M5.Display.width();
+    const int viewport_width = static_cast<int>(M5.Display.width());
     if (label_width <= viewport_width) {
         if (label_scroll_offset_px_ == 0) return false;
         label_scroll_offset_px_ = 0;
