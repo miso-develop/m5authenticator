@@ -186,7 +186,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("input.data() + buffered_input", app)
         self.assertIn("input.size() - buffered_input", app)
         self.assertIn("buffered_input += std::strlen(input.data() + buffered_input);", app)
-        self.assertIn("buffered_input > 0 && input[buffered_input - 1] == '\\n'", app)
+        self.assertIn("buffered_input > 0 && input[buffered_input - 1] == '\n'", app)
         self.assertIn("USB Serial/JTAG VFS reads are non-blocking", app)
         self.assertIn("discard_oversized_input = true;", app)
         self.assertRegex(
@@ -250,8 +250,12 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         start = runtime.index("Status Runtime::initialize()")
         end = runtime.index("\nStatus Runtime::reload_after_persistence()", start)
         initialize = runtime[start:end]
+        clear_start = runtime.index("void Runtime::clear_unlock_session_state()")
+        clear_end = runtime.index("\nvoid Runtime::begin_unlock_session(", clear_start)
+        clear = runtime[clear_start:clear_end]
 
-        self.assertIn("wipe_vmk();", initialize)
+        self.assertIn("clear_unlock_session_state();", initialize)
+        self.assertIn("wipe_vmk();", clear)
         self.assertIn("if (!snapshot.has_vault) return Status::kUnprovisioned;", initialize)
         self.assertIn("has_vault_ = true;", initialize)
         self.assertIn("state_ = State::kLocked;", initialize)
@@ -300,7 +304,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         app = APP_MAIN.read_text(encoding="utf-8")
 
         self.assertIn("const std::size_t fwrite_bytes = std::fwrite", app)
-        self.assertIn("frame.push_back('\\n')", app)
+        self.assertIn("frame.push_back('\n')", app)
         self.assertNotIn("const int newline_result = std::fputc", app)
         self.assertIn("const int fflush_result = std::fflush(stdout);", app)
         self.assertIn("const int ferror_value = std::ferror(stdout);", app)
