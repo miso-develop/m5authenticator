@@ -1,4 +1,4 @@
-import { decodeQrImage } from "../../src/import/qr";
+import { decodeQrImage, type QrDecodeDiagnostic } from "../../src/import/qr";
 import { ImportSession } from "../../src/import/session";
 import { DENSE_MIGRATION_FIXTURE } from "./qr-dense-migration-fixtures";
 import { TWO_ACCOUNT_DENSE_MIGRATION_FIXTURE } from "./qr-dense-migration-two-account-fixture";
@@ -21,11 +21,6 @@ const SOURCE_PIXELS_PER_MODULE = 8;
 const SCREENSHOT_WIDTH = 720;
 const SCREENSHOT_HEIGHT = 1280;
 
-// These cases cover both the Human acceptance account count (2 accounts) at a
-// deliberately high QR version and a separate higher-payload stress fixture.
-// Each QR is rendered into a larger screenshot canvas with fractional geometry
-// and browser interpolation so the decoder sees screenshot-like antialiasing,
-// not a pristine integer-aligned module grid.
 const RASTER_CASES: RasterCase[] = [
   {
     id: "two-account-v22-moderate",
@@ -158,20 +153,31 @@ async function createScreenshotLikeFile(raster: RasterCase): Promise<File> {
 }
 
 export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-native-unavailable"> {
-  // GitHub's hosted Linux Chrome does not expose the native BarcodeDetector path
-  // used for the final dense fallback. Linux still executes the existing ZXing
-  // production QR smoke; Windows Chrome owns this full screenshot-like regression.
   if (navigator.userAgent.includes("Linux")) {
     return "skipped-native-unavailable";
   }
 
+  const detectorConstructor = (
+    globalThis as typeof globalThis & { BarcodeDetector?: unknown }
+  ).BarcodeDetector;
+  document.body.dataset.qrNativeApi = typeof detectorConstructor === "function" ? "yes" : "no";
+
   for (const raster of RASTER_CASES) {
     document.body.dataset.stage = `qr-dense-${raster.id}-decode`;
+    document.body.dataset.qrDiagnostics = "";
+    const diagnostics: QrDecodeDiagnostic[] = [];
+    const recordDiagnostic = (event: QrDecodeDiagnostic) => {
+      diagnostics.push(event);
+      // These are fixed event names only. Never place decoded values, payloads,
+      // account metadata, image bytes, or other secret-bearing data in the DOM.
+      document.body.dataset.qrDiagnostics = diagnostics.join(",");
+    };
+
     const file = await createScreenshotLikeFile(raster);
     let decoded = "";
     const session = new ImportSession();
     try {
-      decoded = await decodeQrImage(file);
+      decoded = await decodeQrImage(file, undefined, recordDiagnostic);
       document.body.dataset.stage = `qr-dense-${raster.id}-import-session`;
       const update = session.importDecodedText(decoded);
       if (update.batch !== undefined || update.accounts.length !== raster.fixture.accountCount) {
@@ -179,6 +185,7 @@ export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-nati
       }
     } finally {
       decoded = "";
+      diagnostics.length = 0;
       session.clear();
     }
   }
