@@ -38,8 +38,7 @@ public:
     virtual ~SessionV2VmkSink() = default;
     virtual bool install_vmk(
         const session::protocol_v2::BeginContext& context,
-        const session::Vmk& vmk,
-        std::uint64_t now_ms
+        const session::Vmk& vmk
     ) = 0;
 };
 
