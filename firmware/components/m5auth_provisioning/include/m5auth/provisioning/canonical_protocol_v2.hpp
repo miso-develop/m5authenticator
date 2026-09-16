@@ -39,18 +39,12 @@ public:
 
     std::string handle_line(std::string_view line, std::uint64_t now_ms);
     void disconnect();
-
-    void housekeeping(std::uint64_t now_ms) {
-        (void)session_handler_.expire(now_ms);
-        (void)vmk_sink_.expire_pending(now_ms);
-        if (recovery_reset_active_ && now_ms >= recovery_reset_deadline_ms_) {
-            cancel_recovery_reset();
-        }
-    }
+    void housekeeping(std::uint64_t now_ms);
 
 private:
     void cancel_recovery_reset();
     void notify_security_boundary();
+    vault_runtime::Status lock_security_boundary();
     RecoveryResetDecision recovery_reset_decision(
         vault_runtime::Metadata* runtime_metadata,
         registration::Snapshot* registration_snapshot,
