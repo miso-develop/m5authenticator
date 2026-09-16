@@ -16,22 +16,19 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-native-unavailable"> {
+  // Linux hosted Chrome has no working native BarcodeDetector backend for this
+  // path and can stall until the virtual-time budget expires. Keep Linux's
+  // existing ZXing production smoke, while Windows Chrome owns the full dense
+  // migration regression where the native backend is available.
+  if (navigator.userAgent.includes("Linux")) {
+    return "skipped-native-unavailable";
+  }
+
   const pngBytes = decodeBase64(denseSyntheticMigrationQrPngBase64);
   try {
     document.body.dataset.stage = "qr-dense-raster-decode";
     const file = new File([pngBytes], "synthetic-dense-migration.png", { type: "image/png" });
-    let decoded: string;
-    try {
-      decoded = await decodeQrImage(file);
-    } catch (error) {
-      // The hosted Linux Chrome runner does not provide a working native dense QR
-      // path for this fixture. Existing ZXing production QR smoke still runs there.
-      // The Windows Chrome job is the required full dense regression and must PASS.
-      if (navigator.userAgent.includes("Linux")) {
-        return "skipped-native-unavailable";
-      }
-      throw error;
-    }
+    const decoded = await decodeQrImage(file);
 
     document.body.dataset.stage = "qr-dense-import-session";
     const session = new ImportSession();
