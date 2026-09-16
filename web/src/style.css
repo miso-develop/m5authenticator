@@ -16,9 +16,9 @@ a { color: inherit; }
 .site-nav-shell {
   width: min(100%, 760px);
   margin: 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  flex-wrap: wrap;
   gap: 12px 18px;
   padding: 12px 16px;
   border: 1px solid #d4d4d4;
@@ -27,14 +27,17 @@ a { color: inherit; }
 }
 
 .product-mark {
-  font-weight: 800;
-  text-decoration: none;
+  justify-self: start;
+  font-size: 1.4rem;
+  font-weight: 850;
+  line-height: 1.1;
   white-space: nowrap;
 }
 
 .site-tabs {
   display: flex;
-  flex: 1 1 auto;
+  justify-self: center;
+  justify-content: center;
   flex-wrap: wrap;
   gap: 6px;
 }
@@ -52,6 +55,7 @@ a { color: inherit; }
 }
 
 .language-switcher {
+  justify-self: end;
   display: flex;
   gap: 4px;
   padding: 3px;
@@ -110,6 +114,11 @@ h3 { margin-top: 24px; }
   border-top: 1px solid #e5e5e5;
 }
 
+#app .shell > section.panel + section.panel {
+  margin-top: 40px;
+  padding-top: 30px;
+}
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -128,6 +137,28 @@ h3 { margin-top: 24px; }
   margin: 8px 0 16px;
   color: #525252;
   font-size: 0.95rem;
+}
+
+.build-identity {
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  border: 1px solid #e5e5e5;
+  border-radius: 12px;
+  background: #fafafa;
+}
+
+.build-identity div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.build-identity dt { font-weight: 650; }
+.build-identity dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 label, .file-label {
@@ -215,13 +246,22 @@ button:disabled, input:disabled, select:disabled {
 .help-list li { margin: 10px 0; line-height: 1.65; }
 .help-warning { padding-bottom: 4px; }
 
+@media (max-width: 720px) {
+  .site-nav-shell { grid-template-columns: minmax(0, 1fr) auto; }
+  .site-tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    justify-self: center;
+    justify-content: center;
+  }
+  .language-switcher { justify-self: end; }
+}
+
 @media (max-width: 560px) {
   #site-header { padding: 12px 12px 0; }
-  .site-nav-shell { align-items: flex-start; }
-  .site-tabs { order: 3; flex-basis: 100%; }
-  .language-switcher { margin-left: auto; }
   #app, #flash-app, #help-app { padding: 12px; }
   .shell { padding: 24px; }
-  .status div { grid-template-columns: 1fr; gap: 4px; }
+  .status div, .build-identity div { grid-template-columns: 1fr; gap: 4px; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
 }

@@ -60,10 +60,7 @@ class ReleasePackagingTest(unittest.TestCase):
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
             with self.assertRaises(validate_release.ReleaseValidationError):
-                validate_release.validate_release(
-                    profile_path=profile_path,
-                    require_production=True,
-                )
+                validate_release.validate_release(profile_path=profile_path, require_production=True)
 
     def test_release_contract_rejects_public_synthetic_flash_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -90,14 +87,14 @@ class ReleasePackagingTest(unittest.TestCase):
             merged, bootloader, partition_table, app = self.make_test_binaries(root)
             merged.write_bytes(b"\xff" * (int(profile["auth_nvs_offset"]) + 1))
             with self.assertRaises(validate_release.ReleaseValidationError):
-                package_firmware.package_firmware(
-                    merged,
-                    bootloader,
-                    partition_table,
-                    app,
-                    root / "out",
-                    "abcdef123456",
-                )
+                package_firmware.package_firmware(merged, bootloader, partition_table, app, root / "out", "abcdef123456")
+
+    def test_package_rejects_non_commit_build_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            merged, bootloader, partition_table, app = self.make_test_binaries(root)
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                package_firmware.package_firmware(merged, bootloader, partition_table, app, root / "out", "web-current")
 
     def test_normal_update_rejects_partition_table_that_overlaps_nvs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -105,14 +102,7 @@ class ReleasePackagingTest(unittest.TestCase):
             merged, bootloader, partition_table, app = self.make_test_binaries(root)
             partition_table.write_bytes(b"\xaa" * 0x1001)
             with self.assertRaises(validate_release.ReleaseValidationError):
-                package_firmware.package_firmware(
-                    merged,
-                    bootloader,
-                    partition_table,
-                    app,
-                    root / "out",
-                    "abcdef123456",
-                )
+                package_firmware.package_firmware(merged, bootloader, partition_table, app, root / "out", "abcdef123456")
 
     def test_normal_update_rejects_app_that_exceeds_ota0(self) -> None:
         partitions = validate_release.validate_release()["partitions"]
@@ -122,14 +112,7 @@ class ReleasePackagingTest(unittest.TestCase):
             merged, bootloader, partition_table, app = self.make_test_binaries(root)
             app.write_bytes(b"\xe9" + b"\x00" * ota0_size)
             with self.assertRaises(validate_release.ReleaseValidationError):
-                package_firmware.package_firmware(
-                    merged,
-                    bootloader,
-                    partition_table,
-                    app,
-                    root / "out",
-                    "abcdef123456",
-                )
+                package_firmware.package_firmware(merged, bootloader, partition_table, app, root / "out", "abcdef123456")
 
     def test_package_metadata_is_secret_free_and_update_is_partition_aware(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -138,17 +121,37 @@ class ReleasePackagingTest(unittest.TestCase):
             names = {path.name for path in outputs}
             self.assertIn("factory-manifest.json", names)
             self.assertIn("update-manifest.json", names)
+            self.assertIn("factory-manifest-abcdef123456.json", names)
+            self.assertIn("update-manifest-abcdef123456.json", names)
+            self.assertIn("firmware-target.json", names)
             self.assertIn("SHA256SUMS", names)
             self.assertFalse(any(name.endswith("-m5burner.zip") for name in names))
 
             factory = json.loads((root / "out" / "factory-manifest.json").read_text())
             update = json.loads((root / "out" / "update-manifest.json").read_text())
+            pinned_factory = json.loads((root / "out" / "factory-manifest-abcdef123456.json").read_text())
+            pinned_update = json.loads((root / "out" / "update-manifest-abcdef123456.json").read_text())
+            target = json.loads((root / "out" / "firmware-target.json").read_text())
+
+            self.assertEqual(factory, pinned_factory)
+            self.assertEqual(update, pinned_update)
             self.assertFalse(factory["new_install_prompt_erase"])
             self.assertTrue(update["new_install_prompt_erase"])
+            self.assertEqual(factory["name"], "M5Authenticator")
+            self.assertEqual(update["name"], "M5Authenticator")
+            self.assertEqual(factory["version"], update["version"])
+            self.assertEqual(factory["build_commit"], "abcdef123456")
+            self.assertEqual(update["build_commit"], "abcdef123456")
+            self.assertFalse(factory["exact_release"])
+            self.assertFalse(update["exact_release"])
+            self.assertEqual(target["build_commit"], "abcdef123456")
+            self.assertEqual(target["factory_manifest"], "factory-manifest-abcdef123456.json")
+            self.assertEqual(target["update_manifest"], "update-manifest-abcdef123456.json")
 
             factory_parts = factory["builds"][0]["parts"]
             self.assertEqual(len(factory_parts), 1)
             self.assertEqual(factory_parts[0]["offset"], 0)
+            self.assertIn("abcdef123456", factory_parts[0]["path"])
             self.assertTrue((root / "out" / factory_parts[0]["path"]).is_file())
 
             update_parts = update["builds"][0]["parts"]
@@ -162,6 +165,7 @@ class ReleasePackagingTest(unittest.TestCase):
             )
             self.assertEqual(len({part["path"] for part in update_parts}), 3)
             for part in update_parts:
+                self.assertIn("abcdef123456", part["path"])
                 self.assertTrue((root / "out" / part["path"]).is_file())
             self.assertNotEqual(factory_parts, update_parts)
 
@@ -174,6 +178,8 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(metadata["security_profile_version"], 1)
             self.assertEqual(metadata["vmk_persistence"], "ram-only")
             self.assertEqual(metadata["post_update_state"], "locked")
+            self.assertEqual(metadata["build_commit"], "abcdef123456")
+            self.assertFalse(metadata["exact_release"])
             self.assertTrue(metadata["production_release_allowed"])
             self.assertFalse(metadata["normal_update"]["erase_first"])
             self.assertEqual(metadata["normal_update"]["required_preserve_partitions"], ["nvs", "auth_nvs"])
@@ -185,6 +191,32 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertNotIn("totp_secret", serialized)
             self.assertNotIn("wifi_password", serialized)
             self.assertNotIn("devsecuritybackend", serialized)
+
+    def test_exact_release_provenance_is_consistent_across_package_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            merged, bootloader, partition_table, app = self.make_test_binaries(root)
+            commit = "1234567890abcdef"
+            package_firmware.package_firmware(
+                merged,
+                bootloader,
+                partition_table,
+                app,
+                root / "out",
+                commit,
+                exact_release=True,
+            )
+            for filename in (
+                "factory-manifest.json",
+                "update-manifest.json",
+                f"factory-manifest-{commit}.json",
+                f"update-manifest-{commit}.json",
+                "firmware-target.json",
+                "release-metadata.json",
+            ):
+                value = json.loads((root / "out" / filename).read_text())
+                self.assertEqual(value["build_commit"], commit)
+                self.assertTrue(value["exact_release"])
 
     def test_release_workflow_has_no_project_efuse_or_universal_key_dependency(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8").lower()
@@ -205,10 +237,7 @@ class ReleasePackagingTest(unittest.TestCase):
             partitions_path = root / "partitions.csv"
             partitions_path.write_text(partitions, encoding="utf-8")
             with self.assertRaises(validate_release.ReleaseValidationError):
-                validate_release.validate_release(
-                    profile_path=profile_path,
-                    partitions_path=partitions_path,
-                )
+                validate_release.validate_release(profile_path=profile_path, partitions_path=partitions_path)
 
 
 if __name__ == "__main__":

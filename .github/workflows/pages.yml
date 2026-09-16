@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
@@ -25,6 +27,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -45,12 +48,39 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"production={'true' if profile['production_release_allowed'] else 'false'}\n")
           PY
+      - name: Resolve deployed Web build provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('firmware/release-profile.json').read_text(encoding='utf-8'))['firmware_version'])
+          PY
+          )"
+          EXPECTED_TAG="v$VERSION"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$EXPECTED_TAG" ]; then
+            echo "Pages release tag $GITHUB_REF_NAME does not match release profile $EXPECTED_TAG"
+            exit 1
+          fi
+          EXACT_RELEASE=false
+          if git tag --points-at "$GITHUB_SHA" --list "$EXPECTED_TAG" | grep -Fxq "$EXPECTED_TAG"; then
+            EXACT_RELEASE=true
+          fi
+          {
+            echo "VITE_M5AUTH_WEB_VERSION=$VERSION"
+            echo "VITE_M5AUTH_WEB_BUILD_COMMIT=$GITHUB_SHA"
+            echo "VITE_M5AUTH_WEB_EXACT_RELEASE=$EXACT_RELEASE"
+            echo "M5AUTH_EXACT_RELEASE=$EXACT_RELEASE"
+          } >> "$GITHUB_ENV"
       - name: Install exact Web dependencies
         working-directory: web
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build production firmware for Web Flasher
         if: steps.profile.outputs.production == 'true'
+        shell: bash
         run: |
+          set -euo pipefail
           python scripts/validate_release.py --require-production
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/project" \
@@ -58,18 +88,18 @@ jobs:
             espressif/idf:v5.5.5 \
             bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
           python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
+          EXACT_RELEASE_ARGS=()
+          if [ "$M5AUTH_EXACT_RELEASE" = "true" ]; then
+            EXACT_RELEASE_ARGS+=(--exact-release)
+          fi
           python scripts/package_firmware.py \
             --merged-binary firmware/build/m5authenticator-merged.bin \
             --output-dir /tmp/m5auth-release \
             --build-commit "$GITHUB_SHA" \
-            --require-production
+            --require-production \
+            "${EXACT_RELEASE_ARGS[@]}"
           mkdir -p web/public/firmware
-          cp /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin web/public/firmware/
-          cp /tmp/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin web/public/firmware/
-          cp /tmp/m5auth-release/factory-manifest.json web/public/firmware/
-          cp /tmp/m5auth-release/update-manifest.json web/public/firmware/
-          cp /tmp/m5auth-release/release-metadata.json web/public/firmware/
-          cp /tmp/m5auth-release/SHA256SUMS web/public/firmware/
+          cp /tmp/m5auth-release/* web/public/firmware/
       - name: Build static Web site
         working-directory: web
         env:
