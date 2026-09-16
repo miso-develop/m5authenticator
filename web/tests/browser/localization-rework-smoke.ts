@@ -63,6 +63,27 @@ export async function runLocalizationReworkSmoke(): Promise<void> {
   provisioningError.installProvisioningErrorUi(document);
   await flushDom();
 
+  // Issue #146: product brand is prominent but is not navigation. The three
+  // destinations remain real links with the current-page accessibility marker,
+  // and the tab group is visually centered by the production CSS.
+  const productMark = required<HTMLElement>(".product-mark");
+  const tabs = Array.from(document.querySelectorAll<HTMLAnchorElement>(".site-tabs a"));
+  expectCondition(productMark.textContent === "M5Authenticator", "Product brand spelling regressed");
+  expectCondition(!(productMark instanceof HTMLAnchorElement), "Product brand must not be a navigation link");
+  expectCondition(tabs.length === 3, "Top navigation no longer has exactly three destinations");
+  expectCondition(
+    tabs.filter((tab) => tab.getAttribute("aria-current") === "page").length === 1,
+    "Top navigation does not expose exactly one current page",
+  );
+  expectCondition(
+    getComputedStyle(required<HTMLElement>(".site-tabs")).justifyContent === "center",
+    "Top-level tabs are not centered as a group",
+  );
+  expectCondition(
+    Number.parseFloat(getComputedStyle(productMark).fontSize) > Number.parseFloat(getComputedStyle(tabs[0]!).fontSize),
+    "Product brand is not more visually prominent than tab labels",
+  );
+
   // Finding 3: application copy is localized while credential/account identity
   // text remains literal even when it collides with known UI source strings.
   expectCondition(
