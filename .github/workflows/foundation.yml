@@ -27,6 +27,9 @@ jobs:
       - name: Install exact dependencies
         working-directory: web
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test browser smoke terminal-state harness
+        working-directory: web
+        run: node --test scripts/browser-smoke-terminal-regression.mjs
       - name: Test Web App
         working-directory: web
         run: npm test
@@ -96,7 +99,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $smokeUrl = "http://127.0.0.1:4173/m5authenticator/tests/browser/qr-smoke.html"
-          $domFile = Join-Path $env:RUNNER_TEMP "qr-smoke-dom.html"
           $stdoutFile = Join-Path $env:RUNNER_TEMP "m5auth-vite.out.log"
           $stderrFile = Join-Path $env:RUNNER_TEMP "m5auth-vite.err.log"
 
@@ -132,16 +134,12 @@ jobs:
               throw "Google Chrome executable was not found on the Windows runner"
             }
 
-            & $chrome `
-              "--headless=new" `
-              "--disable-gpu" `
-              "--virtual-time-budget=40000" `
-              "--dump-dom" `
-              $smokeUrl | Set-Content -Path $domFile -Encoding utf8
-
-            if (-not (Select-String -Path $domFile -Pattern 'data-status="pass"' -Quiet)) {
-              Get-Content $domFile
-              throw "Windows Chrome QR smoke test failed"
+            & node scripts/browser-smoke-terminal.mjs `
+              --chrome $chrome `
+              --url $smokeUrl `
+              --timeout-ms 120000
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows Chrome QR / Argon2 smoke did not reach terminal PASS"
             }
           } finally {
             if (-not $preview.HasExited) {
