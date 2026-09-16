@@ -1,4 +1,5 @@
 import "./presence-overlay.css";
+import { sourceTextOf } from "./ui-localization";
 
 const APPLY_SELECTOR = "#provision-import";
 const INITIAL_PASSPHRASE_SELECTOR = "#initial-recovery-passphrase";
@@ -27,15 +28,18 @@ export function shouldDismissInitialProvisioningPresenceOverlay(
   return observation.deviceNotice.length > 0 && observation.deviceNotice !== "Updating canonical Vault…";
 }
 
-function installInitialProvisioningPresenceOverlay(): void {
-  const apply = document.querySelector<HTMLButtonElement>(APPLY_SELECTOR);
-  const initialPassphrase = document.querySelector<HTMLInputElement>(INITIAL_PASSPHRASE_SELECTOR);
-  const deviceNotice = document.querySelector<HTMLElement>(DEVICE_NOTICE_SELECTOR);
-  const importStatus = document.querySelector<HTMLElement>(IMPORT_STATUS_SELECTOR);
-  const connectionState = document.querySelector<HTMLElement>(CONNECTION_STATE_SELECTOR);
-  if (!apply || !initialPassphrase || !deviceNotice || !importStatus || !connectionState) return;
+export function installInitialProvisioningPresenceOverlay(root: Document = document): HTMLElement | null {
+  const existing = root.querySelector<HTMLElement>(".presence-overlay");
+  if (existing) return existing;
 
-  const overlay = document.createElement("div");
+  const apply = root.querySelector<HTMLButtonElement>(APPLY_SELECTOR);
+  const initialPassphrase = root.querySelector<HTMLInputElement>(INITIAL_PASSPHRASE_SELECTOR);
+  const deviceNotice = root.querySelector<HTMLElement>(DEVICE_NOTICE_SELECTOR);
+  const importStatus = root.querySelector<HTMLElement>(IMPORT_STATUS_SELECTOR);
+  const connectionState = root.querySelector<HTMLElement>(CONNECTION_STATE_SELECTOR);
+  if (!apply || !initialPassphrase || !deviceNotice || !importStatus || !connectionState) return null;
+
+  const overlay = root.createElement("div");
   overlay.className = "presence-overlay";
   overlay.hidden = true;
   overlay.setAttribute("role", "dialog");
@@ -57,7 +61,7 @@ function installInitialProvisioningPresenceOverlay(): void {
       <p class="presence-wait">Waiting for Device confirmation…</p>
     </div>
   `;
-  document.body.append(overlay);
+  root.body.append(overlay);
 
   let active = false;
 
@@ -65,13 +69,16 @@ function installInitialProvisioningPresenceOverlay(): void {
     if (!active) return;
     active = false;
     overlay.hidden = true;
-    document.body.classList.remove("presence-overlay-open");
+    root.body.classList.remove("presence-overlay-open");
   };
 
+  // Internal flow decisions always use canonical application source copy, never
+  // the currently rendered/localized text. This keeps the state machine stable
+  // when the visible language changes while provisioning is in progress.
   const currentObservation = (): PresenceOverlayObservation => ({
-    connectionState: connectionState.textContent?.trim() ?? "",
-    deviceNotice: deviceNotice.textContent?.trim() ?? "",
-    importStatus: importStatus.textContent?.trim() ?? "",
+    connectionState: sourceTextOf(connectionState),
+    deviceNotice: sourceTextOf(deviceNotice),
+    importStatus: sourceTextOf(importStatus),
   });
 
   const observer = new MutationObserver(() => {
@@ -81,7 +88,7 @@ function installInitialProvisioningPresenceOverlay(): void {
   observer.observe(importStatus, { childList: true, subtree: true, characterData: true });
   observer.observe(connectionState, { childList: true, subtree: true, characterData: true });
 
-  document.addEventListener("click", (event) => {
+  root.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const button = target.closest<HTMLButtonElement>(APPLY_SELECTOR);
@@ -90,18 +97,20 @@ function installInitialProvisioningPresenceOverlay(): void {
 
     active = true;
     overlay.hidden = false;
-    document.body.classList.add("presence-overlay-open");
+    root.body.classList.add("presence-overlay-open");
   }, true);
 
   window.addEventListener("pagehide", () => {
     hide();
     observer.disconnect();
   });
+
+  return overlay;
 }
 
 if (typeof document !== "undefined") {
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", installInitialProvisioningPresenceOverlay, { once: true });
+    document.addEventListener("DOMContentLoaded", () => installInitialProvisioningPresenceOverlay(), { once: true });
   } else {
     installInitialProvisioningPresenceOverlay();
   }
