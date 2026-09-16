@@ -140,7 +140,7 @@ M5Canvas* account_label_canvas() {
             canvas.setTextSize(kReadableTextSize);
             canvas.setTextColor(kColorWhite, kColorBlack);
             canvas.setTextWrap(false);
-            canvas.clear(kColorBlack);
+            canvas.clear(0x0000);
         }
     }
     return available ? &canvas : nullptr;
@@ -570,7 +570,7 @@ void CanonicalUiController::render_account_label() {
 
     std::string label = display_label(credentials_[selected_index_]);
     if (M5Canvas* canvas = account_label_canvas(); canvas != nullptr) {
-        canvas->clear(kColorBlack);
+        canvas->clear(0x0000);
         canvas->setTextSize(kReadableTextSize);
         canvas->setTextColor(kColorWhite, kColorBlack);
         canvas->setTextWrap(false);
@@ -579,7 +579,7 @@ void CanonicalUiController::render_account_label() {
         canvas->pushSprite(&M5.Display, 0, kAccountLabelY);
         // The sprite is only a transient drawing surface. Clear its pixels after
         // the blit so it does not become another persistent credential-label copy.
-        canvas->clear(kColorBlack);
+        canvas->clear(0x0000);
     } else {
         // Allocation failure still avoids the Human-Gate defect: update only the
         // label band rather than clearing/redrawing the whole 240x135 display.
