@@ -22,9 +22,7 @@ void secure_zero_memory(void* data, std::size_t size) {
 }
 
 void clear_bytes(std::vector<std::uint8_t>& value) {
-    if (!value.empty()) {
-        secure_zero_memory(value.data(), value.size());
-    }
+    if (!value.empty()) secure_zero_memory(value.data(), value.size());
 }
 
 bool fill_random_nonce(std::array<std::uint8_t, kVaultNonceBytes>& nonce) {
@@ -254,11 +252,20 @@ bool encrypt_vault(
     const std::array<std::uint8_t, kVmkBytes>& vmk,
     const std::array<std::uint8_t, kVaultIdBytes>& vault_id,
     std::uint64_t generation,
-    VaultEnvelope& envelope
+    VaultEnvelope& envelope,
+    std::uint16_t vault_format_version
 ) {
     std::array<std::uint8_t, kVaultNonceBytes> nonce{};
     if (!fill_random_nonce(nonce)) return false;
-    return encrypt_vault_with_nonce(plaintext, vmk, vault_id, generation, nonce, envelope);
+    return encrypt_vault_with_nonce(
+        plaintext,
+        vmk,
+        vault_id,
+        generation,
+        nonce,
+        envelope,
+        vault_format_version
+    );
 }
 
 bool encrypt_vault_with_nonce(
@@ -267,12 +274,25 @@ bool encrypt_vault_with_nonce(
     const std::array<std::uint8_t, kVaultIdBytes>& vault_id,
     std::uint64_t generation,
     const std::array<std::uint8_t, kVaultNonceBytes>& nonce,
-    VaultEnvelope& envelope
+    VaultEnvelope& envelope,
+    std::uint16_t vault_format_version
 ) {
+    if (!is_supported_vault_format(vault_format_version)) return false;
+
     std::vector<std::uint8_t> aad;
-    if (!build_vault_aad(vault_id, generation, aad)) return false;
+    if (!build_vault_aad(
+            vault_id,
+            generation,
+            aad,
+            vault_format_version,
+            kTargetStorageSchemaVersion
+        )) {
+        return false;
+    }
 
     VaultEnvelope candidate;
+    candidate.vault_format_version = vault_format_version;
+    candidate.storage_schema_version = kTargetStorageSchemaVersion;
     candidate.vault_id = vault_id;
     candidate.generation = generation;
     candidate.nonce = nonce;
@@ -296,7 +316,7 @@ bool decrypt_vault(
     const std::array<std::uint8_t, kVmkBytes>& vmk,
     std::vector<std::uint8_t>& plaintext
 ) {
-    if (envelope.vault_format_version != kVaultFormatVersion ||
+    if (!is_supported_vault_format(envelope.vault_format_version) ||
         envelope.storage_schema_version != kTargetStorageSchemaVersion) {
         return false;
     }
