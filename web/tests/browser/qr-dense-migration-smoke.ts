@@ -20,6 +20,7 @@ interface RasterCase {
 const SOURCE_PIXELS_PER_MODULE = 8;
 const SCREENSHOT_WIDTH = 720;
 const SCREENSHOT_HEIGHT = 1280;
+const BMP_HEADER_BYTES = 54;
 
 const RASTER_CASES: RasterCase[] = [
   {
@@ -95,25 +96,62 @@ function renderSourceMatrix(fixture: MatrixFixture): HTMLCanvasElement {
   }
 }
 
-async function canvasToPngFile(canvas: HTMLCanvasElement, id: string): Promise<File> {
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((value) => {
-      if (value) {
-        resolve(value);
-      } else {
-        reject(new Error("Synthetic dense QR screenshot could not be encoded"));
+function canvasToBmpFile(canvas: HTMLCanvasElement, id: string): File {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("Synthetic dense QR screenshot pixels are unavailable");
+  }
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const imageData = context.getImageData(0, 0, width, height);
+  const pixelBytes = width * height * 4;
+  const bytes = new Uint8Array(BMP_HEADER_BYTES + pixelBytes);
+  const view = new DataView(bytes.buffer);
+
+  // Minimal 32-bit uncompressed BMP. Encoding is deliberately synchronous so
+  // the Chrome smoke measures File -> browser rasterization -> production QR
+  // decode rather than asynchronous PNG compression performed by the fixture.
+  view.setUint8(0, 0x42);
+  view.setUint8(1, 0x4d);
+  view.setUint32(2, bytes.length, true);
+  view.setUint32(10, BMP_HEADER_BYTES, true);
+  view.setUint32(14, 40, true);
+  view.setInt32(18, width, true);
+  view.setInt32(22, height, true);
+  view.setUint16(26, 1, true);
+  view.setUint16(28, 32, true);
+  view.setUint32(30, 0, true);
+  view.setUint32(34, pixelBytes, true);
+
+  try {
+    const source = imageData.data;
+    for (let y = 0; y < height; y += 1) {
+      const sourceRow = y * width * 4;
+      const targetRow = BMP_HEADER_BYTES + (height - 1 - y) * width * 4;
+      for (let x = 0; x < width; x += 1) {
+        const sourceOffset = sourceRow + x * 4;
+        const targetOffset = targetRow + x * 4;
+        bytes[targetOffset] = source[sourceOffset + 2]!;
+        bytes[targetOffset + 1] = source[sourceOffset + 1]!;
+        bytes[targetOffset + 2] = source[sourceOffset]!;
+        bytes[targetOffset + 3] = source[sourceOffset + 3]!;
       }
-    }, "image/png");
-  });
-  return new File([blob], `synthetic-dense-${id}.png`, { type: "image/png" });
+    }
+
+    return new File([bytes], `synthetic-dense-${id}.bmp`, { type: "image/bmp" });
+  } finally {
+    imageData.data.fill(0);
+    bytes.fill(0);
+  }
 }
 
-async function createScreenshotLikeFile(raster: RasterCase): Promise<File> {
+function createScreenshotLikeFile(raster: RasterCase): File {
   const source = renderSourceMatrix(raster.fixture);
   const screenshot = document.createElement("canvas");
   screenshot.width = SCREENSHOT_WIDTH;
   screenshot.height = SCREENSHOT_HEIGHT;
-  const context = screenshot.getContext("2d");
+  const context = screenshot.getContext("2d", { willReadFrequently: true });
   if (!context) {
     source.width = 0;
     source.height = 0;
@@ -140,7 +178,7 @@ async function createScreenshotLikeFile(raster: RasterCase): Promise<File> {
       raster.targetPixels,
     );
 
-    return await canvasToPngFile(screenshot, raster.id);
+    return canvasToBmpFile(screenshot, raster.id);
   } finally {
     context.clearRect(0, 0, screenshot.width, screenshot.height);
     screenshot.width = 0;
@@ -163,7 +201,7 @@ export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-nati
   document.body.dataset.qrNativeApi = typeof detectorConstructor === "function" ? "yes" : "no";
 
   for (const raster of RASTER_CASES) {
-    document.body.dataset.stage = `qr-dense-${raster.id}-decode`;
+    document.body.dataset.stage = `qr-dense-${raster.id}-fixture`;
     document.body.dataset.qrDiagnostics = "";
     const diagnostics: QrDecodeDiagnostic[] = [];
     const recordDiagnostic = (event: QrDecodeDiagnostic) => {
@@ -173,7 +211,8 @@ export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-nati
       document.body.dataset.qrDiagnostics = diagnostics.join(",");
     };
 
-    const file = await createScreenshotLikeFile(raster);
+    const file = createScreenshotLikeFile(raster);
+    document.body.dataset.stage = `qr-dense-${raster.id}-decode`;
     let decoded = "";
     const session = new ImportSession();
     try {
