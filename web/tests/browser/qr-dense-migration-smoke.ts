@@ -20,7 +20,10 @@ interface RasterCase {
 const SOURCE_PIXELS_PER_MODULE = 8;
 const SCREENSHOT_WIDTH = 720;
 const SCREENSHOT_HEIGHT = 1280;
-const BMP_HEADER_BYTES = 54;
+const BMP_FILE_HEADER_BYTES = 14;
+const BMP_INFO_HEADER_BYTES = 40;
+const BMP_PALETTE_BYTES = 256 * 4;
+const BMP_PIXEL_OFFSET = BMP_FILE_HEADER_BYTES + BMP_INFO_HEADER_BYTES + BMP_PALETTE_BYTES;
 
 const RASTER_CASES: RasterCase[] = [
   {
@@ -104,38 +107,47 @@ function canvasToBmpFile(canvas: HTMLCanvasElement, id: string): File {
 
   const width = canvas.width;
   const height = canvas.height;
+  const rowStride = (width + 3) & ~3;
+  const pixelBytes = rowStride * height;
   const imageData = context.getImageData(0, 0, width, height);
-  const pixelBytes = width * height * 4;
-  const bytes = new Uint8Array(BMP_HEADER_BYTES + pixelBytes);
+  const bytes = new Uint8Array(BMP_PIXEL_OFFSET + pixelBytes);
   const view = new DataView(bytes.buffer);
 
-  // Minimal 32-bit uncompressed BMP. Encoding is deliberately synchronous so
-  // the Chrome smoke measures File -> browser rasterization -> production QR
-  // decode rather than asynchronous PNG compression performed by the fixture.
+  // 8-bit indexed grayscale BMP. Screenshot interpolation is already present in
+  // the canvas pixels, while the compact File avoids runtime PNG compression and
+  // keeps browser rasterization substantially cheaper than a 32-bit BMP.
   view.setUint8(0, 0x42);
   view.setUint8(1, 0x4d);
   view.setUint32(2, bytes.length, true);
-  view.setUint32(10, BMP_HEADER_BYTES, true);
-  view.setUint32(14, 40, true);
+  view.setUint32(10, BMP_PIXEL_OFFSET, true);
+  view.setUint32(14, BMP_INFO_HEADER_BYTES, true);
   view.setInt32(18, width, true);
   view.setInt32(22, height, true);
   view.setUint16(26, 1, true);
-  view.setUint16(28, 32, true);
+  view.setUint16(28, 8, true);
   view.setUint32(30, 0, true);
   view.setUint32(34, pixelBytes, true);
+  view.setUint32(46, 256, true);
+
+  for (let value = 0; value < 256; value += 1) {
+    const paletteOffset = BMP_FILE_HEADER_BYTES + BMP_INFO_HEADER_BYTES + value * 4;
+    bytes[paletteOffset] = value;
+    bytes[paletteOffset + 1] = value;
+    bytes[paletteOffset + 2] = value;
+    bytes[paletteOffset + 3] = 0;
+  }
 
   try {
     const source = imageData.data;
     for (let y = 0; y < height; y += 1) {
       const sourceRow = y * width * 4;
-      const targetRow = BMP_HEADER_BYTES + (height - 1 - y) * width * 4;
+      const targetRow = BMP_PIXEL_OFFSET + (height - 1 - y) * rowStride;
       for (let x = 0; x < width; x += 1) {
         const sourceOffset = sourceRow + x * 4;
-        const targetOffset = targetRow + x * 4;
-        bytes[targetOffset] = source[sourceOffset + 2]!;
-        bytes[targetOffset + 1] = source[sourceOffset + 1]!;
-        bytes[targetOffset + 2] = source[sourceOffset]!;
-        bytes[targetOffset + 3] = source[sourceOffset + 3]!;
+        const red = source[sourceOffset]!;
+        const green = source[sourceOffset + 1]!;
+        const blue = source[sourceOffset + 2]!;
+        bytes[targetRow + x] = (306 * red + 601 * green + 117 * blue + 0x200) >> 10;
       }
     }
 
