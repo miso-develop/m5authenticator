@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
+#include "m5auth/device/sticks3/totp_validity.hpp"
 #include "m5auth/device/sticks3/ui_model.hpp"
 
 namespace {
@@ -48,12 +49,29 @@ int main() {
     using m5auth::device::sticks3::label_scroll::on_screen_hidden_changed;
     using m5auth::device::sticks3::label_scroll::reset;
     using m5auth::device::sticks3::label_scroll::update_offset;
+    using m5auth::device::sticks3::totp_validity::from_unix_seconds;
+    using m5auth::device::sticks3::totp_validity::same_period;
     using m5auth::session::AttemptId;
     using m5auth::session::PresenceOperation;
 
     assert(account_display_label(account(1, 0, "Issuer", "account", "User")) == "User");
     assert(account_display_label(account(1, 0, "Issuer", "account")) == "Issuer");
     assert(account_display_label(account(1, 0, "", "account")) == "account");
+
+    // Issue #148: the validity indicator follows RFC6238's 30-second period,
+    // independent of the 10-second reveal lifetime maintained by UiModel.
+    const auto validity_0 = from_unix_seconds(0);
+    const auto validity_29 = from_unix_seconds(29);
+    const auto validity_30 = from_unix_seconds(30);
+    const auto validity_59 = from_unix_seconds(59);
+    const auto validity_60 = from_unix_seconds(60);
+    assert(validity_0.period_index == 0 && validity_0.seconds_remaining == 30);
+    assert(validity_29.period_index == 0 && validity_29.seconds_remaining == 1);
+    assert(validity_30.period_index == 1 && validity_30.seconds_remaining == 30);
+    assert(validity_59.period_index == 1 && validity_59.seconds_remaining == 1);
+    assert(validity_60.period_index == 2 && validity_60.seconds_remaining == 30);
+    assert(same_period(validity_0, validity_29));
+    assert(!same_period(validity_29, validity_30));
 
     // Issue #139: clipped labels repeat a bounded monotonic cycle:
     // start dwell -> scroll -> end dwell -> reset -> start dwell -> repeat.
