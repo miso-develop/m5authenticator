@@ -59,16 +59,26 @@ function scaledDimensions(width: number, height: number, scale: number): ScaledD
 }
 
 function nativeCropWindows(width: number, height: number): CropWindow[] {
-  const size = Math.min(width, height);
+  const shortLength = Math.min(width, height);
   const longLength = Math.max(width, height);
-  const maxOffset = longLength - size;
-  const offsets = [Math.round(maxOffset / 2), 0, maxOffset];
-  const uniqueOffsets = offsets.filter((offset, index) => offsets.indexOf(offset) === index);
+  // Three windows are the hard upper bound. Pick the smallest square that can
+  // normally span the long axis in three placements, but never shrink below
+  // half the short axis so a centered QR retains surrounding quiet-zone context.
+  const size = Math.min(
+    shortLength,
+    Math.max(Math.ceil(longLength / 3), Math.ceil(shortLength / 2)),
+  );
+  const maxLongOffset = longLength - size;
+  const longOffsets = [Math.round(maxLongOffset / 2), 0, maxLongOffset];
+  const uniqueLongOffsets = longOffsets.filter(
+    (offset, index) => longOffsets.indexOf(offset) === index,
+  );
+  const crossOffset = Math.round((shortLength - size) / 2);
 
   if (height >= width) {
-    return uniqueOffsets.map((offset) => ({ x: 0, y: offset, size }));
+    return uniqueLongOffsets.map((offset) => ({ x: crossOffset, y: offset, size }));
   }
-  return uniqueOffsets.map((offset) => ({ x: offset, y: 0, size }));
+  return uniqueLongOffsets.map((offset) => ({ x: offset, y: crossOffset, size }));
 }
 
 function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
@@ -255,20 +265,65 @@ async function decodeNativeWithinBudget(
   return await withTimeout(decodeNativeQr(bitmap), Math.min(NATIVE_QR_ATTEMPT_TIMEOUT_MS, remainingMs));
 }
 
-async function tryScaledNativeCrop(
+async function tryCroppedVariant(
   sourceBitmap: ImageBitmap,
   crop: CropWindow,
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
   dependencies: QrImageDecodeDependencies,
-  deadline: number,
+  nativeDeadline: number,
 ): Promise<string | undefined> {
-  const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
-  if (!dimensions || !dependencies.decodeNativeQr || performance.now() >= deadline) {
+  let cropImageData: ImageData | undefined;
+  let scaledBitmap: ImageBitmap | undefined;
+
+  // First retry the existing ZXing path on a bounded square crop. The crop is
+  // not resampled here; decodeQrImageData owns its existing 2x/3x luminance
+  // variants and clears those temporary buffers before returning.
+  canvas.width = crop.size;
+  canvas.height = crop.size;
+  context.imageSmoothingEnabled = false;
+  try {
+    context.drawImage(
+      sourceBitmap,
+      crop.x,
+      crop.y,
+      crop.size,
+      crop.size,
+      0,
+      0,
+      crop.size,
+      crop.size,
+    );
+    cropImageData = context.getImageData(0, 0, crop.size, crop.size);
+    try {
+      return dependencies.decodeImageData(cropImageData);
+    } catch (error) {
+      if (error instanceof ImportError) {
+        throw error;
+      }
+    }
+  } catch (error) {
+    if (error instanceof ImportError) {
+      throw error;
+    }
+  } finally {
+    cropImageData?.data.fill(0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+
+  if (!dependencies.decodeNativeQr || performance.now() >= nativeDeadline) {
     return undefined;
   }
 
-  let croppedBitmap: ImageBitmap | undefined;
+  // If crop-local ZXing is still exhausted, expose exactly the same crop to
+  // Chrome's native detector at one deterministic 2x scale.
+  const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
+  if (!dimensions) {
+    return undefined;
+  }
+
   canvas.width = dimensions.width;
   canvas.height = dimensions.height;
   context.imageSmoothingEnabled = false;
@@ -284,12 +339,12 @@ async function tryScaledNativeCrop(
       dimensions.width,
       dimensions.height,
     );
-    croppedBitmap = await dependencies.createImageBitmap(canvas);
-    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, croppedBitmap, deadline);
+    scaledBitmap = await dependencies.createImageBitmap(canvas);
+    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, nativeDeadline);
   } catch {
     return undefined;
   } finally {
-    croppedBitmap?.close();
+    scaledBitmap?.close();
     context.clearRect(0, 0, canvas.width, canvas.height);
     canvas.width = 0;
     canvas.height = 0;
@@ -343,6 +398,14 @@ export async function decodeQrImage(
       }
     }
 
+    // The full-size RGBA copy is no longer needed. Clear it before retaining
+    // only the source bitmap for native/cropped retries.
+    imageData.data.fill(0);
+    imageData = undefined;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.width = 0;
+    canvas.height = 0;
+
     if (!dependencies.decodeNativeQr) {
       throw new ImportError("No supported QR code could be decoded from the selected image.");
     }
@@ -357,12 +420,12 @@ export async function decodeQrImage(
       return originalNativeResult;
     }
 
-    // PR #131 gave BarcodeDetector only the original screenshot. R2 tries at most
-    // three overlapping square windows (center, start, end along the long axis),
-    // each enlarged exactly 2x. This keeps quiet-zone context while reducing the
-    // irrelevant screenshot area without an unbounded crop search.
+    // PR #131 gave BarcodeDetector only the original screenshot. R2 keeps the
+    // original path first, then tries at most three deterministic square crops
+    // (center, start, end along the long axis). Each crop gets the existing
+    // ZXing 1x/2x/3x path followed by one native 2x attempt.
     for (const crop of nativeCropWindows(bitmap.width, bitmap.height)) {
-      const croppedResult = await tryScaledNativeCrop(
+      const croppedResult = await tryCroppedVariant(
         bitmap,
         crop,
         canvas,
