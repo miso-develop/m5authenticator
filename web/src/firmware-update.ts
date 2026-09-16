@@ -1,6 +1,8 @@
 import { flash as espWebFlash } from "esp-web-tools/dist/flash.js";
 import type { FlashState, Manifest } from "esp-web-tools/dist/const.js";
 
+import { resolveBuildIdentity, type BuildIdentity } from "./build-identity";
+
 interface SerialChooser {
   requestPort(): Promise<SerialPort>;
 }
@@ -36,6 +38,19 @@ function browserSerial(): SerialChooser | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function firmwareArtifactIdentityFromManifest(value: unknown): BuildIdentity {
+  if (!isRecord(value)) throw new Error("Firmware update manifest has an invalid build identity");
+  const identity = resolveBuildIdentity({
+    version: typeof value.version === "string" ? value.version : undefined,
+    buildCommit: typeof value.build_commit === "string" ? value.build_commit : undefined,
+    exactRelease: typeof value.exact_release === "boolean" ? value.exact_release : undefined,
+  });
+  if (!identity || typeof value.exact_release !== "boolean") {
+    throw new Error("Firmware update manifest has an invalid build identity");
+  }
+  return identity;
 }
 
 function extractStatePreservingParts(
@@ -110,8 +125,27 @@ export function validateStatePreservingManifest(
   manifestUrl: URL,
   expectedOrigin: string,
 ): Manifest {
+  firmwareArtifactIdentityFromManifest(value);
   extractStatePreservingParts(value, manifestUrl, expectedOrigin);
   return value as unknown as Manifest;
+}
+
+async function fetchFirmwareManifest(manifestUrl: URL): Promise<unknown> {
+  const response = await fetch(manifestUrl, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Firmware update manifest could not be loaded (${response.status})`);
+  }
+  return await response.json();
+}
+
+export async function loadFirmwareArtifactIdentity(manifestPath: string): Promise<BuildIdentity> {
+  const manifestUrl = new URL(manifestPath, window.location.href);
+  if (manifestUrl.origin !== window.location.origin) {
+    throw new Error("Firmware update manifest must be same-origin");
+  }
+  const value = await fetchFirmwareManifest(manifestUrl);
+  validateStatePreservingManifest(value, manifestUrl, window.location.origin);
+  return firmwareArtifactIdentityFromManifest(value);
 }
 
 async function fetchFirmwarePartSize(url: URL): Promise<number> {
@@ -169,12 +203,8 @@ export async function runStatePreservingUpdate(
     throw new Error("Firmware update manifest must be same-origin");
   }
 
-  const response = await fetch(manifestUrl, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Firmware update manifest could not be loaded (${response.status})`);
-  }
   const manifest = validateStatePreservingManifest(
-    await response.json(),
+    await fetchFirmwareManifest(manifestUrl),
     manifestUrl,
     window.location.origin,
   );
