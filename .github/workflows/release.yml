@@ -61,6 +61,9 @@ jobs:
             /tmp/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \
             /tmp/m5auth-release/factory-manifest.json \
             /tmp/m5auth-release/update-manifest.json \
+            /tmp/m5auth-release/factory-manifest-*.json \
+            /tmp/m5auth-release/update-manifest-*.json \
+            /tmp/m5auth-release/firmware-target.json \
             /tmp/m5auth-release/release-metadata.json \
             /tmp/m5auth-release/SHA256SUMS \
             --verify-tag \
