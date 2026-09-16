@@ -396,7 +396,7 @@ export async function unwrapVmkWithPassphrase(
       packageVersion: wrapped.packageVersion,
       wrapVersion: wrapped.wrapVersion,
     });
-    const vmk = await aesGcmDecrypt(wrapped.kdf ? kek : kek, wrapped.nonce, wrapped.ciphertext, wrapped.tag, aad);
+    const vmk = await aesGcmDecrypt(kek, wrapped.nonce, wrapped.ciphertext, wrapped.tag, aad);
     assertLength(vmk, AES_GCM_KEY_BYTES, "unwrapped VMK");
     return vmk;
   } finally {
