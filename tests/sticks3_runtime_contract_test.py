@@ -57,6 +57,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
     def test_display_scale_contract_is_readable(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        startup = RELEASE_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertRegex(text, r"kReadableTextSize\s*=\s*2;")
         self.assertRegex(text, r"kOtpTextSize\s*=\s*4;")
         self.assertNotIn("kCompactTextSize", text)
@@ -66,6 +67,9 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.setTextSize(kReadableTextSize);", text)
         self.assertIn('draw_line("M5Authenticator", kHeaderY);', text)
         self.assertNotIn('"M5 Authenticator"', text)
+        self.assertIn('M5.Display.println("M5Authenticator");', startup)
+        self.assertNotIn('"M5 Authenticator"', startup)
+        self.assertIn("M5.Display.setTextSize(2);", startup)
 
     def test_issue_139_single_click_hides_active_otp_before_next_navigation(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
