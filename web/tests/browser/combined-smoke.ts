@@ -1,4 +1,5 @@
 import { runArgon2CspSmoke, runProductionArgon2Smoke } from "./argon2-csp-smoke";
+import { runDenseMigrationQrSmoke } from "./qr-dense-migration-smoke";
 
 async function run(): Promise<void> {
   document.body.dataset.stage = "csp-ui";
@@ -13,6 +14,10 @@ async function run(): Promise<void> {
   document.body.dataset.qrStatus = "pass";
 
   document.body.dataset.status = "running";
+  document.body.dataset.stage = "qr-dense-migration";
+  await runDenseMigrationQrSmoke();
+  document.body.dataset.denseQrStatus = "pass";
+
   document.body.dataset.stage = "argon2-kdf";
   await runProductionArgon2Smoke();
   const windows = navigator.userAgent.includes("Windows");
