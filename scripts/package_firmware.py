@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from validate_release import ReleaseValidationError, validate_release
 UPDATE_BOOTLOADER_OFFSET = 0x000000
 UPDATE_PARTITION_TABLE_OFFSET = 0x008000
 UPDATE_APP_OFFSET = 0x030000
+BUILD_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 def sha256(path: Path) -> str:
@@ -131,8 +133,9 @@ def package_firmware(
     auth_start = int(profile["auth_nvs_offset"])
     if merged_size > auth_start:
         raise ReleaseValidationError("merged firmware would overlap auth_nvs")
-    if not build_commit or len(build_commit) > 64 or any(ch.isspace() for ch in build_commit):
+    if not BUILD_COMMIT_RE.fullmatch(build_commit):
         raise ReleaseValidationError("invalid build commit metadata")
+    build_commit = build_commit.lower()
 
     update_plan = validate_update_write_plan(
         bootloader_binary,
@@ -149,14 +152,15 @@ def package_firmware(
             child.unlink()
 
     version = str(profile["firmware_version"])
-    firmware_name = f"m5authenticator-v{version}-m5sticks3.bin"
+    build_suffix = f"{version}-{build_commit}"
+    firmware_name = f"m5authenticator-v{build_suffix}-m5sticks3.bin"
     firmware_path = output_dir / firmware_name
     shutil.copyfile(merged_binary, firmware_path)
 
     update_names = {
-        "bootloader": f"m5authenticator-v{version}-m5sticks3-update-bootloader.bin",
-        "partition_table": f"m5authenticator-v{version}-m5sticks3-update-partition-table.bin",
-        "ota_0": f"m5authenticator-v{version}-m5sticks3-update-ota0.bin",
+        "bootloader": f"m5authenticator-v{build_suffix}-m5sticks3-update-bootloader.bin",
+        "partition_table": f"m5authenticator-v{build_suffix}-m5sticks3-update-partition-table.bin",
+        "ota_0": f"m5authenticator-v{build_suffix}-m5sticks3-update-ota0.bin",
     }
     update_outputs: list[Path] = []
     update_manifest_parts: list[dict[str, int | str]] = []
@@ -183,37 +187,52 @@ def package_firmware(
         "exact_release": exact_release,
     }
 
+    factory_manifest_value = {
+        **artifact_identity,
+        "new_install_prompt_erase": False,
+        "improv": False,
+        "builds": [
+            {
+                "chipFamily": profile["chip_family"],
+                "parts": [{"path": firmware_name, "offset": 0}],
+            }
+        ],
+    }
+    update_manifest_value = {
+        **artifact_identity,
+        # Normal Update is executed only by the M5Authenticator low-level
+        # flasher with eraseFirst=false. Retain the generic erase warning if
+        # the manifest is opened outside that UI.
+        "new_install_prompt_erase": True,
+        "improv": False,
+        "builds": [
+            {
+                "chipFamily": profile["chip_family"],
+                "parts": update_manifest_parts,
+            }
+        ],
+    }
+
+    pinned_factory_manifest = output_dir / f"factory-manifest-{build_commit}.json"
+    pinned_update_manifest = output_dir / f"update-manifest-{build_commit}.json"
+    write_json(pinned_factory_manifest, factory_manifest_value)
+    write_json(pinned_update_manifest, update_manifest_value)
+
+    # Keep stable manifest aliases for external/manual consumers, but the Web UI
+    # never binds flashing to these mutable names. The browser first resolves
+    # firmware-target.json and then uses only the commit-addressed manifests.
     factory_manifest = output_dir / "factory-manifest.json"
     update_manifest = output_dir / "update-manifest.json"
+    write_json(factory_manifest, factory_manifest_value)
+    write_json(update_manifest, update_manifest_value)
+
+    target_path = output_dir / "firmware-target.json"
     write_json(
-        factory_manifest,
+        target_path,
         {
             **artifact_identity,
-            "new_install_prompt_erase": False,
-            "improv": False,
-            "builds": [
-                {
-                    "chipFamily": profile["chip_family"],
-                    "parts": [{"path": firmware_name, "offset": 0}],
-                }
-            ],
-        },
-    )
-    write_json(
-        update_manifest,
-        {
-            **artifact_identity,
-            # Normal Update is executed only by the M5Authenticator low-level
-            # flasher with eraseFirst=false. Retain the generic erase warning if
-            # the manifest is opened outside that UI.
-            "new_install_prompt_erase": True,
-            "improv": False,
-            "builds": [
-                {
-                    "chipFamily": profile["chip_family"],
-                    "parts": update_manifest_parts,
-                }
-            ],
+            "factory_manifest": pinned_factory_manifest.name,
+            "update_manifest": pinned_update_manifest.name,
         },
     )
 
@@ -254,8 +273,11 @@ def package_firmware(
     checksum_targets = [
         firmware_path,
         *update_outputs,
+        pinned_factory_manifest,
+        pinned_update_manifest,
         factory_manifest,
         update_manifest,
+        target_path,
         metadata_path,
     ]
     checksums = output_dir / "SHA256SUMS"
