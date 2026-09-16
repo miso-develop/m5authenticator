@@ -6,14 +6,13 @@ function createFixture(decodeResult: string | Error) {
   const bitmap = { width: 320, height: 240, close } as unknown as ImageBitmap;
   const drawImage = vi.fn();
   const clearRect = vi.fn();
-  const putImageData = vi.fn();
   const imageData = {
     width: 320,
     height: 240,
     data: new Uint8ClampedArray(320 * 240 * 4).fill(0x7f),
   } as ImageData;
   const getImageData = vi.fn(() => imageData);
-  const context = { drawImage, clearRect, putImageData, getImageData } as unknown as CanvasRenderingContext2D;
+  const context = { drawImage, clearRect, getImageData } as unknown as CanvasRenderingContext2D;
   const canvas = {
     width: 0,
     height: 0,
@@ -44,7 +43,6 @@ function createFixture(decodeResult: string | Error) {
     close,
     drawImage,
     clearRect,
-    putImageData,
     getImageData,
     createImageBitmap,
     createCanvas,
@@ -115,17 +113,24 @@ describe("decodeQrImage", () => {
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("tries at most original, 2x, and 3x native rasters before failing closed when no contrast fallback is available", async () => {
+  it("keeps original, scaled, contrast-scaled, and final 3x native attempts bounded and cleans every temporary bitmap", async () => {
     const fixture = createFixture(new Error("synthetic core failure"));
     const scaled2Close = vi.fn();
+    const contrastSourceClose = vi.fn();
+    const contrastScaledClose = vi.fn();
     const scaled3Close = vi.fn();
     const scaled2 = { width: 640, height: 480, close: scaled2Close } as unknown as ImageBitmap;
+    const contrastSource = { width: 320, height: 240, close: contrastSourceClose } as unknown as ImageBitmap;
+    const contrastScaled = { width: 640, height: 480, close: contrastScaledClose } as unknown as ImageBitmap;
     const scaled3 = { width: 960, height: 720, close: scaled3Close } as unknown as ImageBitmap;
-    let scaledCall = 0;
+    let canvasBitmapCount = 0;
     fixture.createImageBitmap.mockImplementation(async (source: ImageBitmapSource) => {
       if (source instanceof File) return fixture.bitmap;
-      scaledCall += 1;
-      return scaledCall === 1 ? scaled2 : scaled3;
+      if (source === fixture.imageData) return contrastSource;
+      canvasBitmapCount += 1;
+      if (canvasBitmapCount === 1) return scaled2;
+      if (canvasBitmapCount === 2) return contrastScaled;
+      return scaled3;
     });
     const decodeNativeQr = vi.fn(async () => undefined);
     fixture.dependencies.decodeNativeQr = decodeNativeQr;
@@ -133,18 +138,56 @@ describe("decodeQrImage", () => {
 
     await expect(decodeQrImage(file, fixture.dependencies)).rejects.toThrow("No supported QR code");
 
-    expect(decodeNativeQr.mock.calls.length).toBeGreaterThanOrEqual(3);
-    expect(fixture.createImageBitmap.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(decodeNativeQr).toHaveBeenCalledTimes(4);
+    expect(fixture.createImageBitmap).toHaveBeenCalledTimes(5);
     expect(fixture.drawImage).toHaveBeenCalledWith(fixture.bitmap, 0, 0, 640, 480);
+    expect(fixture.drawImage).toHaveBeenCalledWith(contrastSource, 0, 0, 640, 480);
     expect(fixture.drawImage).toHaveBeenCalledWith(fixture.bitmap, 0, 0, 960, 720);
     expect(scaled2Close).toHaveBeenCalledOnce();
+    expect(contrastSourceClose).toHaveBeenCalledOnce();
+    expect(contrastScaledClose).toHaveBeenCalledOnce();
     expect(scaled3Close).toHaveBeenCalledOnce();
     expect(fixture.close).toHaveBeenCalledOnce();
     expect(fixture.canvas.width).toBe(0);
     expect(fixture.canvas.height).toBe(0);
+    expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
   });
 
-  it("skips native scale variants that exceed the existing dimension/pixel bounds", async () => {
+  it("uses the high-contrast 2x native fallback only after original and ordinary 2x native fail", async () => {
+    const fixture = createFixture(new Error("synthetic core failure"));
+    const scaled2Close = vi.fn();
+    const contrastSourceClose = vi.fn();
+    const contrastScaledClose = vi.fn();
+    const scaled2 = { width: 640, height: 480, close: scaled2Close } as unknown as ImageBitmap;
+    const contrastSource = { width: 320, height: 240, close: contrastSourceClose } as unknown as ImageBitmap;
+    const contrastScaled = { width: 640, height: 480, close: contrastScaledClose } as unknown as ImageBitmap;
+    let canvasBitmapCount = 0;
+    fixture.createImageBitmap.mockImplementation(async (source: ImageBitmapSource) => {
+      if (source instanceof File) return fixture.bitmap;
+      if (source === fixture.imageData) return contrastSource;
+      canvasBitmapCount += 1;
+      return canvasBitmapCount === 1 ? scaled2 : contrastScaled;
+    });
+    const decodeNativeQr = vi
+      .fn<(bitmap: ImageBitmap) => Promise<string | undefined>>()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce("synthetic-contrast-result");
+    fixture.dependencies.decodeNativeQr = decodeNativeQr;
+    const file = new File(["not-a-real-image"], "synthetic.png", { type: "image/png" });
+
+    await expect(decodeQrImage(file, fixture.dependencies)).resolves.toBe("synthetic-contrast-result");
+
+    expect(decodeNativeQr).toHaveBeenCalledTimes(3);
+    expect(decodeNativeQr.mock.calls[2]?.[0]).toBe(contrastScaled);
+    expect(scaled2Close).toHaveBeenCalledOnce();
+    expect(contrastSourceClose).toHaveBeenCalledOnce();
+    expect(contrastScaledClose).toHaveBeenCalledOnce();
+    expect(fixture.close).toHaveBeenCalledOnce();
+    expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
+  });
+
+  it("skips native scale and contrast variants that exceed the existing dimension/pixel bounds", async () => {
     const fixture = createFixture(new Error("synthetic core failure"));
     Object.defineProperties(fixture.bitmap, {
       width: { value: 3000 },
@@ -167,7 +210,7 @@ describe("decodeQrImage", () => {
 
     await expect(decodeQrImage(file, fixture.dependencies)).rejects.toThrow("No supported QR code");
     expect(fixture.close).toHaveBeenCalledOnce();
-    expect(fixture.clearRect).toHaveBeenCalledWith(0, 0, 320, 240);
+    expect(fixture.clearRect).toHaveBeenCalled();
     expect(fixture.canvas.width).toBe(0);
     expect(fixture.canvas.height).toBe(0);
     expect(fixture.imageData.data.every((value) => value === 0)).toBe(true);
