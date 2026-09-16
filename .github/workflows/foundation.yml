@@ -29,7 +29,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test browser smoke terminal-state harness
         working-directory: web
-        run: node --test scripts/browser-smoke-terminal.test.mjs
+        run: node --test scripts/browser-smoke-terminal-regression.mjs
       - name: Test Web App
         working-directory: web
         run: npm test
