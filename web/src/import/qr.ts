@@ -16,11 +16,11 @@ export interface QrImageDecodeDependencies {
 }
 
 const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
+const NATIVE_QR_CROP_SCALE = 2;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
 const NATIVE_QR_ATTEMPT_TIMEOUT_MS = 750;
 const NATIVE_QR_TOTAL_BUDGET_MS = 3_000;
-const HIGH_CONTRAST_THRESHOLD = 0x80;
 
 interface NativeBarcodeResult {
   format?: string;
@@ -38,6 +38,12 @@ interface ScaledDimensions {
   height: number;
 }
 
+interface CropWindow {
+  x: number;
+  y: number;
+  size: number;
+}
+
 function scaledDimensions(width: number, height: number, scale: number): ScaledDimensions | undefined {
   const scaledWidth = width * scale;
   const scaledHeight = height * scale;
@@ -50,6 +56,19 @@ function scaledDimensions(width: number, height: number, scale: number): ScaledD
     return undefined;
   }
   return { width: scaledWidth, height: scaledHeight };
+}
+
+function nativeCropWindows(width: number, height: number): CropWindow[] {
+  const size = Math.min(width, height);
+  const longLength = Math.max(width, height);
+  const maxOffset = longLength - size;
+  const offsets = [Math.round(maxOffset / 2), 0, maxOffset];
+  const uniqueOffsets = offsets.filter((offset, index) => offsets.indexOf(offset) === index);
+
+  if (height >= width) {
+    return uniqueOffsets.map((offset) => ({ x: 0, y: offset, size }));
+  }
+  return uniqueOffsets.map((offset) => ({ x: offset, y: 0, size }));
 }
 
 function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
@@ -77,31 +96,6 @@ function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   }
 
   return luminances;
-}
-
-function binarizeImageDataInPlace(imageData: ImageData): void {
-  const data = imageData.data;
-  for (let offset = 0; offset < data.length; offset += 4) {
-    const alpha = data[offset + 3]!;
-    let red = data[offset]!;
-    let green = data[offset + 1]!;
-    let blue = data[offset + 2]!;
-
-    if (alpha === 0) {
-      red = green = blue = 0xff;
-    } else if (alpha !== 0xff) {
-      red = Math.round((red * alpha + 0xff * (0xff - alpha)) / 0xff);
-      green = Math.round((green * alpha + 0xff * (0xff - alpha)) / 0xff);
-      blue = Math.round((blue * alpha + 0xff * (0xff - alpha)) / 0xff);
-    }
-
-    const luminance = (306 * red + 601 * green + 117 * blue + 0x200) >> 10;
-    const value = luminance < HIGH_CONTRAST_THRESHOLD ? 0x00 : 0xff;
-    data[offset] = value;
-    data[offset + 1] = value;
-    data[offset + 2] = value;
-    data[offset + 3] = 0xff;
-  }
 }
 
 function decodeLuminances(luminances: Uint8ClampedArray, width: number, height: number): string {
@@ -261,31 +255,41 @@ async function decodeNativeWithinBudget(
   return await withTimeout(decodeNativeQr(bitmap), Math.min(NATIVE_QR_ATTEMPT_TIMEOUT_MS, remainingMs));
 }
 
-async function tryScaledNative(
+async function tryScaledNativeCrop(
   sourceBitmap: ImageBitmap,
-  scale: number,
+  crop: CropWindow,
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
   dependencies: QrImageDecodeDependencies,
   deadline: number,
 ): Promise<string | undefined> {
-  const dimensions = scaledDimensions(sourceBitmap.width, sourceBitmap.height, scale);
+  const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
   if (!dimensions || !dependencies.decodeNativeQr || performance.now() >= deadline) {
     return undefined;
   }
 
-  let scaledBitmap: ImageBitmap | undefined;
+  let croppedBitmap: ImageBitmap | undefined;
   canvas.width = dimensions.width;
   canvas.height = dimensions.height;
   context.imageSmoothingEnabled = false;
   try {
-    context.drawImage(sourceBitmap, 0, 0, dimensions.width, dimensions.height);
-    scaledBitmap = await dependencies.createImageBitmap(canvas);
-    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, deadline);
+    context.drawImage(
+      sourceBitmap,
+      crop.x,
+      crop.y,
+      crop.size,
+      crop.size,
+      0,
+      0,
+      dimensions.width,
+      dimensions.height,
+    );
+    croppedBitmap = await dependencies.createImageBitmap(canvas);
+    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, croppedBitmap, deadline);
   } catch {
     return undefined;
   } finally {
-    scaledBitmap?.close();
+    croppedBitmap?.close();
     context.clearRect(0, 0, canvas.width, canvas.height);
     canvas.width = 0;
     canvas.height = 0;
@@ -301,7 +305,6 @@ export async function decodeQrImage(
   }
 
   let bitmap: ImageBitmap | undefined;
-  let highContrastBitmap: ImageBitmap | undefined;
   let canvas: HTMLCanvasElement | undefined;
   let context: CanvasRenderingContext2D | null = null;
   let imageData: ImageData | undefined;
@@ -354,60 +357,27 @@ export async function decodeQrImage(
       return originalNativeResult;
     }
 
-    const scaled2Result = await tryScaledNative(
-      bitmap,
-      2,
-      canvas,
-      context,
-      dependencies,
-      nativeDeadline,
-    );
-    if (scaled2Result) {
-      return scaled2Result;
-    }
-
-    const contrast2Dimensions = scaledDimensions(bitmap.width, bitmap.height, 2);
-    if (contrast2Dimensions && performance.now() < nativeDeadline) {
-      binarizeImageDataInPlace(imageData);
-      try {
-        highContrastBitmap = await dependencies.createImageBitmap(imageData);
-        const highContrast2Result = await tryScaledNative(
-          highContrastBitmap,
-          2,
-          canvas,
-          context,
-          dependencies,
-          nativeDeadline,
-        );
-        if (highContrast2Result) {
-          return highContrast2Result;
-        }
-      } catch {
-        // Treat local preprocessing failure as another exhausted bounded attempt.
-      } finally {
-        highContrastBitmap?.close();
-        highContrastBitmap = undefined;
-        imageData.data.fill(0);
-        imageData = undefined;
+    // PR #131 gave BarcodeDetector only the original screenshot. R2 tries at most
+    // three overlapping square windows (center, start, end along the long axis),
+    // each enlarged exactly 2x. This keeps quiet-zone context while reducing the
+    // irrelevant screenshot area without an unbounded crop search.
+    for (const crop of nativeCropWindows(bitmap.width, bitmap.height)) {
+      const croppedResult = await tryScaledNativeCrop(
+        bitmap,
+        crop,
+        canvas,
+        context,
+        dependencies,
+        nativeDeadline,
+      );
+      if (croppedResult) {
+        return croppedResult;
       }
-    }
-
-    const scaled3Result = await tryScaledNative(
-      bitmap,
-      3,
-      canvas,
-      context,
-      dependencies,
-      nativeDeadline,
-    );
-    if (scaled3Result) {
-      return scaled3Result;
     }
 
     throw new ImportError("No supported QR code could be decoded from the selected image.");
   } finally {
     imageData?.data.fill(0);
-    highContrastBitmap?.close();
     bitmap?.close();
     if (canvas) {
       context?.clearRect(0, 0, canvas.width, canvas.height);
