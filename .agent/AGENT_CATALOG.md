@@ -24,6 +24,10 @@ A higher-priority source may clarify or supersede a lower-priority source, but i
 - Agents must read the current role contract before acting.
 - Agents must not silently cross role boundaries.
 - Repository state must be checked before repository-changing work.
+- Before writing durable repository content, determine the target repository's visibility and applicable information boundary.
+- Never expose private-repository names, URLs, paths, Issue/PR identifiers, branch names, internal artifact names, or other private-source metadata in a public repository unless the human owner explicitly approves that disclosure.
+- Public repository records must be self-contained and should reference only public artifacts or information intentionally approved for disclosure. Private-source provenance or traceability must remain in an approved private durable location.
+- Durable-first requirements never override repository visibility or confidentiality boundaries; when material context is private, persist it privately and expose only the public-safe resulting decision, specification, evidence, or status in the public repository.
 - Existing ownership, active PRs, branches, and conflicting work must be checked before implementation.
 - Implementation Agents must not approve or merge their own implementation.
 - Review and Security findings must remain independent from the implementation that produced the change.
