@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
@@ -56,8 +58,13 @@ jobs:
           print(json.loads(Path('firmware/release-profile.json').read_text(encoding='utf-8'))['firmware_version'])
           PY
           )"
+          EXPECTED_TAG="v$VERSION"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$EXPECTED_TAG" ]; then
+            echo "Pages release tag $GITHUB_REF_NAME does not match release profile $EXPECTED_TAG"
+            exit 1
+          fi
           EXACT_RELEASE=false
-          if git tag --points-at "$GITHUB_SHA" --list "v$VERSION" | grep -Fxq "v$VERSION"; then
+          if git tag --points-at "$GITHUB_SHA" --list "$EXPECTED_TAG" | grep -Fxq "$EXPECTED_TAG"; then
             EXACT_RELEASE=true
           fi
           {
