@@ -1,5 +1,6 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
+#include "m5auth/device/sticks3/totp_validity.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -26,13 +27,21 @@ constexpr std::uint8_t kReadableTextSize = 2;
 constexpr std::uint8_t kOtpTextSize = 4;
 constexpr int kOtpDigitGapPx = 3;
 
+constexpr std::uint16_t kColorBlack = 0x0000;
+constexpr std::uint16_t kColorWhite = 0xffff;
+constexpr std::uint16_t kColorGood = 0x07e0;
+constexpr std::uint16_t kColorAttention = 0xffe0;
+constexpr std::uint16_t kColorError = 0xf800;
+
 constexpr int kHeaderY = 0;
 constexpr int kPrimaryLineY = 20;
 constexpr int kSecondaryLineY = 40;
 constexpr int kTertiaryLineY = 60;
+constexpr int kStatusBandHeight = 18;
 constexpr int kAccountLabelY = 80;
 constexpr int kAccountLabelHeight = 18;
 constexpr int kOtpY = 101;
+constexpr int kOtpBandHeight = 34;
 constexpr int kHelpFirstY = 99;
 constexpr int kHelpSecondY = 117;
 
@@ -52,6 +61,15 @@ const char* readiness_text(time::Readiness readiness) {
     return "TIME ERROR";
 }
 
+std::uint16_t readiness_color(time::Readiness readiness) {
+    switch (readiness) {
+        case time::Readiness::kReady: return kColorGood;
+        case time::Readiness::kNotSynced: return kColorAttention;
+        case time::Readiness::kStale: return kColorError;
+    }
+    return kColorError;
+}
+
 const char* runtime_state_text(vault_runtime::State state) {
     switch (state) {
         case vault_runtime::State::kUnprovisioned: return "UNPROVISIONED";
@@ -63,17 +81,48 @@ const char* runtime_state_text(vault_runtime::State state) {
     return "SECURITY ERROR";
 }
 
+std::uint16_t runtime_state_color(vault_runtime::State state) {
+    switch (state) {
+        case vault_runtime::State::kUnlocked: return kColorGood;
+        case vault_runtime::State::kLocked:
+        case vault_runtime::State::kUnprovisioned:
+            return kColorAttention;
+        case vault_runtime::State::kReprovisionRequired:
+        case vault_runtime::State::kError:
+            return kColorError;
+    }
+    return kColorError;
+}
+
 void prepare_readable_display() {
     M5.Display.setTextSize(kReadableTextSize);
-    M5.Display.setTextColor(0xffff, 0x0000);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
     M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
 }
 
 void draw_line(const char* text, int y) {
     M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
     M5.Display.setCursor(0, y);
     M5.Display.print(text);
+}
+
+void draw_semantic_line(
+    const char* prefix,
+    const char* value,
+    std::uint16_t value_color,
+    int y
+) {
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
+    M5.Display.setCursor(0, y);
+    M5.Display.print(prefix);
+    const int value_x = M5.Display.textWidth(prefix);
+    M5.Display.setTextColor(value_color, kColorBlack);
+    M5.Display.setCursor(value_x, y);
+    M5.Display.print(value);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
 }
 
 M5Canvas* account_label_canvas() {
@@ -89,9 +138,9 @@ M5Canvas* account_label_canvas() {
         ) != nullptr;
         if (available) {
             canvas.setTextSize(kReadableTextSize);
-            canvas.setTextColor(0xffff, 0x0000);
+            canvas.setTextColor(kColorWhite, kColorBlack);
             canvas.setTextWrap(false);
-            canvas.clear(0x0000);
+            canvas.clear(kColorBlack);
         }
     }
     return available ? &canvas : nullptr;
@@ -107,6 +156,7 @@ void draw_otp(std::uint32_t revealed_code) {
     );
 
     M5.Display.setTextSize(kOtpTextSize);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
     const int digit_width = M5.Display.textWidth("0");
     const int group_gap = digit_width / 2;
     const int total_width =
@@ -305,6 +355,8 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
 void CanonicalUiController::hide_reveal() {
     revealed_code_ = 0;
     reveal_deadline_ms_ = 0;
+    revealed_period_index_ = 0;
+    validity_seconds_remaining_ = 0;
     reveal_active_ = false;
     reset_label_scroll(monotonic_ms());
 }
@@ -448,29 +500,66 @@ void CanonicalUiController::select_previous() {
     (void)persist_selection();
 }
 
+bool CanonicalUiController::refresh_revealed_totp() {
+    if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) {
+        last_generate_result_ = totp::GenerateResult::kAccountNotFound;
+        return false;
+    }
+
+    std::uint32_t code = 0;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        totp::GenerateMetadata generation{};
+        {
+            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+            last_generate_result_ = generator_.generate_for_credential(
+                credentials_[selected_index_].credential_id,
+                &code,
+                &generation
+            );
+        }
+        if (last_generate_result_ != totp::GenerateResult::kOk) break;
+
+        std::uint64_t current_unix_seconds = 0;
+        if (!time_service_.current_unix_seconds(&current_unix_seconds)) {
+            last_generate_result_ = totp::GenerateResult::kTimeStale;
+            break;
+        }
+
+        const auto generated_validity = totp_validity::from_unix_seconds(
+            generation.unix_seconds
+        );
+        const auto current_validity = totp_validity::from_unix_seconds(
+            current_unix_seconds
+        );
+        if (!totp_validity::same_period(generated_validity, current_validity)) {
+            // The period rolled while generation was in progress. Wipe this code
+            // and retry once so the visible OTP and countdown are one period.
+            vault_runtime::secure_zero(&code, sizeof(code));
+            continue;
+        }
+
+        revealed_code_ = code;
+        revealed_period_index_ = current_validity.period_index;
+        validity_seconds_remaining_ = current_validity.seconds_remaining;
+        vault_runtime::secure_zero(&code, sizeof(code));
+        return true;
+    }
+
+    vault_runtime::secure_zero(&code, sizeof(code));
+    return false;
+}
+
 void CanonicalUiController::reveal_selected(std::uint64_t now_ms) {
     hide_reveal();
     last_generate_result_ = totp::GenerateResult::kOk;
-    if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) return;
+    if (!refresh_revealed_totp()) return;
 
-    std::uint32_t code = 0;
-    {
-        std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-        last_generate_result_ = generator_.generate_for_credential(
-            credentials_[selected_index_].credential_id,
-            &code
-        );
-    }
-    if (last_generate_result_ == totp::GenerateResult::kOk) {
-        revealed_code_ = code;
-        reveal_active_ = true;
-        reveal_deadline_ms_ = now_ms >
-                std::numeric_limits<std::uint64_t>::max() - kOtpRevealDurationMs
-            ? std::numeric_limits<std::uint64_t>::max()
-            : now_ms + kOtpRevealDurationMs;
-    }
+    reveal_active_ = true;
+    reveal_deadline_ms_ = now_ms >
+            std::numeric_limits<std::uint64_t>::max() - kOtpRevealDurationMs
+        ? std::numeric_limits<std::uint64_t>::max()
+        : now_ms + kOtpRevealDurationMs;
     reset_label_scroll(now_ms);
-    vault_runtime::secure_zero(&code, sizeof(code));
 }
 
 void CanonicalUiController::render_account_label() {
@@ -481,16 +570,16 @@ void CanonicalUiController::render_account_label() {
 
     std::string label = display_label(credentials_[selected_index_]);
     if (M5Canvas* canvas = account_label_canvas(); canvas != nullptr) {
-        canvas->clear(0x0000);
+        canvas->clear(kColorBlack);
         canvas->setTextSize(kReadableTextSize);
-        canvas->setTextColor(0xffff, 0x0000);
+        canvas->setTextColor(kColorWhite, kColorBlack);
         canvas->setTextWrap(false);
         canvas->setCursor(-label_scroll_offset_px_, 0);
         canvas->print(label.c_str());
         canvas->pushSprite(&M5.Display, 0, kAccountLabelY);
         // The sprite is only a transient drawing surface. Clear its pixels after
         // the blit so it does not become another persistent credential-label copy.
-        canvas->clear(0x0000);
+        canvas->clear(kColorBlack);
     } else {
         // Allocation failure still avoids the Human-Gate defect: update only the
         // label band rather than clearing/redrawing the whole 240x135 display.
@@ -499,15 +588,47 @@ void CanonicalUiController::render_account_label() {
             kAccountLabelY,
             static_cast<std::int32_t>(M5.Display.width()),
             kAccountLabelHeight,
-            0x0000
+            kColorBlack
         );
         M5.Display.setTextSize(kReadableTextSize);
-        M5.Display.setTextColor(0xffff, 0x0000);
+        M5.Display.setTextColor(kColorWhite, kColorBlack);
         M5.Display.setTextWrap(false);
         M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
         M5.Display.print(label.c_str());
     }
     wipe_text(&label);
+}
+
+void CanonicalUiController::render_reveal_validity() {
+    M5.Display.fillRect(
+        0,
+        kTertiaryLineY,
+        static_cast<std::int32_t>(M5.Display.width()),
+        kStatusBandHeight,
+        kColorBlack
+    );
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
+    M5.Display.setCursor(0, kTertiaryLineY);
+    M5.Display.printf(
+        "Valid: %us",
+        static_cast<unsigned>(validity_seconds_remaining_)
+    );
+}
+
+void CanonicalUiController::render_reveal_region() {
+    // Numeric validity is intentionally placed in the existing status band so
+    // Issue #139's six-digit size/spacing remains untouched. Animation ticks and
+    // rollover redraw only bounded bands, never the whole 240x135 screen.
+    render_reveal_validity();
+    M5.Display.fillRect(
+        0,
+        kOtpY,
+        static_cast<std::int32_t>(M5.Display.width()),
+        kOtpBandHeight,
+        kColorBlack
+    );
+    draw_otp(revealed_code_);
 }
 
 void CanonicalUiController::render() {
@@ -557,11 +678,18 @@ void CanonicalUiController::render() {
             draw_line("Expires in 30 sec", status_y + 20);
         }
     } else {
-        M5.Display.setTextSize(kReadableTextSize);
-        M5.Display.setCursor(0, kPrimaryLineY);
-        M5.Display.printf("State: %s", runtime_state_text(runtime_state_));
-        M5.Display.setCursor(0, kSecondaryLineY);
-        M5.Display.printf("Time: %s", readiness_text(time_status.readiness));
+        draw_semantic_line(
+            "State: ",
+            runtime_state_text(runtime_state_),
+            runtime_state_color(runtime_state_),
+            kPrimaryLineY
+        );
+        draw_semantic_line(
+            "Time: ",
+            readiness_text(time_status.readiness),
+            readiness_color(time_status.readiness),
+            kSecondaryLineY
+        );
 
         if (storage_error_) {
             draw_line("Vault unavailable", kTertiaryLineY);
@@ -574,16 +702,21 @@ void CanonicalUiController::render() {
                 last_generate_result_ != totp::GenerateResult::kOk &&
                 last_generate_result_ != totp::GenerateResult::kNotSynced &&
                 last_generate_result_ != totp::GenerateResult::kTimeStale;
-            M5.Display.setTextSize(kReadableTextSize);
-            M5.Display.setCursor(0, kTertiaryLineY);
-            if (generate_error && !reveal_active_) {
-                M5.Display.print("OTP unavailable");
+            if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
+                render_reveal_validity();
             } else {
-                M5.Display.printf(
-                    "%u / %u",
-                    static_cast<unsigned>(selected_index_ + 1),
-                    static_cast<unsigned>(credentials_.size())
-                );
+                M5.Display.setTextSize(kReadableTextSize);
+                M5.Display.setTextColor(kColorWhite, kColorBlack);
+                M5.Display.setCursor(0, kTertiaryLineY);
+                if (generate_error) {
+                    M5.Display.print("OTP unavailable");
+                } else {
+                    M5.Display.printf(
+                        "%u / %u",
+                        static_cast<unsigned>(selected_index_ + 1),
+                        static_cast<unsigned>(credentials_.size())
+                    );
+                }
             }
 
             render_account_label();
@@ -688,6 +821,36 @@ void CanonicalUiController::run() {
                 dirty = true;
             }
 
+            bool validity_changed = false;
+            bool rollover_changed = false;
+            if (reveal_active_) {
+                std::uint64_t current_unix_seconds = 0;
+                if (!time_service_.current_unix_seconds(&current_unix_seconds)) {
+                    last_generate_result_ = totp::GenerateResult::kTimeStale;
+                    hide_reveal();
+                    dirty = true;
+                } else {
+                    const auto current_validity = totp_validity::from_unix_seconds(
+                        current_unix_seconds
+                    );
+                    if (current_validity.period_index != revealed_period_index_) {
+                        // Refresh code + period metadata together. This path never
+                        // writes reveal_deadline_ms_, so rollover cannot extend 10 s.
+                        if (refresh_revealed_totp()) {
+                            rollover_changed = true;
+                        } else {
+                            hide_reveal();
+                            dirty = true;
+                        }
+                    } else if (
+                        current_validity.seconds_remaining != validity_seconds_remaining_
+                    ) {
+                        validity_seconds_remaining_ = current_validity.seconds_remaining;
+                        validity_changed = true;
+                    }
+                }
+            }
+
             if (!current_presence.active && !presence_gesture_quarantine_.active()) {
                 if (M5.BtnA.wasHold()) {
                     reveal_selected(now_ms);
@@ -719,6 +882,12 @@ void CanonicalUiController::run() {
 
             if (dirty) {
                 render();
+            } else if (rollover_changed) {
+                // Code and validity are committed under view_mutex_ and then both
+                // bounded bands are redrawn as one rollover update.
+                render_reveal_region();
+            } else if (validity_changed) {
+                render_reveal_validity();
             } else if (label_scroll_changed) {
                 // Scroll-only ticks update the double-buffered label band. The
                 // rest of the LCD remains untouched, eliminating whole-screen
