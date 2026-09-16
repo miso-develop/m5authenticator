@@ -1,4 +1,5 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
+#include "m5auth/device/sticks3/label_scroll_state.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -239,11 +240,11 @@ std::string CanonicalUiController::display_label(const CredentialView& credentia
 }
 
 void CanonicalUiController::reset_label_scroll(std::uint64_t now_ms) {
-    label_scroll_epoch_ms_ = now_ms;
-    label_scroll_offset_px_ = 0;
+    label_scroll::reset(now_ms, &label_scroll_epoch_ms_, &label_scroll_offset_px_);
 }
 
 bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
+    if (storage_error_) return false;
     if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) {
         if (label_scroll_offset_px_ == 0) return false;
         label_scroll_offset_px_ = 0;
@@ -262,10 +263,17 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
         return true;
     }
 
-    const std::uint64_t elapsed_ms = now_ms - label_scroll_epoch_ms_;
-    if (elapsed_ms < kLabelScrollDelayMs) return false;
+    if (!label_scroll::dwell_elapsed(
+            storage_error_,
+            label_scroll_epoch_ms_,
+            now_ms,
+            kLabelScrollDelayMs
+        )) {
+        return false;
+    }
 
-    const std::uint64_t scroll_elapsed_ms = elapsed_ms - kLabelScrollDelayMs;
+    const std::uint64_t scroll_elapsed_ms =
+        now_ms - label_scroll_epoch_ms_ - kLabelScrollDelayMs;
     const std::uint64_t steps = scroll_elapsed_ms / kLabelScrollStepMs;
     const int max_offset = label_width - viewport_width;
     const std::uint64_t max_steps =
@@ -274,10 +282,11 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
     const int desired_offset = static_cast<int>(
         bounded_steps * static_cast<std::uint64_t>(kLabelScrollStepPx)
     );
-    if (desired_offset == label_scroll_offset_px_) return false;
-
-    label_scroll_offset_px_ = desired_offset;
-    return true;
+    return label_scroll::update_offset(
+        storage_error_,
+        desired_offset,
+        &label_scroll_offset_px_
+    );
 }
 
 void CanonicalUiController::hide_reveal() {
@@ -324,7 +333,15 @@ bool CanonicalUiController::refresh_credentials(bool force) {
     }
     if (!force && vault_visible_ && visible_generation_ == runtime_metadata.generation) {
         if (storage_error_) {
+            const bool previous_storage_error = storage_error_;
             storage_error_ = false;
+            (void)label_scroll::on_screen_hidden_changed(
+                previous_storage_error,
+                storage_error_,
+                monotonic_ms(),
+                &label_scroll_epoch_ms_,
+                &label_scroll_offset_px_
+            );
             return true;
         }
         return false;
@@ -388,7 +405,15 @@ bool CanonicalUiController::persist_selection() {
     const vault_runtime::Status status = runtime_.set_last_used(
         credentials_[selected_index_].credential_id
     );
+    const bool previous_storage_error = storage_error_;
     storage_error_ = status != vault_runtime::Status::kOk;
+    (void)label_scroll::on_screen_hidden_changed(
+        previous_storage_error,
+        storage_error_,
+        monotonic_ms(),
+        &label_scroll_epoch_ms_,
+        &label_scroll_offset_px_
+    );
     return status == vault_runtime::Status::kOk;
 }
 
