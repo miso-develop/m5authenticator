@@ -49,6 +49,7 @@ jobs:
             --merged-binary firmware/build/m5authenticator-merged.bin \
             --output-dir /tmp/m5auth-release \
             --build-commit "$GITHUB_SHA" \
+            --exact-release \
             --require-production
           git diff --exit-code -- firmware/dependencies.lock
       - name: Publish GitHub Release directly
