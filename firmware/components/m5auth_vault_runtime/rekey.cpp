@@ -33,7 +33,8 @@ bool same_envelope(
 Status Runtime::rekey_encrypted_vault(
     std::uint64_t expected_generation,
     vault::VaultEnvelope envelope,
-    Vmk vmk
+    Vmk vmk,
+    std::uint64_t now_ms
 ) {
     ScopedVmkWipe wipe(vmk);
     if (!initialized_) return Status::kNotReady;
@@ -46,8 +47,16 @@ Status Runtime::rekey_encrypted_vault(
         envelope.vault_id != envelope_.vault_id) {
         return Status::kGenerationMismatch;
     }
+    if (!vault::is_supported_vault_format(envelope.vault_format_version)) {
+        return Status::kUnsupportedVaultFormat;
+    }
+    if (envelope_.vault_format_version == vault::kVaultFormatVersion2 &&
+        envelope.vault_format_version == vault::kVaultFormatVersion1) {
+        return Status::kInvalidArgument;
+    }
 
-    Status status = validate_envelope_with_key(envelope, vmk);
+    std::optional<std::uint8_t> policy;
+    Status status = validate_envelope_with_key(envelope, vmk, &policy);
     if (status != Status::kOk) return status;
 
     status = persistence_.replace_envelope(expected_generation, envelope);
@@ -58,7 +67,7 @@ Status Runtime::rekey_encrypted_vault(
     if (status != Status::kOk || !snapshot.schema_ready || !snapshot.has_vault ||
         !same_envelope(snapshot.envelope, envelope)) {
         state_ = State::kError;
-        wipe_vmk();
+        clear_unlock_session_state();
         return status == Status::kOk ? Status::kCorrupt : status;
     }
 
@@ -66,10 +75,12 @@ Status Runtime::rekey_encrypted_vault(
     last_used_ = snapshot.last_used;
     schema_ready_ = true;
     has_vault_ = true;
-    wipe_vmk();
+    clear_unlock_session_state();
     vmk_ = vmk;
     vmk_present_ = true;
+    begin_unlock_session(policy, now_ms);
     state_ = State::kUnlocked;
+    recovery_reset_allowed_ = false;
     return Status::kOk;
 }
 
