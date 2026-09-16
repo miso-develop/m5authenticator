@@ -12,11 +12,17 @@ import {
   type FirmwareFlashFunction,
   type FirmwareJsonLoader,
   type FirmwarePartSizeLoader,
+  type FirmwareTargetLocation,
 } from "./firmware-update";
 
 const BUILD_A = "fedcba9876543210";
 const BUILD_B = "abcdef1234567890";
-const manifestUrl = new URL("https://example.test/m5authenticator/firmware/update-manifest.json");
+const TEST_ORIGIN = "https://example.test";
+const TEST_LOCATION: FirmwareTargetLocation = {
+  href: `${TEST_ORIGIN}/m5authenticator/flash.html`,
+  origin: TEST_ORIGIN,
+};
+const manifestUrl = new URL(`${TEST_ORIGIN}/m5authenticator/firmware/update-manifest.json`);
 
 function statePreservingManifest(
   buildCommit = BUILD_A,
@@ -83,7 +89,6 @@ describe("firmware build provenance binding", () => {
   });
 
   it("loads one pinned target and binds both First Install and Normal Update to build A", async () => {
-    const origin = window.location.origin;
     const basePath = "/m5authenticator/firmware/";
     const responses = new Map<string, unknown>([
       [`${basePath}firmware-target.json`, targetMetadata(BUILD_A)],
@@ -96,12 +101,12 @@ describe("firmware build provenance binding", () => {
       return value;
     });
 
-    const target = await loadPinnedFirmwareTarget(`${origin}${basePath}firmware-target.json`, loadJson);
+    const target = await loadPinnedFirmwareTarget(`${basePath}firmware-target.json`, loadJson, TEST_LOCATION);
     expect(target.identity.buildCommit).toBe(BUILD_A);
     expect(target.factory.url.pathname).toContain(BUILD_A);
     expect(target.update.url.pathname).toContain(BUILD_A);
 
-    // Simulate a deployment drift after the page has displayed build A. The
+    // Simulate deployment drift after the page has displayed build A. The
     // already-resolved target remains pinned to A and neither flash invocation
     // performs another mutable-manifest lookup.
     responses.set(`${basePath}firmware-target.json`, targetMetadata(BUILD_B));
@@ -126,7 +131,6 @@ describe("firmware build provenance binding", () => {
   });
 
   it("rejects build B in either pinned manifest while the displayed target is build A", async () => {
-    const origin = window.location.origin;
     const basePath = "/m5authenticator/firmware/";
 
     for (const drift of ["factory", "update"] as const) {
@@ -142,29 +146,29 @@ describe("firmware build provenance binding", () => {
       };
 
       await expect(
-        loadPinnedFirmwareTarget(`${origin}${basePath}firmware-target.json`, loadJson),
+        loadPinnedFirmwareTarget(`${basePath}firmware-target.json`, loadJson, TEST_LOCATION),
       ).rejects.toThrow(/does not match the displayed Flash target/);
     }
   });
 
   it("rejects mutable or cross-build URLs even when manifest metadata claims build A", () => {
     const identity = firmwareArtifactIdentityFromManifest(statePreservingManifest(BUILD_A));
-    const mutableUpdateUrl = new URL(`${window.location.origin}/m5authenticator/firmware/update-manifest.json`);
+    const mutableUpdateUrl = new URL(`${TEST_ORIGIN}/m5authenticator/firmware/update-manifest.json`);
     expect(() => validateStatePreservingManifest(
       statePreservingManifest(BUILD_A),
       mutableUpdateUrl,
-      window.location.origin,
+      TEST_ORIGIN,
       identity,
     )).toThrow(/not pinned/);
 
-    const pinnedFactoryUrl = new URL(`${window.location.origin}/m5authenticator/firmware/factory-manifest-${BUILD_A}.json`);
+    const pinnedFactoryUrl = new URL(`${TEST_ORIGIN}/m5authenticator/firmware/factory-manifest-${BUILD_A}.json`);
     expect(() => validateFactoryManifest(
       {
         ...factoryManifest(BUILD_A),
         builds: [{ chipFamily: "ESP32-S3", parts: [{ path: `m5authenticator-v0.1.0-${BUILD_B}-m5sticks3.bin`, offset: 0 }] }],
       },
       pinnedFactoryUrl,
-      window.location.origin,
+      TEST_ORIGIN,
       identity,
     )).toThrow(/not pinned/);
   });
