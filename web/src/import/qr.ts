@@ -19,6 +19,7 @@ const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
 const NATIVE_QR_DECODE_TIMEOUT_MS = 2_000;
+const HIGH_CONTRAST_THRESHOLD = 0x80;
 
 interface NativeBarcodeResult {
   format?: string;
@@ -75,6 +76,31 @@ function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   }
 
   return luminances;
+}
+
+function binarizeImageDataInPlace(imageData: ImageData): void {
+  const data = imageData.data;
+  for (let offset = 0; offset < data.length; offset += 4) {
+    const alpha = data[offset + 3]!;
+    let red = data[offset]!;
+    let green = data[offset + 1]!;
+    let blue = data[offset + 2]!;
+
+    if (alpha === 0) {
+      red = green = blue = 0xff;
+    } else if (alpha !== 0xff) {
+      red = Math.round((red * alpha + 0xff * (0xff - alpha)) / 0xff);
+      green = Math.round((green * alpha + 0xff * (0xff - alpha)) / 0xff);
+      blue = Math.round((blue * alpha + 0xff * (0xff - alpha)) / 0xff);
+    }
+
+    const luminance = (306 * red + 601 * green + 117 * blue + 0x200) >> 10;
+    const value = luminance < HIGH_CONTRAST_THRESHOLD ? 0x00 : 0xff;
+    data[offset] = value;
+    data[offset + 1] = value;
+    data[offset + 2] = value;
+    data[offset + 3] = 0xff;
+  }
 }
 
 function decodeLuminances(luminances: Uint8ClampedArray, width: number, height: number): string {
@@ -234,6 +260,37 @@ async function decodeNativeWithinBudget(
   return await withTimeout(decodeNativeQr(bitmap), remainingMs);
 }
 
+async function tryScaledNative(
+  sourceBitmap: ImageBitmap,
+  scale: number,
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  dependencies: QrImageDecodeDependencies,
+  deadline: number,
+): Promise<string | undefined> {
+  const dimensions = scaledDimensions(sourceBitmap.width, sourceBitmap.height, scale);
+  if (!dimensions || !dependencies.decodeNativeQr || performance.now() >= deadline) {
+    return undefined;
+  }
+
+  let scaledBitmap: ImageBitmap | undefined;
+  canvas.width = dimensions.width;
+  canvas.height = dimensions.height;
+  context.imageSmoothingEnabled = false;
+  try {
+    context.drawImage(sourceBitmap, 0, 0, dimensions.width, dimensions.height);
+    scaledBitmap = await dependencies.createImageBitmap(canvas);
+    return await decodeNativeWithinBudget(dependencies.decodeNativeQr, scaledBitmap, deadline);
+  } catch {
+    return undefined;
+  } finally {
+    scaledBitmap?.close();
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
 export async function decodeQrImage(
   file: File,
   dependencies: QrImageDecodeDependencies = defaultDependencies,
@@ -243,7 +300,7 @@ export async function decodeQrImage(
   }
 
   let bitmap: ImageBitmap | undefined;
-  let scaledBitmap: ImageBitmap | undefined;
+  let highContrastBitmap: ImageBitmap | undefined;
   let canvas: HTMLCanvasElement | undefined;
   let context: CanvasRenderingContext2D | null = null;
   let imageData: ImageData | undefined;
@@ -286,10 +343,6 @@ export async function decodeQrImage(
       throw new ImportError("No supported QR code could be decoded from the selected image.");
     }
 
-    // Preserve the PR #131 path exactly through the first native attempt. R2 only
-    // adds scaled native rasters after the original bitmap has been exhausted.
-    // All native attempts share one two-second wall-clock budget so a stalled
-    // platform backend cannot multiply the timeout across original + 2x + 3x.
     const nativeDeadline = performance.now() + NATIVE_QR_DECODE_TIMEOUT_MS;
     const originalNativeResult = await decodeNativeWithinBudget(
       dependencies.decodeNativeQr,
@@ -300,51 +353,65 @@ export async function decodeQrImage(
       return originalNativeResult;
     }
 
-    // Scaled native attempts no longer need the copied RGBA pixels. Zero the
-    // temporary buffer before reusing the same canvas as the single scale buffer.
-    imageData.data.fill(0);
-    imageData = undefined;
+    // First expose the same bounded 2x scale that ZXing already receives to the
+    // native detector. This is the narrow R2 gap identified after PR #131.
+    const scaled2Result = await tryScaledNative(
+      bitmap,
+      2,
+      canvas,
+      context,
+      dependencies,
+      nativeDeadline,
+    );
+    if (scaled2Result) {
+      return scaled2Result;
+    }
 
-    for (const scale of DENSE_QR_SCALE_FACTORS) {
-      if (performance.now() >= nativeDeadline) {
-        break;
-      }
-
-      const dimensions = scaledDimensions(bitmap.width, bitmap.height, scale);
-      if (!dimensions) {
-        continue;
-      }
-
-      canvas.width = dimensions.width;
-      canvas.height = dimensions.height;
-      context.imageSmoothingEnabled = false;
+    // A screenshot that has already been interpolated can remain undecodable when
+    // merely enlarged. Perform one deterministic in-place black/white conversion,
+    // create one temporary source bitmap, then give only its bounded 2x raster to
+    // the native detector. No payload or decoded text is logged or persisted.
+    if (performance.now() < nativeDeadline) {
+      binarizeImageDataInPlace(imageData);
       try {
-        context.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
-        scaledBitmap = await dependencies.createImageBitmap(canvas);
-        const scaledNativeResult = await decodeNativeWithinBudget(
-          dependencies.decodeNativeQr,
-          scaledBitmap,
+        highContrastBitmap = await dependencies.createImageBitmap(imageData);
+        const highContrast2Result = await tryScaledNative(
+          highContrastBitmap,
+          2,
+          canvas,
+          context,
+          dependencies,
           nativeDeadline,
         );
-        if (scaledNativeResult) {
-          return scaledNativeResult;
+        if (highContrast2Result) {
+          return highContrast2Result;
         }
       } catch {
-        // A failed local raster/native attempt is equivalent to no decode. Keep
-        // the generic secret-free failure boundary after all bounded attempts.
+        // Treat local preprocessing failure as another exhausted bounded attempt.
       } finally {
-        scaledBitmap?.close();
-        scaledBitmap = undefined;
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        canvas.width = 0;
-        canvas.height = 0;
+        highContrastBitmap?.close();
+        highContrastBitmap = undefined;
+        imageData.data.fill(0);
+        imageData = undefined;
       }
+    }
+
+    const scaled3Result = await tryScaledNative(
+      bitmap,
+      3,
+      canvas,
+      context,
+      dependencies,
+      nativeDeadline,
+    );
+    if (scaled3Result) {
+      return scaled3Result;
     }
 
     throw new ImportError("No supported QR code could be decoded from the selected image.");
   } finally {
     imageData?.data.fill(0);
-    scaledBitmap?.close();
+    highContrastBitmap?.close();
     bitmap?.close();
     if (canvas) {
       context?.clearRect(0, 0, canvas.width, canvas.height);
