@@ -23,7 +23,7 @@ void initialize() {
     M5.Display.setTextColor(0xffff, 0x0000);
     M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
-    M5.Display.println("M5 Authenticator");
+    M5.Display.println("M5Authenticator");
     M5.Display.println("Starting...");
 }
 

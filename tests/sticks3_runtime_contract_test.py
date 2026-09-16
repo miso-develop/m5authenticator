@@ -10,6 +10,7 @@ SDKCONFIG = ROOT / "firmware" / "sdkconfig.defaults"
 PARTITIONS = ROOT / "firmware" / "partitions.csv"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
+CANONICAL_DEVICE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "canonical_device.hpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
@@ -56,11 +57,83 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
     def test_display_scale_contract_is_readable(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        startup = RELEASE_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertRegex(text, r"kReadableTextSize\s*=\s*2;")
         self.assertRegex(text, r"kOtpTextSize\s*=\s*4;")
+        self.assertNotIn("kCompactTextSize", text)
+        self.assertNotRegex(text, r"setTextSize\(\s*1\s*\)")
         self.assertIn("M5.Display.setTextWrap(false);", text)
         self.assertIn("M5.Display.setTextSize(kOtpTextSize);", text)
         self.assertIn("M5.Display.setTextSize(kReadableTextSize);", text)
+        self.assertIn('draw_line("M5Authenticator", kHeaderY);', text)
+        self.assertNotIn('"M5 Authenticator"', text)
+        self.assertIn('M5.Display.println("M5Authenticator");', startup)
+        self.assertNotIn('"M5 Authenticator"', startup)
+        self.assertIn("M5.Display.setTextSize(2);", startup)
+
+    def test_issue_139_single_click_hides_active_otp_before_next_navigation(self) -> None:
+        text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        start = text.index("else if (M5.BtnA.wasSingleClicked())")
+        end = text.index("dirty = true;", start)
+        block = text[start:end]
+        self.assertIn("if (reveal_active_)", block)
+        self.assertIn("hide_reveal();", block)
+        self.assertIn("select_next();", block)
+        self.assertLess(block.index("hide_reveal();"), block.index("select_next();"))
+
+    def test_issue_139_hold_double_single_precedence_is_preserved(self) -> None:
+        text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        hold = text.index("if (M5.BtnA.wasHold())")
+        double = text.index("else if (M5.BtnA.wasDoubleClicked())")
+        single = text.index("else if (M5.BtnA.wasSingleClicked())")
+        self.assertLess(hold, double)
+        self.assertLess(double, single)
+        self.assertIn("reveal_selected(now_ms);", text[hold:double])
+        self.assertIn("select_previous();", text[double:single])
+        self.assertIn("kOtpRevealDurationMs = 10'000;", text)
+
+    def test_issue_139_long_label_scroll_is_repeating_transient_and_fit_aware(self) -> None:
+        cpp = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        hpp = CANONICAL_DEVICE_HPP.read_text(encoding="utf-8")
+        self.assertIn("kLabelScrollDelayMs = 2'000;", cpp)
+        self.assertIn("kLabelScrollEndDelayMs = 2'000;", cpp)
+        self.assertIn("label_scroll::cycle_offset_px(", cpp)
+        self.assertIn("M5.Display.textWidth(label.c_str())", cpp)
+        self.assertIn("label_width <= viewport_width", cpp)
+        self.assertIn("label_scroll_epoch_ms_", hpp)
+        self.assertIn("label_scroll_offset_px_", hpp)
+        self.assertNotIn("label_scroll_text_", hpp)
+        self.assertGreaterEqual(cpp.count("reset_label_scroll("), 5)
+        self.assertIn("label_scroll::on_screen_hidden_changed(", cpp)
+
+    def test_issue_139_scroll_only_tick_does_not_clear_whole_screen(self) -> None:
+        text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        self.assertIn("M5Canvas* account_label_canvas()", text)
+        self.assertIn("canvas.createSprite(", text)
+        self.assertIn("canvas->pushSprite(&M5.Display, 0, kAccountLabelY);", text)
+        self.assertIn("canvas->clear(0x0000);", text)
+        self.assertIn("label_scroll_changed = update_label_scroll(now_ms);", text)
+        self.assertIn("else if (label_scroll_changed)", text)
+        self.assertIn("render_account_label();", text)
+        self.assertNotIn("dirty = update_label_scroll(now_ms) || dirty;", text)
+        scroll_branch = text[text.index("else if (label_scroll_changed)") :]
+        scroll_branch = scroll_branch[: scroll_branch.index("vTaskDelay(kUiPollInterval)")]
+        self.assertNotIn("M5.Display.clear();", scroll_branch)
+        self.assertNotIn("render();", scroll_branch)
+
+    def test_issue_139_otp_spacing_and_readable_hint_contract(self) -> None:
+        text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        self.assertIn("constexpr int kOtpY = 101;", text)
+        self.assertIn("kOtpDigitGapPx = 3;", text)
+        self.assertIn("const int group_gap = digit_width / 2;", text)
+        self.assertIn("if (index == 2)", text)
+        self.assertIn("M5.Display.print(otp[index]);", text)
+        self.assertIn('draw_line("click: 1x next", kHelpFirstY);', text)
+        self.assertIn('draw_line("2x prev / hold OTP", kHelpSecondY);', text)
+        self.assertNotIn('"1x next / 2x prev / hold OTP"', text)
+        self.assertNotIn('"Click: next"', text)
+        self.assertNotIn('"2x: previous"', text)
+        self.assertNotIn('"Hold: reveal OTP"', text)
 
     def test_transport_teardown_preserves_active_runtime_but_explicit_lock_wipes_it(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
@@ -91,7 +164,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
         ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertIn("session::PresenceOperation::kFactoryReset", protocol)
-        self.assertIn('M5.Display.println("ERASE DEVICE DATA");', ui)
+        self.assertIn('draw_line("ERASE DEVICE DATA"', ui)
 
     def test_idle_usb_runs_housekeeping_without_becoming_disconnect(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")

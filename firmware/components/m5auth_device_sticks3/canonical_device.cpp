@@ -1,4 +1,5 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
+#include "m5auth/device/sticks3/label_scroll_state.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,9 +15,26 @@ namespace {
 
 constexpr std::uint64_t kCredentialRefreshIntervalMs = 1'000;
 constexpr std::uint64_t kOtpRevealDurationMs = 10'000;
+constexpr std::uint64_t kLabelScrollDelayMs = 2'000;
+constexpr std::uint64_t kLabelScrollEndDelayMs = 2'000;
+constexpr std::uint64_t kLabelScrollStepMs = 40;
+constexpr int kLabelScrollStepPx = 1;
 constexpr TickType_t kUiPollInterval = pdMS_TO_TICKS(20);
+// Issue #139 Human Gate: the pre-#139 readable size is the minimum for every
+// normal user-visible Device UI string. Do not introduce a compact size below it.
 constexpr std::uint8_t kReadableTextSize = 2;
 constexpr std::uint8_t kOtpTextSize = 4;
+constexpr int kOtpDigitGapPx = 3;
+
+constexpr int kHeaderY = 0;
+constexpr int kPrimaryLineY = 20;
+constexpr int kSecondaryLineY = 40;
+constexpr int kTertiaryLineY = 60;
+constexpr int kAccountLabelY = 80;
+constexpr int kAccountLabelHeight = 18;
+constexpr int kOtpY = 101;
+constexpr int kHelpFirstY = 99;
+constexpr int kHelpSecondY = 117;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -50,6 +68,66 @@ void prepare_readable_display() {
     M5.Display.setTextColor(0xffff, 0x0000);
     M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
+}
+
+void draw_line(const char* text, int y) {
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setCursor(0, y);
+    M5.Display.print(text);
+}
+
+M5Canvas* account_label_canvas() {
+    static M5Canvas canvas;
+    static bool initialized = false;
+    static bool available = false;
+    if (!initialized) {
+        initialized = true;
+        canvas.setColorDepth(8);
+        available = canvas.createSprite(
+            static_cast<std::int32_t>(M5.Display.width()),
+            kAccountLabelHeight
+        ) != nullptr;
+        if (available) {
+            canvas.setTextSize(kReadableTextSize);
+            canvas.setTextColor(0xffff, 0x0000);
+            canvas.setTextWrap(false);
+            canvas.clear(0x0000);
+        }
+    }
+    return available ? &canvas : nullptr;
+}
+
+void draw_otp(std::uint32_t revealed_code) {
+    char otp[7]{};
+    std::snprintf(
+        otp,
+        sizeof(otp),
+        "%06lu",
+        static_cast<unsigned long>(revealed_code)
+    );
+
+    M5.Display.setTextSize(kOtpTextSize);
+    const int digit_width = M5.Display.textWidth("0");
+    const int group_gap = digit_width / 2;
+    const int total_width =
+        (digit_width * 6) + (kOtpDigitGapPx * 5) + group_gap;
+    const int display_width = static_cast<int>(M5.Display.width());
+    int x = std::max(0, (display_width - total_width) / 2);
+
+    for (std::size_t index = 0; index < 6; ++index) {
+        M5.Display.setCursor(x, kOtpY);
+        M5.Display.print(otp[index]);
+        x += digit_width;
+        if (index < 5) {
+            x += kOtpDigitGapPx;
+        }
+        if (index == 2) {
+            x += group_gap;
+        }
+    }
+
+    M5.Display.setTextSize(kReadableTextSize);
+    vault_runtime::secure_zero(otp, sizeof(otp));
 }
 
 bool same_presence(const PresenceView& left, const PresenceView& right) {
@@ -186,10 +264,49 @@ std::string CanonicalUiController::display_label(const CredentialView& credentia
     return "Unnamed account";
 }
 
+void CanonicalUiController::reset_label_scroll(std::uint64_t now_ms) {
+    label_scroll::reset(now_ms, &label_scroll_epoch_ms_, &label_scroll_offset_px_);
+}
+
+bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
+    if (storage_error_) return false;
+    if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) {
+        return label_scroll::update_offset(false, 0, &label_scroll_offset_px_);
+    }
+
+    std::string label = display_label(credentials_[selected_index_]);
+    M5.Display.setTextSize(kReadableTextSize);
+    const int label_width = M5.Display.textWidth(label.c_str());
+    wipe_text(&label);
+
+    const int viewport_width = static_cast<int>(M5.Display.width());
+    if (label_width <= viewport_width) {
+        return label_scroll::update_offset(false, 0, &label_scroll_offset_px_);
+    }
+
+    const int max_offset = label_width - viewport_width;
+    const int desired_offset = label_scroll::cycle_offset_px(
+        storage_error_,
+        label_scroll_epoch_ms_,
+        now_ms,
+        kLabelScrollDelayMs,
+        kLabelScrollStepMs,
+        kLabelScrollStepPx,
+        max_offset,
+        kLabelScrollEndDelayMs
+    );
+    return label_scroll::update_offset(
+        storage_error_,
+        desired_offset,
+        &label_scroll_offset_px_
+    );
+}
+
 void CanonicalUiController::hide_reveal() {
     revealed_code_ = 0;
     reveal_deadline_ms_ = 0;
     reveal_active_ = false;
+    reset_label_scroll(monotonic_ms());
 }
 
 bool CanonicalUiController::clear_private_view() {
@@ -205,6 +322,7 @@ bool CanonicalUiController::clear_private_view() {
     selected_index_ = 0;
     visible_generation_ = 0;
     vault_visible_ = false;
+    reset_label_scroll(monotonic_ms());
     return changed;
 }
 
@@ -228,7 +346,15 @@ bool CanonicalUiController::refresh_credentials(bool force) {
     }
     if (!force && vault_visible_ && visible_generation_ == runtime_metadata.generation) {
         if (storage_error_) {
+            const bool previous_storage_error = storage_error_;
             storage_error_ = false;
+            (void)label_scroll::on_screen_hidden_changed(
+                previous_storage_error,
+                storage_error_,
+                monotonic_ms(),
+                &label_scroll_epoch_ms_,
+                &label_scroll_offset_px_
+            );
             return true;
         }
         return false;
@@ -280,6 +406,7 @@ bool CanonicalUiController::refresh_credentials(bool force) {
     visible_generation_ = runtime_metadata.generation;
     vault_visible_ = true;
     storage_error_ = false;
+    reset_label_scroll(monotonic_ms());
     return true;
 }
 
@@ -291,7 +418,15 @@ bool CanonicalUiController::persist_selection() {
     const vault_runtime::Status status = runtime_.set_last_used(
         credentials_[selected_index_].credential_id
     );
+    const bool previous_storage_error = storage_error_;
     storage_error_ = status != vault_runtime::Status::kOk;
+    (void)label_scroll::on_screen_hidden_changed(
+        previous_storage_error,
+        storage_error_,
+        monotonic_ms(),
+        &label_scroll_epoch_ms_,
+        &label_scroll_offset_px_
+    );
     return status == vault_runtime::Status::kOk;
 }
 
@@ -299,6 +434,7 @@ void CanonicalUiController::select_next() {
     if (credentials_.empty()) return;
     hide_reveal();
     selected_index_ = (selected_index_ + 1) % credentials_.size();
+    reset_label_scroll(monotonic_ms());
     (void)persist_selection();
 }
 
@@ -308,6 +444,7 @@ void CanonicalUiController::select_previous() {
     selected_index_ = selected_index_ == 0
         ? credentials_.size() - 1
         : selected_index_ - 1;
+    reset_label_scroll(monotonic_ms());
     (void)persist_selection();
 }
 
@@ -332,7 +469,45 @@ void CanonicalUiController::reveal_selected(std::uint64_t now_ms) {
             ? std::numeric_limits<std::uint64_t>::max()
             : now_ms + kOtpRevealDurationMs;
     }
+    reset_label_scroll(now_ms);
     vault_runtime::secure_zero(&code, sizeof(code));
+}
+
+void CanonicalUiController::render_account_label() {
+    if (storage_error_ || !vault_visible_ || credentials_.empty() ||
+        selected_index_ >= credentials_.size()) {
+        return;
+    }
+
+    std::string label = display_label(credentials_[selected_index_]);
+    if (M5Canvas* canvas = account_label_canvas(); canvas != nullptr) {
+        canvas->clear(0x0000);
+        canvas->setTextSize(kReadableTextSize);
+        canvas->setTextColor(0xffff, 0x0000);
+        canvas->setTextWrap(false);
+        canvas->setCursor(-label_scroll_offset_px_, 0);
+        canvas->print(label.c_str());
+        canvas->pushSprite(&M5.Display, 0, kAccountLabelY);
+        // The sprite is only a transient drawing surface. Clear its pixels after
+        // the blit so it does not become another persistent credential-label copy.
+        canvas->clear(0x0000);
+    } else {
+        // Allocation failure still avoids the Human-Gate defect: update only the
+        // label band rather than clearing/redrawing the whole 240x135 display.
+        M5.Display.fillRect(
+            0,
+            kAccountLabelY,
+            static_cast<std::int32_t>(M5.Display.width()),
+            kAccountLabelHeight,
+            0x0000
+        );
+        M5.Display.setTextSize(kReadableTextSize);
+        M5.Display.setTextColor(0xffff, 0x0000);
+        M5.Display.setTextWrap(false);
+        M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
+        M5.Display.print(label.c_str());
+    }
+    wipe_text(&label);
 }
 
 void CanonicalUiController::render() {
@@ -364,63 +539,60 @@ void CanonicalUiController::render() {
 
     M5.Display.clear();
     prepare_readable_display();
-    M5.Display.println("M5 Authenticator");
+    draw_line("M5Authenticator", kHeaderY);
 
     if (presence.active) {
-        M5.Display.println("UNLOCK REQUEST");
-        M5.Display.println(session::presence_operation_text(presence.operation));
+        draw_line("UNLOCK REQUEST", kPrimaryLineY);
+        draw_line(session::presence_operation_text(presence.operation), kSecondaryLineY);
+        int status_y = kTertiaryLineY;
         if (presence.operation == session::PresenceOperation::kFactoryReset) {
-            M5.Display.println("ERASE DEVICE DATA");
+            draw_line("ERASE DEVICE DATA", status_y);
+            status_y += 20;
         }
         if (presence.confirmed) {
-            M5.Display.println("Confirmed");
-            M5.Display.println("Waiting for browser");
+            draw_line("Confirmed", status_y);
+            draw_line("Waiting for browser", status_y + 20);
         } else {
-            M5.Display.println("Press A to confirm");
-            M5.Display.println("Expires in 30 sec");
+            draw_line("Press A to confirm", status_y);
+            draw_line("Expires in 30 sec", status_y + 20);
         }
     } else {
-        M5.Display.printf("State: %s\n", runtime_state_text(runtime_state_));
-        M5.Display.printf("Time: %s\n", readiness_text(time_status.readiness));
+        M5.Display.setTextSize(kReadableTextSize);
+        M5.Display.setCursor(0, kPrimaryLineY);
+        M5.Display.printf("State: %s", runtime_state_text(runtime_state_));
+        M5.Display.setCursor(0, kSecondaryLineY);
+        M5.Display.printf("Time: %s", readiness_text(time_status.readiness));
 
         if (storage_error_) {
-            M5.Display.println("Vault unavailable");
+            draw_line("Vault unavailable", kTertiaryLineY);
         } else if (!vault_visible_) {
-            M5.Display.println("Open Web app");
+            draw_line("Open Web app", kTertiaryLineY);
         } else if (credentials_.empty()) {
-            M5.Display.println("No accounts");
+            draw_line("No accounts", kTertiaryLineY);
         } else {
-            const CredentialView& selected = credentials_[selected_index_];
-            std::string label = display_label(selected);
-            M5.Display.printf(
-                "%u / %u\n",
-                static_cast<unsigned>(selected_index_ + 1),
-                static_cast<unsigned>(credentials_.size())
-            );
-            M5.Display.println(label.c_str());
-            wipe_text(&label);
+            const bool generate_error =
+                last_generate_result_ != totp::GenerateResult::kOk &&
+                last_generate_result_ != totp::GenerateResult::kNotSynced &&
+                last_generate_result_ != totp::GenerateResult::kTimeStale;
+            M5.Display.setTextSize(kReadableTextSize);
+            M5.Display.setCursor(0, kTertiaryLineY);
+            if (generate_error && !reveal_active_) {
+                M5.Display.print("OTP unavailable");
+            } else {
+                M5.Display.printf(
+                    "%u / %u",
+                    static_cast<unsigned>(selected_index_ + 1),
+                    static_cast<unsigned>(credentials_.size())
+                );
+            }
+
+            render_account_label();
 
             if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
-                char otp[7]{};
-                std::snprintf(
-                    otp,
-                    sizeof(otp),
-                    "%06lu",
-                    static_cast<unsigned long>(revealed_code_)
-                );
-                M5.Display.setTextSize(kOtpTextSize);
-                M5.Display.println(otp);
-                M5.Display.setTextSize(kReadableTextSize);
-                vault_runtime::secure_zero(otp, sizeof(otp));
+                draw_otp(revealed_code_);
             } else {
-                if (last_generate_result_ != totp::GenerateResult::kOk &&
-                    last_generate_result_ != totp::GenerateResult::kNotSynced &&
-                    last_generate_result_ != totp::GenerateResult::kTimeStale) {
-                    M5.Display.println("OTP unavailable");
-                }
-                M5.Display.println("Click: next");
-                M5.Display.println("2x: previous");
-                M5.Display.println("Hold: reveal OTP");
+                draw_line("click: 1x next", kHelpFirstY);
+                draw_line("2x prev / hold OTP", kHelpSecondY);
             }
         }
     }
@@ -440,11 +612,13 @@ void CanonicalUiController::run() {
     {
         std::lock_guard<std::mutex> view(view_mutex_);
         (void)refresh_credentials(true);
+        reset_label_scroll(last_refresh_ms);
         render();
     }
 
     while (true) {
         bool dirty = false;
+        bool presence_changed = false;
         M5.update();
         const std::uint64_t now_ms = monotonic_ms();
 
@@ -452,6 +626,7 @@ void CanonicalUiController::run() {
         PresenceView current_presence = presence_.view();
         if (!same_presence(current_presence, previous_presence)) {
             previous_presence = current_presence;
+            presence_changed = true;
             dirty = true;
         }
 
@@ -465,6 +640,9 @@ void CanonicalUiController::run() {
                 presence_gesture_quarantine_.begin(now_ms, M5.BtnA.getHoldThresh());
             }
             current_presence = presence_.view();
+            if (!same_presence(current_presence, previous_presence)) {
+                presence_changed = true;
+            }
             previous_presence = current_presence;
         }
         presence_gesture_quarantine_.observe(
@@ -475,9 +653,14 @@ void CanonicalUiController::run() {
 
         {
             std::lock_guard<std::mutex> view(view_mutex_);
+            if (presence_changed) {
+                reset_label_scroll(now_ms);
+            }
+
             const time::Readiness readiness = time_service_.status().readiness;
             if (readiness != previous_readiness) {
                 previous_readiness = readiness;
+                reset_label_scroll(now_ms);
                 dirty = true;
             }
 
@@ -491,6 +674,7 @@ void CanonicalUiController::run() {
             }
             if (observed_state != runtime_state_) {
                 runtime_state_ = observed_state;
+                reset_label_scroll(now_ms);
                 dirty = true;
             }
             if (observed_state != vault_runtime::State::kUnlocked && vault_visible_) {
@@ -512,7 +696,11 @@ void CanonicalUiController::run() {
                     select_previous();
                     dirty = true;
                 } else if (M5.BtnA.wasSingleClicked()) {
-                    select_next();
+                    if (reveal_active_) {
+                        hide_reveal();
+                    } else {
+                        select_next();
+                    }
                     dirty = true;
                 }
             }
@@ -524,7 +712,19 @@ void CanonicalUiController::run() {
                 last_refresh_ms = now_ms;
             }
 
-            if (dirty) render();
+            bool label_scroll_changed = false;
+            if (!current_presence.active && observed_state == vault_runtime::State::kUnlocked) {
+                label_scroll_changed = update_label_scroll(now_ms);
+            }
+
+            if (dirty) {
+                render();
+            } else if (label_scroll_changed) {
+                // Scroll-only ticks update the double-buffered label band. The
+                // rest of the LCD remains untouched, eliminating whole-screen
+                // clear/redraw flicker observed in the physical Human Gate.
+                render_account_label();
+            }
         }
         vTaskDelay(kUiPollInterval);
     }

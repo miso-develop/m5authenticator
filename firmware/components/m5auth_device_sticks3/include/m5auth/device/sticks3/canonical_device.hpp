@@ -120,8 +120,11 @@ private:
     void select_next();
     void select_previous();
     void render();
+    void render_account_label();
     void hide_reveal();
     void reveal_selected(std::uint64_t now_ms);
+    void reset_label_scroll(std::uint64_t now_ms);
+    bool update_label_scroll(std::uint64_t now_ms);
 
     static void wipe_text(std::string* value);
     static std::string display_label(const CredentialView& credential);
@@ -145,6 +148,11 @@ private:
     std::uint32_t revealed_code_{0};
     std::uint64_t reveal_deadline_ms_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
+    // Scrolling stores only timing and pixel offset. The decrypted credential
+    // label stays in the existing UI-private credential cache and is never copied
+    // into a separate persistent/loggable scroll buffer.
+    std::uint64_t label_scroll_epoch_ms_{0};
+    int label_scroll_offset_px_{0};
     session::PresenceGestureQuarantine presence_gesture_quarantine_;
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
     ScreenSnapshot last_rendered_snapshot_{};
