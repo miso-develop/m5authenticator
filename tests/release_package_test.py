@@ -145,6 +145,13 @@ class ReleasePackagingTest(unittest.TestCase):
             update = json.loads((root / "out" / "update-manifest.json").read_text())
             self.assertFalse(factory["new_install_prompt_erase"])
             self.assertTrue(update["new_install_prompt_erase"])
+            self.assertEqual(factory["name"], "M5Authenticator")
+            self.assertEqual(update["name"], "M5Authenticator")
+            self.assertEqual(factory["version"], update["version"])
+            self.assertEqual(factory["build_commit"], "abcdef123456")
+            self.assertEqual(update["build_commit"], "abcdef123456")
+            self.assertFalse(factory["exact_release"])
+            self.assertFalse(update["exact_release"])
 
             factory_parts = factory["builds"][0]["parts"]
             self.assertEqual(len(factory_parts), 1)
@@ -174,6 +181,8 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(metadata["security_profile_version"], 1)
             self.assertEqual(metadata["vmk_persistence"], "ram-only")
             self.assertEqual(metadata["post_update_state"], "locked")
+            self.assertEqual(metadata["build_commit"], "abcdef123456")
+            self.assertFalse(metadata["exact_release"])
             self.assertTrue(metadata["production_release_allowed"])
             self.assertFalse(metadata["normal_update"]["erase_first"])
             self.assertEqual(metadata["normal_update"]["required_preserve_partitions"], ["nvs", "auth_nvs"])
@@ -185,6 +194,24 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertNotIn("totp_secret", serialized)
             self.assertNotIn("wifi_password", serialized)
             self.assertNotIn("devsecuritybackend", serialized)
+
+    def test_exact_release_provenance_is_consistent_across_package_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            merged, bootloader, partition_table, app = self.make_test_binaries(root)
+            package_firmware.package_firmware(
+                merged,
+                bootloader,
+                partition_table,
+                app,
+                root / "out",
+                "1234567890abcdef",
+                exact_release=True,
+            )
+            for filename in ("factory-manifest.json", "update-manifest.json", "release-metadata.json"):
+                value = json.loads((root / "out" / filename).read_text())
+                self.assertEqual(value["build_commit"], "1234567890abcdef")
+                self.assertTrue(value["exact_release"])
 
     def test_release_workflow_has_no_project_efuse_or_universal_key_dependency(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8").lower()
