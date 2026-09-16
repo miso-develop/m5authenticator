@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlashState, Manifest } from "esp-web-tools/dist/const.js";
 import {
+  firmwareArtifactIdentityFromManifest,
   invokeStatePreservingFlash,
   NORMAL_UPDATE_FLASH_WINDOWS,
   validateStatePreservingManifest,
@@ -19,11 +20,36 @@ function statePreservingManifest(parts = [
   return {
     name: "M5Authenticator",
     version: "0.1.0",
+    build_commit: "fedcba9876543210",
+    exact_release: false,
     builds: [{ chipFamily: "ESP32-S3", parts }],
   };
 }
 
 describe("state-preserving firmware update", () => {
+  it("uses build identity from the firmware manifest independently of the Web build", () => {
+    const manifest = statePreservingManifest();
+    expect(firmwareArtifactIdentityFromManifest(manifest)).toEqual({
+      version: "0.1.0",
+      buildCommit: "fedcba9876543210",
+      exactRelease: false,
+    });
+  });
+
+  it("recognizes exact-release firmware only from explicit artifact metadata", () => {
+    const manifest = { ...statePreservingManifest(), exact_release: true };
+    expect(firmwareArtifactIdentityFromManifest(manifest).exactRelease).toBe(true);
+  });
+
+  it("fails closed when firmware artifact provenance is absent or malformed", () => {
+    const { build_commit: _commit, ...withoutCommit } = statePreservingManifest();
+    expect(() => firmwareArtifactIdentityFromManifest(withoutCommit)).toThrow(/invalid build identity/);
+    expect(() => firmwareArtifactIdentityFromManifest({
+      ...statePreservingManifest(),
+      build_commit: "web-current",
+    })).toThrow(/invalid build identity/);
+  });
+
   it("always invokes the low-level flasher with eraseFirst=false", async () => {
     const manifest = statePreservingManifest() as Manifest;
     const onEvent = vi.fn<(state: FlashState) => void>();
