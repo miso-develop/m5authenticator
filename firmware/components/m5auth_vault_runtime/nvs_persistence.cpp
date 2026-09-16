@@ -68,7 +68,7 @@ public:
     explicit Reader(const std::vector<std::uint8_t>& input) : input_(input) {}
 
     bool read_exact(std::uint8_t* output, std::size_t length) {
-        if (length > input_.size() - offset_) return false;
+        if (offset_ > input_.size() || length > input_.size() - offset_) return false;
         if (length != 0) {
             std::copy_n(input_.data() + offset_, length, output);
         }
@@ -114,7 +114,7 @@ private:
 
 bool valid_envelope(const vault::VaultEnvelope& envelope) {
     return envelope.storage_schema_version == vault::kTargetStorageSchemaVersion &&
-           envelope.vault_format_version == vault::kVaultFormatVersion &&
+           vault::is_supported_vault_format(envelope.vault_format_version) &&
            envelope.generation != 0 &&
            !envelope.ciphertext.empty() &&
            envelope.ciphertext.size() <= kMaxPersistedCiphertextBytes &&
@@ -180,6 +180,12 @@ Status decode_envelope(
         !reader.read_u32(&ciphertext_size) ||
         ciphertext_size == 0 || ciphertext_size > kMaxPersistedCiphertextBytes) {
         return Status::kCorrupt;
+    }
+    if (candidate.storage_schema_version != vault::kTargetStorageSchemaVersion) {
+        return Status::kCorrupt;
+    }
+    if (!vault::is_supported_vault_format(candidate.vault_format_version)) {
+        return Status::kUnsupportedVaultFormat;
     }
 
     candidate.ciphertext.resize(ciphertext_size);
