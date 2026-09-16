@@ -14,6 +14,10 @@ export interface QrImageDecodeDependencies {
   decodeImageData(imageData: ImageData): string;
 }
 
+const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
+const MAX_SCALED_QR_PIXELS = 8_388_608;
+const MAX_SCALED_QR_DIMENSION = 4096;
+
 function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   const { data, width, height } = imageData;
   const luminances = new Uint8ClampedArray(width * height);
@@ -42,13 +46,8 @@ function toLuminanceBuffer(imageData: ImageData): Uint8ClampedArray {
   return luminances;
 }
 
-export function decodeQrImageData(imageData: ImageData): string {
-  if (imageData.width <= 0 || imageData.height <= 0) {
-    throw new Error("QR image data has invalid dimensions.");
-  }
-
-  const luminances = toLuminanceBuffer(imageData);
-  const source = new RGBLuminanceSource(luminances, imageData.width, imageData.height);
+function decodeLuminances(luminances: Uint8ClampedArray, width: number, height: number): string {
+  const source = new RGBLuminanceSource(luminances, width, height);
   const detectorHints = new Map<DecodeHintType, any>([[DecodeHintType.TRY_HARDER, true]]);
   const pureHints = new Map<DecodeHintType, any>([
     [DecodeHintType.TRY_HARDER, true],
@@ -78,15 +77,76 @@ export function decodeQrImageData(imageData: ImageData): string {
         .getText(),
   ];
 
+  let lastError: unknown;
+  for (const attempt of attempts) {
+    try {
+      return attempt();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error("QR decoder exhausted all strategies.");
+}
+
+function nearestNeighborUpscale(
+  source: Uint8ClampedArray,
+  width: number,
+  height: number,
+  scale: number,
+): { luminances: Uint8ClampedArray; width: number; height: number } | undefined {
+  const scaledWidth = width * scale;
+  const scaledHeight = height * scale;
+  const scaledPixels = scaledWidth * scaledHeight;
+  if (
+    scaledWidth > MAX_SCALED_QR_DIMENSION ||
+    scaledHeight > MAX_SCALED_QR_DIMENSION ||
+    scaledPixels > MAX_SCALED_QR_PIXELS
+  ) {
+    return undefined;
+  }
+
+  const scaled = new Uint8ClampedArray(scaledPixels);
+  for (let y = 0; y < scaledHeight; y += 1) {
+    const sourceRow = Math.floor(y / scale) * width;
+    const targetRow = y * scaledWidth;
+    for (let x = 0; x < scaledWidth; x += 1) {
+      scaled[targetRow + x] = source[sourceRow + Math.floor(x / scale)]!;
+    }
+  }
+  return { luminances: scaled, width: scaledWidth, height: scaledHeight };
+}
+
+export function decodeQrImageData(imageData: ImageData): string {
+  if (imageData.width <= 0 || imageData.height <= 0) {
+    throw new Error("QR image data has invalid dimensions.");
+  }
+
+  const luminances = toLuminanceBuffer(imageData);
+  let lastError: unknown;
   try {
-    let lastError: unknown;
-    for (const attempt of attempts) {
+    try {
+      return decodeLuminances(luminances, imageData.width, imageData.height);
+    } catch (error) {
+      lastError = error;
+    }
+
+    // Dense migration exports can leave only a few source pixels per QR module.
+    // Retry only two deterministic nearest-neighbor scales, one buffer at a time,
+    // with explicit dimension/pixel caps to avoid unbounded memory amplification.
+    for (const scale of DENSE_QR_SCALE_FACTORS) {
+      const scaled = nearestNeighborUpscale(luminances, imageData.width, imageData.height, scale);
+      if (!scaled) {
+        continue;
+      }
       try {
-        return attempt();
+        return decodeLuminances(scaled.luminances, scaled.width, scaled.height);
       } catch (error) {
         lastError = error;
+      } finally {
+        scaled.luminances.fill(0);
       }
     }
+
     throw lastError ?? new Error("QR decoder exhausted all strategies.");
   } finally {
     luminances.fill(0);
