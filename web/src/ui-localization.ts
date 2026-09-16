@@ -171,7 +171,7 @@ function renderNavigation(): void {
   const labels = navigationLabels(language);
   root.innerHTML = `
     <div class="site-nav-shell">
-      <a class="product-mark" href="./">${PRODUCT_NAME}</a>
+      <span class="product-mark">${PRODUCT_NAME}</span>
       <nav class="site-tabs" aria-label="${translateUiText("M5Authenticator sections", language)}">
         <a href="./" ${active === "provisioner" ? 'aria-current="page"' : ""}>${labels.provisioner}</a>
         <a href="./flash.html" ${active === "flash" ? 'aria-current="page"' : ""}>${labels.flash}</a>
