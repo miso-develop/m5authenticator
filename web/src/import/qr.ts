@@ -61,9 +61,6 @@ function scaledDimensions(width: number, height: number, scale: number): ScaledD
 function nativeCropWindows(width: number, height: number): CropWindow[] {
   const shortLength = Math.min(width, height);
   const longLength = Math.max(width, height);
-  // Three windows are the hard upper bound. Pick the smallest square that can
-  // normally span the long axis in three placements, but never shrink below
-  // half the short axis so a centered QR retains surrounding quiet-zone context.
   const size = Math.min(
     shortLength,
     Math.max(Math.ceil(longLength / 3), Math.ceil(shortLength / 2)),
@@ -168,35 +165,99 @@ function nearestNeighborUpscale(
   return { luminances: scaled, width: dimensions.width, height: dimensions.height };
 }
 
+function decodeLuminanceScaleVariants(
+  luminances: Uint8ClampedArray,
+  width: number,
+  height: number,
+): string {
+  let lastError: unknown;
+  try {
+    return decodeLuminances(luminances, width, height);
+  } catch (error) {
+    lastError = error;
+  }
+
+  for (const scale of DENSE_QR_SCALE_FACTORS) {
+    const scaled = nearestNeighborUpscale(luminances, width, height, scale);
+    if (!scaled) {
+      continue;
+    }
+    try {
+      return decodeLuminances(scaled.luminances, scaled.width, scaled.height);
+    } catch (error) {
+      lastError = error;
+    } finally {
+      scaled.luminances.fill(0);
+    }
+  }
+
+  throw lastError ?? new Error("QR decoder exhausted all strategies.");
+}
+
+function otsuThreshold(luminances: Uint8ClampedArray): number {
+  const histogram = new Uint32Array(256);
+  try {
+    let totalSum = 0;
+    for (const luminance of luminances) {
+      histogram[luminance] += 1;
+      totalSum += luminance;
+    }
+
+    let backgroundWeight = 0;
+    let backgroundSum = 0;
+    let bestThreshold = 0x80;
+    let bestBetweenClassVariance = -1;
+
+    for (let threshold = 0; threshold < histogram.length; threshold += 1) {
+      const count = histogram[threshold]!;
+      backgroundWeight += count;
+      if (backgroundWeight === 0) {
+        continue;
+      }
+
+      const foregroundWeight = luminances.length - backgroundWeight;
+      if (foregroundWeight === 0) {
+        break;
+      }
+
+      backgroundSum += threshold * count;
+      const backgroundMean = backgroundSum / backgroundWeight;
+      const foregroundMean = (totalSum - backgroundSum) / foregroundWeight;
+      const meanDelta = backgroundMean - foregroundMean;
+      const betweenClassVariance = backgroundWeight * foregroundWeight * meanDelta * meanDelta;
+      if (betweenClassVariance > bestBetweenClassVariance) {
+        bestBetweenClassVariance = betweenClassVariance;
+        bestThreshold = threshold;
+      }
+    }
+
+    return bestThreshold;
+  } finally {
+    histogram.fill(0);
+  }
+}
+
+function decodeBinarizedQrImageData(imageData: ImageData): string {
+  const luminances = toLuminanceBuffer(imageData);
+  try {
+    const threshold = otsuThreshold(luminances);
+    for (let index = 0; index < luminances.length; index += 1) {
+      luminances[index] = luminances[index]! <= threshold ? 0x00 : 0xff;
+    }
+    return decodeLuminanceScaleVariants(luminances, imageData.width, imageData.height);
+  } finally {
+    luminances.fill(0);
+  }
+}
+
 export function decodeQrImageData(imageData: ImageData): string {
   if (imageData.width <= 0 || imageData.height <= 0) {
     throw new Error("QR image data has invalid dimensions.");
   }
 
   const luminances = toLuminanceBuffer(imageData);
-  let lastError: unknown;
   try {
-    try {
-      return decodeLuminances(luminances, imageData.width, imageData.height);
-    } catch (error) {
-      lastError = error;
-    }
-
-    for (const scale of DENSE_QR_SCALE_FACTORS) {
-      const scaled = nearestNeighborUpscale(luminances, imageData.width, imageData.height, scale);
-      if (!scaled) {
-        continue;
-      }
-      try {
-        return decodeLuminances(scaled.luminances, scaled.width, scaled.height);
-      } catch (error) {
-        lastError = error;
-      } finally {
-        scaled.luminances.fill(0);
-      }
-    }
-
-    throw lastError ?? new Error("QR decoder exhausted all strategies.");
+    return decodeLuminanceScaleVariants(luminances, imageData.width, imageData.height);
   } finally {
     luminances.fill(0);
   }
@@ -276,9 +337,6 @@ async function tryCroppedVariant(
   let cropImageData: ImageData | undefined;
   let scaledBitmap: ImageBitmap | undefined;
 
-  // First retry the existing ZXing path on a bounded square crop. The crop is
-  // not resampled here; decodeQrImageData owns its existing 2x/3x luminance
-  // variants and clears those temporary buffers before returning.
   canvas.width = crop.size;
   canvas.height = crop.size;
   context.imageSmoothingEnabled = false;
@@ -302,6 +360,15 @@ async function tryCroppedVariant(
         throw error;
       }
     }
+
+    // Screenshot interpolation can leave finder/module edges as intermediate
+    // gray values even after cropping. Retry exactly one local Otsu-binarized
+    // representation, then reuse the same existing 1x/2x/3x ZXing variants.
+    try {
+      return decodeBinarizedQrImageData(cropImageData);
+    } catch {
+      // Continue to the bounded native crop fallback.
+    }
   } catch (error) {
     if (error instanceof ImportError) {
       throw error;
@@ -317,8 +384,6 @@ async function tryCroppedVariant(
     return undefined;
   }
 
-  // If crop-local ZXing is still exhausted, expose exactly the same crop to
-  // Chrome's native detector at one deterministic 2x scale.
   const dimensions = scaledDimensions(crop.size, crop.size, NATIVE_QR_CROP_SCALE);
   if (!dimensions) {
     return undefined;
@@ -398,8 +463,6 @@ export async function decodeQrImage(
       }
     }
 
-    // The full-size RGBA copy is no longer needed. Clear it before retaining
-    // only the source bitmap for native/cropped retries.
     imageData.data.fill(0);
     imageData = undefined;
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -420,10 +483,6 @@ export async function decodeQrImage(
       return originalNativeResult;
     }
 
-    // PR #131 gave BarcodeDetector only the original screenshot. R2 keeps the
-    // original path first, then tries at most three deterministic square crops
-    // (center, start, end along the long axis). Each crop gets the existing
-    // ZXing 1x/2x/3x path followed by one native 2x attempt.
     for (const crop of nativeCropWindows(bitmap.width, bitmap.height)) {
       const croppedResult = await tryCroppedVariant(
         bitmap,
