@@ -16,11 +16,13 @@ namespace {
 constexpr std::uint64_t kCredentialRefreshIntervalMs = 1'000;
 constexpr std::uint64_t kOtpRevealDurationMs = 10'000;
 constexpr std::uint64_t kLabelScrollDelayMs = 2'000;
+constexpr std::uint64_t kLabelScrollEndDelayMs = 2'000;
 constexpr std::uint64_t kLabelScrollStepMs = 40;
 constexpr int kLabelScrollStepPx = 1;
 constexpr TickType_t kUiPollInterval = pdMS_TO_TICKS(20);
+// Issue #139 Human Gate: the pre-#139 readable size is the minimum for every
+// normal user-visible Device UI string. Do not introduce a compact size below it.
 constexpr std::uint8_t kReadableTextSize = 2;
-constexpr std::uint8_t kCompactTextSize = 1;
 constexpr std::uint8_t kOtpTextSize = 4;
 constexpr int kOtpDigitGapPx = 3;
 
@@ -29,8 +31,10 @@ constexpr int kPrimaryLineY = 20;
 constexpr int kSecondaryLineY = 40;
 constexpr int kTertiaryLineY = 60;
 constexpr int kAccountLabelY = 80;
+constexpr int kAccountLabelHeight = 18;
 constexpr int kOtpY = 101;
-constexpr int kHelpY = 116;
+constexpr int kHelpFirstY = 99;
+constexpr int kHelpSecondY = 117;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -66,10 +70,31 @@ void prepare_readable_display() {
     M5.Display.setCursor(0, 0);
 }
 
-void draw_line(const char* text, int y, std::uint8_t text_size = kReadableTextSize) {
-    M5.Display.setTextSize(text_size);
+void draw_line(const char* text, int y) {
+    M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setCursor(0, y);
     M5.Display.print(text);
+}
+
+M5Canvas* account_label_canvas() {
+    static M5Canvas canvas;
+    static bool initialized = false;
+    static bool available = false;
+    if (!initialized) {
+        initialized = true;
+        canvas.setColorDepth(8);
+        available = canvas.createSprite(
+            static_cast<std::int32_t>(M5.Display.width()),
+            kAccountLabelHeight
+        ) != nullptr;
+        if (available) {
+            canvas.setTextSize(kReadableTextSize);
+            canvas.setTextColor(0xffff, 0x0000);
+            canvas.setTextWrap(false);
+            canvas.clear(0x0000);
+        }
+    }
+    return available ? &canvas : nullptr;
 }
 
 void draw_otp(std::uint32_t revealed_code) {
@@ -246,9 +271,7 @@ void CanonicalUiController::reset_label_scroll(std::uint64_t now_ms) {
 bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
     if (storage_error_) return false;
     if (!vault_visible_ || credentials_.empty() || selected_index_ >= credentials_.size()) {
-        if (label_scroll_offset_px_ == 0) return false;
-        label_scroll_offset_px_ = 0;
-        return true;
+        return label_scroll::update_offset(false, 0, &label_scroll_offset_px_);
     }
 
     std::string label = display_label(credentials_[selected_index_]);
@@ -258,29 +281,19 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
 
     const int viewport_width = static_cast<int>(M5.Display.width());
     if (label_width <= viewport_width) {
-        if (label_scroll_offset_px_ == 0) return false;
-        label_scroll_offset_px_ = 0;
-        return true;
+        return label_scroll::update_offset(false, 0, &label_scroll_offset_px_);
     }
 
-    if (!label_scroll::dwell_elapsed(
-            storage_error_,
-            label_scroll_epoch_ms_,
-            now_ms,
-            kLabelScrollDelayMs
-        )) {
-        return false;
-    }
-
-    const std::uint64_t scroll_elapsed_ms =
-        now_ms - label_scroll_epoch_ms_ - kLabelScrollDelayMs;
-    const std::uint64_t steps = scroll_elapsed_ms / kLabelScrollStepMs;
     const int max_offset = label_width - viewport_width;
-    const std::uint64_t max_steps =
-        static_cast<std::uint64_t>(max_offset / kLabelScrollStepPx);
-    const std::uint64_t bounded_steps = std::min(steps, max_steps);
-    const int desired_offset = static_cast<int>(
-        bounded_steps * static_cast<std::uint64_t>(kLabelScrollStepPx)
+    const int desired_offset = label_scroll::cycle_offset_px(
+        storage_error_,
+        label_scroll_epoch_ms_,
+        now_ms,
+        kLabelScrollDelayMs,
+        kLabelScrollStepMs,
+        kLabelScrollStepPx,
+        max_offset,
+        kLabelScrollEndDelayMs
     );
     return label_scroll::update_offset(
         storage_error_,
@@ -460,6 +473,43 @@ void CanonicalUiController::reveal_selected(std::uint64_t now_ms) {
     vault_runtime::secure_zero(&code, sizeof(code));
 }
 
+void CanonicalUiController::render_account_label() {
+    if (storage_error_ || !vault_visible_ || credentials_.empty() ||
+        selected_index_ >= credentials_.size()) {
+        return;
+    }
+
+    std::string label = display_label(credentials_[selected_index_]);
+    if (M5Canvas* canvas = account_label_canvas(); canvas != nullptr) {
+        canvas->clear(0x0000);
+        canvas->setTextSize(kReadableTextSize);
+        canvas->setTextColor(0xffff, 0x0000);
+        canvas->setTextWrap(false);
+        canvas->setCursor(-label_scroll_offset_px_, 0);
+        canvas->print(label.c_str());
+        canvas->pushSprite(&M5.Display, 0, kAccountLabelY);
+        // The sprite is only a transient drawing surface. Clear its pixels after
+        // the blit so it does not become another persistent credential-label copy.
+        canvas->clear(0x0000);
+    } else {
+        // Allocation failure still avoids the Human-Gate defect: update only the
+        // label band rather than clearing/redrawing the whole 240x135 display.
+        M5.Display.fillRect(
+            0,
+            kAccountLabelY,
+            static_cast<std::int32_t>(M5.Display.width()),
+            kAccountLabelHeight,
+            0x0000
+        );
+        M5.Display.setTextSize(kReadableTextSize);
+        M5.Display.setTextColor(0xffff, 0x0000);
+        M5.Display.setTextWrap(false);
+        M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
+        M5.Display.print(label.c_str());
+    }
+    wipe_text(&label);
+}
+
 void CanonicalUiController::render() {
     // render() is called only while view_mutex_ is held. Capture the live
     // externally synchronized inputs exactly once, use those same values for the
@@ -489,26 +539,22 @@ void CanonicalUiController::render() {
 
     M5.Display.clear();
     prepare_readable_display();
-    draw_line("M5 Authenticator", kHeaderY);
+    draw_line("M5Authenticator", kHeaderY);
 
     if (presence.active) {
         draw_line("UNLOCK REQUEST", kPrimaryLineY);
-        draw_line(
-            session::presence_operation_text(presence.operation),
-            kSecondaryLineY,
-            kCompactTextSize
-        );
+        draw_line(session::presence_operation_text(presence.operation), kSecondaryLineY);
         int status_y = kTertiaryLineY;
         if (presence.operation == session::PresenceOperation::kFactoryReset) {
-            draw_line("ERASE DEVICE DATA", status_y, kCompactTextSize);
-            status_y += 18;
+            draw_line("ERASE DEVICE DATA", status_y);
+            status_y += 20;
         }
         if (presence.confirmed) {
             draw_line("Confirmed", status_y);
-            draw_line("Waiting for browser", status_y + 20, kCompactTextSize);
+            draw_line("Waiting for browser", status_y + 20);
         } else {
-            draw_line("Press A to confirm", status_y, kCompactTextSize);
-            draw_line("Expires in 30 sec", status_y + 18, kCompactTextSize);
+            draw_line("Press A to confirm", status_y);
+            draw_line("Expires in 30 sec", status_y + 20);
         }
     } else {
         M5.Display.setTextSize(kReadableTextSize);
@@ -524,29 +570,29 @@ void CanonicalUiController::render() {
         } else if (credentials_.empty()) {
             draw_line("No accounts", kTertiaryLineY);
         } else {
-            const CredentialView& selected = credentials_[selected_index_];
+            const bool generate_error =
+                last_generate_result_ != totp::GenerateResult::kOk &&
+                last_generate_result_ != totp::GenerateResult::kNotSynced &&
+                last_generate_result_ != totp::GenerateResult::kTimeStale;
             M5.Display.setTextSize(kReadableTextSize);
             M5.Display.setCursor(0, kTertiaryLineY);
-            M5.Display.printf(
-                "%u / %u",
-                static_cast<unsigned>(selected_index_ + 1),
-                static_cast<unsigned>(credentials_.size())
-            );
+            if (generate_error && !reveal_active_) {
+                M5.Display.print("OTP unavailable");
+            } else {
+                M5.Display.printf(
+                    "%u / %u",
+                    static_cast<unsigned>(selected_index_ + 1),
+                    static_cast<unsigned>(credentials_.size())
+                );
+            }
 
-            std::string label = display_label(selected);
-            M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
-            M5.Display.print(label.c_str());
-            wipe_text(&label);
+            render_account_label();
 
             if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
                 draw_otp(revealed_code_);
             } else {
-                if (last_generate_result_ != totp::GenerateResult::kOk &&
-                    last_generate_result_ != totp::GenerateResult::kNotSynced &&
-                    last_generate_result_ != totp::GenerateResult::kTimeStale) {
-                    draw_line("OTP unavailable", 100, kCompactTextSize);
-                }
-                draw_line("1x next / 2x prev / hold OTP", kHelpY, kCompactTextSize);
+                draw_line("click: 1x next", kHelpFirstY);
+                draw_line("2x prev / hold OTP", kHelpSecondY);
             }
         }
     }
@@ -666,11 +712,19 @@ void CanonicalUiController::run() {
                 last_refresh_ms = now_ms;
             }
 
+            bool label_scroll_changed = false;
             if (!current_presence.active && observed_state == vault_runtime::State::kUnlocked) {
-                dirty = update_label_scroll(now_ms) || dirty;
+                label_scroll_changed = update_label_scroll(now_ms);
             }
 
-            if (dirty) render();
+            if (dirty) {
+                render();
+            } else if (label_scroll_changed) {
+                // Scroll-only ticks update the double-buffered label band. The
+                // rest of the LCD remains untouched, eliminating whole-screen
+                // clear/redraw flicker observed in the physical Human Gate.
+                render_account_label();
+            }
         }
         vTaskDelay(kUiPollInterval);
     }

@@ -120,6 +120,7 @@ private:
     void select_next();
     void select_previous();
     void render();
+    void render_account_label();
     void hide_reveal();
     void reveal_selected(std::uint64_t now_ms);
     void reset_label_scroll(std::uint64_t now_ms);

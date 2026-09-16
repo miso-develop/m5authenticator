@@ -43,6 +43,7 @@ std::vector<m5auth::storage::AccountMetadata> make_max_accounts() {
 int main() {
     using m5auth::device::sticks3::UiModel;
     using m5auth::device::sticks3::account_display_label;
+    using m5auth::device::sticks3::label_scroll::cycle_offset_px;
     using m5auth::device::sticks3::label_scroll::dwell_elapsed;
     using m5auth::device::sticks3::label_scroll::on_screen_hidden_changed;
     using m5auth::device::sticks3::label_scroll::reset;
@@ -54,29 +55,125 @@ int main() {
     assert(account_display_label(account(1, 0, "Issuer", "account")) == "Issuer");
     assert(account_display_label(account(1, 0, "", "account")) == "account");
 
-    // Issue #139: a screen-state transition that hides the account label must
-    // suspend scroll progress and recovery must start a fresh visible dwell.
+    // Issue #139: clipped labels repeat a bounded monotonic cycle:
+    // start dwell -> scroll -> end dwell -> reset -> start dwell -> repeat.
+    constexpr std::uint64_t initial_dwell_ms = 2'000;
+    constexpr std::uint64_t end_dwell_ms = 2'000;
+    constexpr std::uint64_t step_ms = 40;
+    constexpr int step_px = 1;
+    constexpr int max_offset_px = 12;
     std::uint64_t label_scroll_epoch_ms = 1'000;
     int label_scroll_offset_px = 0;
     bool storage_error = false;
-    reset(label_scroll_epoch_ms, &label_scroll_epoch_ms, &label_scroll_offset_px);
-    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 2'999, 2'000));
-    assert(dwell_elapsed(storage_error, label_scroll_epoch_ms, 3'000, 2'000));
-    assert(update_offset(storage_error, 12, &label_scroll_offset_px));
-    assert(label_scroll_offset_px == 12);
 
+    reset(label_scroll_epoch_ms, &label_scroll_epoch_ms, &label_scroll_offset_px);
+    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 2'999, initial_dwell_ms));
+    assert(dwell_elapsed(storage_error, label_scroll_epoch_ms, 3'000, initial_dwell_ms));
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        2'999,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        3'040,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 1);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        3'480,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == max_offset_px);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        5'479,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == max_offset_px);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        5'480,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        7'479,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        7'520,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 1);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        100'000,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        0,
+        end_dwell_ms
+    ) == 0);
+
+    // Storage-error hiding suspends progress; recovery starts a fresh visible dwell.
+    assert(update_offset(storage_error, max_offset_px, &label_scroll_offset_px));
+    assert(label_scroll_offset_px == max_offset_px);
     bool next_storage_error = true;
     assert(on_screen_hidden_changed(
         storage_error,
         next_storage_error,
-        3'100,
+        5'500,
         &label_scroll_epoch_ms,
         &label_scroll_offset_px
     ));
     storage_error = next_storage_error;
-    assert(label_scroll_epoch_ms == 3'100);
+    assert(label_scroll_epoch_ms == 5'500);
     assert(label_scroll_offset_px == 0);
-    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 10'000, 2'000));
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        10'000,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
     assert(!update_offset(storage_error, 20, &label_scroll_offset_px));
     assert(label_scroll_offset_px == 0);
 
@@ -91,8 +188,37 @@ int main() {
     storage_error = next_storage_error;
     assert(label_scroll_epoch_ms == 10'000);
     assert(label_scroll_offset_px == 0);
-    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 11'999, 2'000));
-    assert(dwell_elapsed(storage_error, label_scroll_epoch_ms, 12'000, 2'000));
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        11'999,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
+    assert(cycle_offset_px(
+        storage_error,
+        label_scroll_epoch_ms,
+        12'040,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 1);
+    // A stale caller timestamp cannot unsigned-underflow past the dwell.
+    assert(cycle_offset_px(
+        storage_error,
+        20'000,
+        19'999,
+        initial_dwell_ms,
+        step_ms,
+        step_px,
+        max_offset_px,
+        end_dwell_ms
+    ) == 0);
 
     UiModel model;
     assert(model.account_count() == 0);
