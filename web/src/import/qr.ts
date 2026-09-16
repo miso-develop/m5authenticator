@@ -353,8 +353,6 @@ export async function decodeQrImage(
       return originalNativeResult;
     }
 
-    // First expose the same bounded 2x scale that ZXing already receives to the
-    // native detector. This is the narrow R2 gap identified after PR #131.
     const scaled2Result = await tryScaledNative(
       bitmap,
       2,
@@ -367,11 +365,8 @@ export async function decodeQrImage(
       return scaled2Result;
     }
 
-    // A screenshot that has already been interpolated can remain undecodable when
-    // merely enlarged. Perform one deterministic in-place black/white conversion,
-    // create one temporary source bitmap, then give only its bounded 2x raster to
-    // the native detector. No payload or decoded text is logged or persisted.
-    if (performance.now() < nativeDeadline) {
+    const contrast2Dimensions = scaledDimensions(bitmap.width, bitmap.height, 2);
+    if (contrast2Dimensions && performance.now() < nativeDeadline) {
       binarizeImageDataInPlace(imageData);
       try {
         highContrastBitmap = await dependencies.createImageBitmap(imageData);
