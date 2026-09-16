@@ -12,10 +12,12 @@ export interface QrImageDecodeDependencies {
   createImageBitmap(source: ImageBitmapSource): Promise<ImageBitmap>;
   createCanvas(): HTMLCanvasElement;
   decodeImageData(imageData: ImageData): string;
+  decodeFullImageDataOriginalOnly?(imageData: ImageData): string;
   decodeNativeQr?(bitmap: ImageBitmap): Promise<string | undefined>;
 }
 
 export type QrDecodeDiagnostic =
+  | "full-zxing-scaled-skipped"
   | "full-zxing-exhausted"
   | "native-original-attempted"
   | "native-original-no-result"
@@ -30,6 +32,10 @@ const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const NATIVE_QR_CROP_SCALE = 2;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
+// Full screenshots do not benefit from allocating a near-global-cap 3x buffer:
+// the QR remains a small fraction of the frame. Keep full-frame scaled work to
+// 4 Mi pixels, then spend the existing 8 Mi-pixel ceiling only on bounded crops.
+const MAX_FULL_FRAME_SCALED_QR_PIXELS = 4_194_304;
 const NATIVE_QR_ATTEMPT_TIMEOUT_MS = 750;
 const NATIVE_QR_TOTAL_BUDGET_MS = 3_000;
 
@@ -68,6 +74,15 @@ function scaledDimensions(width: number, height: number, scale: number): ScaledD
     return undefined;
   }
   return { width: scaledWidth, height: scaledHeight };
+}
+
+function allowFullFrameScaledRetries(width: number, height: number): boolean {
+  const scale = DENSE_QR_SCALE_FACTORS[DENSE_QR_SCALE_FACTORS.length - 1];
+  if (scale === undefined) {
+    return false;
+  }
+  const dimensions = scaledDimensions(width, height, scale);
+  return Boolean(dimensions && dimensions.width * dimensions.height <= MAX_FULL_FRAME_SCALED_QR_PIXELS);
 }
 
 function nativeCropWindows(width: number, height: number): CropWindow[] {
@@ -206,6 +221,15 @@ function decodeLuminanceScaleVariants(
   throw lastError ?? new Error("QR decoder exhausted all strategies.");
 }
 
+function decodeQrImageDataOriginalOnly(imageData: ImageData): string {
+  const luminances = toLuminanceBuffer(imageData);
+  try {
+    return decodeLuminances(luminances, imageData.width, imageData.height);
+  } finally {
+    luminances.fill(0);
+  }
+}
+
 function otsuThreshold(luminances: Uint8ClampedArray): number {
   const histogram = new Uint32Array(256);
   try {
@@ -323,6 +347,7 @@ const defaultDependencies: QrImageDecodeDependencies = {
   createImageBitmap: (source) => createImageBitmap(source),
   createCanvas: () => document.createElement("canvas"),
   decodeImageData: decodeQrImageData,
+  decodeFullImageDataOriginalOnly: decodeQrImageDataOriginalOnly,
   decodeNativeQr: decodeWithNativeBarcodeDetector,
 };
 
@@ -476,6 +501,11 @@ export async function decodeQrImage(
     }
 
     try {
+      const useScaledFullFrame = allowFullFrameScaledRetries(imageData.width, imageData.height);
+      if (!useScaledFullFrame && dependencies.decodeFullImageDataOriginalOnly) {
+        onDiagnostic?.("full-zxing-scaled-skipped");
+        return dependencies.decodeFullImageDataOriginalOnly(imageData);
+      }
       return dependencies.decodeImageData(imageData);
     } catch (error) {
       if (error instanceof ImportError) {
