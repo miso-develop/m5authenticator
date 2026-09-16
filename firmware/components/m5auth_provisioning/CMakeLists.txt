@@ -13,5 +13,6 @@ idf_component_register(
         m5auth_vault
         m5auth_vault_runtime
         esp_hw_support
+        esp_timer
         json
 )
