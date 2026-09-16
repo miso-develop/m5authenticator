@@ -645,10 +645,17 @@ export function mergeVaultAdvanceWithCurrentBrowserState(
     safeIncoming.trustedBrowser.wrappedVmk,
   );
   if (!isSingleGenerationAdvance || !sameVault || !sameBrowserVmk) return safeIncoming;
+
+  // A same-VMK generation advance may race with a same-generation browser-only
+  // Recovery Passphrase re-wrap. Preserve the current wrapper crypto/KDF and
+  // advance only its associated Vault-format metadata to match the committed
+  // envelope. VMK wrap v1 does not bind Vault format in its AAD.
+  const recoveryWrappedVmk = cloneWrappedVmk(safeCurrent.recoveryWrappedVmk);
+  recoveryWrappedVmk.vaultFormatVersion = safeIncoming.vault.vaultFormatVersion;
   return sanitizeBrowserCanonicalState({
     ...safeCurrent,
     vault: safeIncoming.vault,
-    recoveryWrappedVmk: safeIncoming.recoveryWrappedVmk,
+    recoveryWrappedVmk,
   });
 }
 
