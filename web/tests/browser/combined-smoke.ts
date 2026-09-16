@@ -15,8 +15,7 @@ async function run(): Promise<void> {
 
   document.body.dataset.status = "running";
   document.body.dataset.stage = "qr-dense-migration";
-  await runDenseMigrationQrSmoke();
-  document.body.dataset.denseQrStatus = "pass";
+  document.body.dataset.denseQrStatus = await runDenseMigrationQrSmoke();
 
   document.body.dataset.stage = "argon2-kdf";
   await runProductionArgon2Smoke();
