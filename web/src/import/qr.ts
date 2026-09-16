@@ -18,6 +18,7 @@ export interface QrImageDecodeDependencies {
 const DENSE_QR_SCALE_FACTORS = [2, 3] as const;
 const MAX_SCALED_QR_PIXELS = 8_388_608;
 const MAX_SCALED_QR_DIMENSION = 4096;
+const NATIVE_QR_DECODE_TIMEOUT_MS = 2_000;
 
 interface NativeBarcodeResult {
   format?: string;
@@ -161,6 +162,22 @@ export function decodeQrImageData(imageData: ImageData): string {
   }
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timeoutId = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function decodeWithNativeBarcodeDetector(bitmap: ImageBitmap): Promise<string | undefined> {
   const detectorConstructor = (
     globalThis as typeof globalThis & { BarcodeDetector?: NativeBarcodeDetectorConstructor }
@@ -173,7 +190,10 @@ async function decodeWithNativeBarcodeDetector(bitmap: ImageBitmap): Promise<str
     // Chrome is the V1 supported browser. Keep the native API as a final local-only
     // fallback and constrain it to QR so no unrelated barcode formats are decoded.
     const detector = new detectorConstructor({ formats: ["qr_code"] });
-    const detected = await detector.detect(bitmap);
+    const detected = await withTimeout(detector.detect(bitmap), NATIVE_QR_DECODE_TIMEOUT_MS);
+    if (!detected) {
+      return undefined;
+    }
     const qrCodes = detected.filter((result) => result.format === "qr_code" && Boolean(result.rawValue));
     // Issue #130 is a single-symbol requirement. Multiple symbols are deliberately
     // not guessed/selected here; callers continue to import one QR image at a time.
