@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "m5auth/device/sticks3/label_scroll_state.hpp"
 #include "m5auth/device/sticks3/ui_model.hpp"
 
 namespace {
@@ -42,12 +43,56 @@ std::vector<m5auth::storage::AccountMetadata> make_max_accounts() {
 int main() {
     using m5auth::device::sticks3::UiModel;
     using m5auth::device::sticks3::account_display_label;
+    using m5auth::device::sticks3::label_scroll::dwell_elapsed;
+    using m5auth::device::sticks3::label_scroll::on_screen_hidden_changed;
+    using m5auth::device::sticks3::label_scroll::reset;
+    using m5auth::device::sticks3::label_scroll::update_offset;
     using m5auth::session::AttemptId;
     using m5auth::session::PresenceOperation;
 
     assert(account_display_label(account(1, 0, "Issuer", "account", "User")) == "User");
     assert(account_display_label(account(1, 0, "Issuer", "account")) == "Issuer");
     assert(account_display_label(account(1, 0, "", "account")) == "account");
+
+    // Issue #139: a screen-state transition that hides the account label must
+    // suspend scroll progress and recovery must start a fresh visible dwell.
+    std::uint64_t label_scroll_epoch_ms = 1'000;
+    int label_scroll_offset_px = 0;
+    bool storage_error = false;
+    reset(label_scroll_epoch_ms, &label_scroll_epoch_ms, &label_scroll_offset_px);
+    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 2'999, 2'000));
+    assert(dwell_elapsed(storage_error, label_scroll_epoch_ms, 3'000, 2'000));
+    assert(update_offset(storage_error, 12, &label_scroll_offset_px));
+    assert(label_scroll_offset_px == 12);
+
+    bool next_storage_error = true;
+    assert(on_screen_hidden_changed(
+        storage_error,
+        next_storage_error,
+        3'100,
+        &label_scroll_epoch_ms,
+        &label_scroll_offset_px
+    ));
+    storage_error = next_storage_error;
+    assert(label_scroll_epoch_ms == 3'100);
+    assert(label_scroll_offset_px == 0);
+    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 10'000, 2'000));
+    assert(!update_offset(storage_error, 20, &label_scroll_offset_px));
+    assert(label_scroll_offset_px == 0);
+
+    next_storage_error = false;
+    assert(on_screen_hidden_changed(
+        storage_error,
+        next_storage_error,
+        10'000,
+        &label_scroll_epoch_ms,
+        &label_scroll_offset_px
+    ));
+    storage_error = next_storage_error;
+    assert(label_scroll_epoch_ms == 10'000);
+    assert(label_scroll_offset_px == 0);
+    assert(!dwell_elapsed(storage_error, label_scroll_epoch_ms, 11'999, 2'000));
+    assert(dwell_elapsed(storage_error, label_scroll_epoch_ms, 12'000, 2'000));
 
     UiModel model;
     assert(model.account_count() == 0);
