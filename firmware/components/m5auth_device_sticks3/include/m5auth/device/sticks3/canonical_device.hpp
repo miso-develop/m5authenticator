@@ -121,8 +121,11 @@ private:
     void select_previous();
     void render();
     void render_account_label();
+    void render_reveal_validity();
+    void render_reveal_region();
     void hide_reveal();
     void reveal_selected(std::uint64_t now_ms);
+    bool refresh_revealed_totp();
     void reset_label_scroll(std::uint64_t now_ms);
     bool update_label_scroll(std::uint64_t now_ms);
 
@@ -147,6 +150,10 @@ private:
     bool reveal_active_{false};
     std::uint32_t revealed_code_{0};
     std::uint64_t reveal_deadline_ms_{0};
+    // Non-secret RFC6238 display metadata. The deadline above is deliberately
+    // independent: rollover updates these fields without extending the 10 s reveal.
+    std::uint64_t revealed_period_index_{0};
+    std::uint8_t validity_seconds_remaining_{0};
     totp::GenerateResult last_generate_result_{totp::GenerateResult::kOk};
     // Scrolling stores only timing and pixel offset. The decrypted credential
     // label stays in the existing UI-private credential cache and is never copied
