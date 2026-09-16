@@ -67,6 +67,8 @@ export async function runLocalizationReworkSmoke(): Promise<void> {
   // destinations remain real links with the current-page accessibility marker,
   // and the tab group is visually centered by the production CSS.
   const productMark = required<HTMLElement>(".product-mark");
+  const tabGroup = required<HTMLElement>(".site-tabs");
+  const navShell = required<HTMLElement>(".site-nav-shell");
   const tabs = Array.from(document.querySelectorAll<HTMLAnchorElement>(".site-tabs a"));
   expectCondition(productMark.textContent === "M5Authenticator", "Product brand spelling regressed");
   expectCondition(!(productMark instanceof HTMLAnchorElement), "Product brand must not be a navigation link");
@@ -76,8 +78,16 @@ export async function runLocalizationReworkSmoke(): Promise<void> {
     "Top navigation does not expose exactly one current page",
   );
   expectCondition(
-    getComputedStyle(required<HTMLElement>(".site-tabs")).justifyContent === "center",
+    getComputedStyle(tabGroup).justifyContent === "center",
     "Top-level tabs are not centered as a group",
+  );
+  const tabRect = tabGroup.getBoundingClientRect();
+  const shellRect = navShell.getBoundingClientRect();
+  const tabCenter = tabRect.left + tabRect.width / 2;
+  const shellCenter = shellRect.left + shellRect.width / 2;
+  expectCondition(
+    Math.abs(tabCenter - shellCenter) <= 1.5,
+    `Top-level tab group is not geometrically centered (${tabCenter} vs ${shellCenter})`,
   );
   expectCondition(
     Number.parseFloat(getComputedStyle(productMark).fontSize) > Number.parseFloat(getComputedStyle(tabs[0]!).fontSize),
