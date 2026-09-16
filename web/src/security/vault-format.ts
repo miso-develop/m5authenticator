@@ -1,7 +1,10 @@
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
-export const VAULT_FORMAT_VERSION = 1;
+export const LEGACY_VAULT_FORMAT_VERSION = 1 as const;
+export const VAULT_FORMAT_VERSION = 2 as const;
+export const SUPPORTED_VAULT_FORMAT_VERSIONS = [LEGACY_VAULT_FORMAT_VERSION, VAULT_FORMAT_VERSION] as const;
+export type SupportedVaultFormatVersion = (typeof SUPPORTED_VAULT_FORMAT_VERSIONS)[number];
 export const VAULT_TARGET_STORAGE_SCHEMA_VERSION = 2;
 export const RECOVERY_PACKAGE_VERSION = 1;
 export const VMK_WRAP_VERSION = 1;
@@ -9,8 +12,10 @@ export const VAULT_ID_BYTES = 16;
 export const CREDENTIAL_ID_BYTES = 16;
 export const MAX_VAULT_CREDENTIALS = 32;
 
-const VAULT_PLAINTEXT_MAGIC = textEncoder.encode("M5AUTH-VLT-PT1\0");
-const VAULT_AAD_MAGIC = textEncoder.encode("M5AUTH-VLT-AAD1\0");
+const VAULT_PLAINTEXT_MAGIC_V1 = textEncoder.encode("M5AUTH-VLT-PT1\0");
+const VAULT_PLAINTEXT_MAGIC_V2 = textEncoder.encode("M5AUTH-VLT-PT2\0");
+const VAULT_AAD_MAGIC_V1 = textEncoder.encode("M5AUTH-VLT-AAD1\0");
+const VAULT_AAD_MAGIC_V2 = textEncoder.encode("M5AUTH-VLT-AAD2\0");
 const VMK_WRAP_AAD_MAGIC = textEncoder.encode("M5AUTH-VMK-WRAP1\0");
 
 const ALGORITHM_SHA1 = 1;
@@ -39,6 +44,7 @@ export interface VaultWifiRecord {
 export interface VaultPlaintext {
   credentials: VaultCredentialRecord[];
   wifi: VaultWifiRecord | null;
+  autoLockDays?: number | null;
 }
 
 export interface VaultAadInput {
@@ -155,10 +161,24 @@ function writeVersion(writer: ByteWriter, version: number, expected: number, fie
   writer.u16(version);
 }
 
+export function isSupportedVaultFormatVersion(value: number): value is SupportedVaultFormatVersion {
+  return value === LEGACY_VAULT_FORMAT_VERSION || value === VAULT_FORMAT_VERSION;
+}
+
+export function assertSupportedVaultFormatVersion(value: number): asserts value is SupportedVaultFormatVersion {
+  if (!isSupportedVaultFormatVersion(value)) throw new Error(`unsupported vault format version: ${value}`);
+}
+
+export function normalizeAutoLockDays(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  assertIntegerRange(value, 1, 31, "auto_lock_days");
+  return value;
+}
+
 function validateCredential(record: VaultCredentialRecord): void {
   assertFixedLength(record.credentialId, CREDENTIAL_ID_BYTES, "credentialId");
   if (record.secret.length < 1 || record.secret.length > MAX_SECRET_BYTES) {
-    throw new Error("secret length is outside the V1 vault limit");
+    throw new Error("secret length is outside the vault limit");
   }
   if (record.algorithm !== "SHA1") throw new Error(`unsupported TOTP algorithm: ${String(record.algorithm)}`);
   assertIntegerRange(record.digits, 1, 10, "digits");
@@ -166,17 +186,13 @@ function validateCredential(record: VaultCredentialRecord): void {
   assertIntegerRange(record.manualOrder, 0, 0xffff, "manualOrder");
 }
 
-export function encodeVaultPlaintext(value: VaultPlaintext): Uint8Array {
+function writeCommonPlaintext(writer: ByteWriter, value: VaultPlaintext): void {
   if (value.credentials.length > MAX_VAULT_CREDENTIALS) {
     throw new Error(`vault supports at most ${MAX_VAULT_CREDENTIALS} credentials`);
   }
 
   const ids = new Set<string>();
-  const writer = new ByteWriter();
-  writer.bytes(VAULT_PLAINTEXT_MAGIC);
-  writeVersion(writer, VAULT_FORMAT_VERSION, VAULT_FORMAT_VERSION, "vault format version");
   writer.u16(value.credentials.length);
-
   for (const record of value.credentials) {
     validateCredential(record);
     const idKey = Array.from(record.credentialId, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -199,15 +215,9 @@ export function encodeVaultPlaintext(value: VaultPlaintext): Uint8Array {
     writer.sizedText(value.wifi.ssid, "wifi ssid");
     writer.sizedText(value.wifi.password, "wifi password");
   }
-  return writer.finish();
 }
 
-export function decodeVaultPlaintext(encoded: Uint8Array): VaultPlaintext {
-  const reader = new ByteReader(encoded);
-  expectMagic(reader, VAULT_PLAINTEXT_MAGIC, "vault plaintext magic");
-  const version = reader.u16("vault format version");
-  if (version !== VAULT_FORMAT_VERSION) throw new Error(`unsupported vault format version: ${version}`);
-
+function readCommonPlaintext(reader: ByteReader): Pick<VaultPlaintext, "credentials" | "wifi"> {
   const count = reader.u16("credential count");
   if (count > MAX_VAULT_CREDENTIALS) {
     throw new Error(`vault supports at most ${MAX_VAULT_CREDENTIALS} credentials`);
@@ -249,19 +259,86 @@ export function decodeVaultPlaintext(encoded: Uint8Array): VaultPlaintext {
   const wifi = wifiPresent === 1
     ? { ssid: reader.sizedText("wifi ssid"), password: reader.sizedText("wifi password") }
     : null;
-
-  reader.expectEnd();
   return { credentials, wifi };
+}
+
+export function encodeVaultPlaintext(
+  value: VaultPlaintext,
+  vaultFormatVersion: SupportedVaultFormatVersion = VAULT_FORMAT_VERSION,
+): Uint8Array {
+  assertSupportedVaultFormatVersion(vaultFormatVersion);
+  const writer = new ByteWriter();
+  if (vaultFormatVersion === LEGACY_VAULT_FORMAT_VERSION) {
+    if (normalizeAutoLockDays(value.autoLockDays) !== null) {
+      throw new Error("Vault Format 1 cannot encode auto_lock_days");
+    }
+    writer.bytes(VAULT_PLAINTEXT_MAGIC_V1);
+    writeVersion(writer, LEGACY_VAULT_FORMAT_VERSION, LEGACY_VAULT_FORMAT_VERSION, "vault format version");
+    writeCommonPlaintext(writer, value);
+    return writer.finish();
+  }
+
+  writer.bytes(VAULT_PLAINTEXT_MAGIC_V2);
+  writeVersion(writer, VAULT_FORMAT_VERSION, VAULT_FORMAT_VERSION, "vault format version");
+  writeCommonPlaintext(writer, value);
+  const autoLockDays = normalizeAutoLockDays(value.autoLockDays);
+  writer.u8(autoLockDays === null ? 0 : 1);
+  if (autoLockDays !== null) writer.u8(autoLockDays);
+  return writer.finish();
+}
+
+export function decodeVaultPlaintext(
+  encoded: Uint8Array,
+  expectedVaultFormatVersion?: SupportedVaultFormatVersion,
+): VaultPlaintext {
+  const candidates = expectedVaultFormatVersion === undefined
+    ? SUPPORTED_VAULT_FORMAT_VERSIONS
+    : [expectedVaultFormatVersion] as const;
+
+  for (const version of candidates) {
+    try {
+      const reader = new ByteReader(encoded);
+      if (version === LEGACY_VAULT_FORMAT_VERSION) {
+        expectMagic(reader, VAULT_PLAINTEXT_MAGIC_V1, "vault plaintext magic");
+        const encodedVersion = reader.u16("vault format version");
+        if (encodedVersion !== LEGACY_VAULT_FORMAT_VERSION) {
+          throw new Error(`unsupported vault format version: ${encodedVersion}`);
+        }
+        const common = readCommonPlaintext(reader);
+        reader.expectEnd();
+        return { ...common, autoLockDays: null };
+      }
+
+      expectMagic(reader, VAULT_PLAINTEXT_MAGIC_V2, "vault plaintext magic");
+      const encodedVersion = reader.u16("vault format version");
+      if (encodedVersion !== VAULT_FORMAT_VERSION) throw new Error(`unsupported vault format version: ${encodedVersion}`);
+      const common = readCommonPlaintext(reader);
+      const autoLockPresent = reader.u8("auto_lock_present");
+      if (autoLockPresent !== 0 && autoLockPresent !== 1) throw new Error("unsupported auto_lock_present value");
+      const autoLockDays = autoLockPresent === 1
+        ? normalizeAutoLockDays(reader.u8("auto_lock_days"))
+        : null;
+      reader.expectEnd();
+      return { ...common, autoLockDays };
+    } catch (error) {
+      if (expectedVaultFormatVersion !== undefined) throw error;
+    }
+  }
+  throw new Error("unsupported vault plaintext format");
 }
 
 export function buildVaultAad(input: VaultAadInput): Uint8Array {
   const formatVersion = input.vaultFormatVersion ?? VAULT_FORMAT_VERSION;
   const storageSchemaVersion = input.storageSchemaVersion ?? VAULT_TARGET_STORAGE_SCHEMA_VERSION;
+  assertSupportedVaultFormatVersion(formatVersion);
+  if (storageSchemaVersion !== VAULT_TARGET_STORAGE_SCHEMA_VERSION) {
+    throw new Error(`unsupported storage schema version: ${storageSchemaVersion}`);
+  }
   assertFixedLength(input.vaultId, VAULT_ID_BYTES, "vaultId");
 
   const writer = new ByteWriter();
-  writer.bytes(VAULT_AAD_MAGIC);
-  writeVersion(writer, formatVersion, VAULT_FORMAT_VERSION, "vault format version");
+  writer.bytes(formatVersion === LEGACY_VAULT_FORMAT_VERSION ? VAULT_AAD_MAGIC_V1 : VAULT_AAD_MAGIC_V2);
+  writeVersion(writer, formatVersion, formatVersion, "vault format version");
   writeVersion(writer, storageSchemaVersion, VAULT_TARGET_STORAGE_SCHEMA_VERSION, "storage schema version");
   writer.bytes(input.vaultId);
   writer.u64(input.generation);
