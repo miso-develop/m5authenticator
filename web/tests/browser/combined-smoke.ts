@@ -1,4 +1,5 @@
 import { runArgon2CspSmoke, runProductionArgon2Smoke } from "./argon2-csp-smoke";
+import { runAutoLockContextSmoke } from "./auto-lock-context-smoke";
 import { runLocalizationReworkSmoke } from "./localization-rework-smoke";
 import { runDenseMigrationQrSmoke } from "./qr-dense-migration-smoke";
 
@@ -11,6 +12,12 @@ async function run(): Promise<void> {
   await runLocalizationReworkSmoke();
   if (document.body.dataset.localizationReworkStatus !== "pass") {
     throw new Error("Localization rework DOM smoke did not complete successfully");
+  }
+
+  document.body.dataset.stage = "auto-lock-context";
+  await runAutoLockContextSmoke();
+  if (document.body.dataset.autoLockContextStatus !== "pass") {
+    throw new Error("Automatic LOCK context DOM smoke did not complete successfully");
   }
 
   document.body.dataset.stage = "qr-decode";
