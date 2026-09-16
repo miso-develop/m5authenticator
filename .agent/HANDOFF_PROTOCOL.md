@@ -26,6 +26,21 @@ Use the relevant Issue, PR, Spec / Decision artifact, checks, or another reposit
 
 The handoff MUST NOT duplicate information that the receiving Agent can retrieve from those durable sources.
 
+## Repository visibility boundary
+
+Durable-first does not override repository visibility or confidentiality boundaries.
+
+Before persisting material state or a durable handoff record, determine whether the target repository/location is public or private.
+
+For a public repository:
+
+- do not expose private-repository names, URLs, paths, Issue/PR identifiers, branch names, internal artifact names, or other private-source metadata unless the human owner explicitly approves disclosure;
+- when work is derived from a private source, persist only the public-safe resulting decision, specification, evidence, or status;
+- keep private provenance/traceability in an approved private durable location;
+- make public Issue / PR / comment / commit / documentation content self-contained using public artifacts or intentionally disclosed information.
+
+If material context cannot be safely persisted in the public repository, persist it in an approved private durable location and put only the minimum public-safe state needed for workflow execution in the public repository. Do not compensate by placing private details in the chat handoff.
+
 ## Handoff triggers
 
 Use a handoff when:
@@ -130,6 +145,6 @@ Prefer a small stable vocabulary. Role Contracts may define role-specific states
 
 ## Completion rule
 
-A Role may emit a handoff only after the material state supporting that transition has been persisted durably.
+A Role may emit a handoff only after the material state supporting that transition has been persisted durably in a location appropriate for its visibility/sensitivity.
 
 The handoff itself is intentionally insufficient to perform the target Role's work. The receiver must Bootstrap and reconstruct current context from GitHub.
