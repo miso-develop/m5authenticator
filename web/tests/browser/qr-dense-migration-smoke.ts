@@ -18,14 +18,17 @@ function decodeBase64(value: string): Uint8Array {
 export async function runDenseMigrationQrSmoke(): Promise<void> {
   const pngBytes = decodeBase64(denseSyntheticMigrationQrPngBase64);
   try {
+    document.body.dataset.stage = "qr-dense-raster-decode";
     const file = new File([pngBytes], "synthetic-dense-migration.png", { type: "image/png" });
     const decoded = await decodeQrImage(file);
+    document.body.dataset.stage = "qr-dense-import-session";
     const session = new ImportSession();
     try {
       const update = session.importDecodedText(decoded);
       if (update.batch !== undefined || update.accounts.length !== 4) {
         throw new Error("Dense synthetic migration QR did not reach the expected import-session state");
       }
+      document.body.dataset.stage = "qr-dense-validated";
     } finally {
       session.clear();
     }
