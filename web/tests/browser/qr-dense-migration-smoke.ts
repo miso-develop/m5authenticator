@@ -1,9 +1,18 @@
 import { decodeQrImage } from "../../src/import/qr";
 import { ImportSession } from "../../src/import/session";
 import { DENSE_MIGRATION_FIXTURE } from "./qr-dense-migration-fixtures";
+import { TWO_ACCOUNT_DENSE_MIGRATION_FIXTURE } from "./qr-dense-migration-two-account-fixture";
+
+interface MatrixFixture {
+  accountCount: number;
+  qrVersion: number;
+  matrixSize: number;
+  packedMatrixBase64: string;
+}
 
 interface RasterCase {
   id: string;
+  fixture: MatrixFixture;
   targetPixels: number;
   smoothingQuality: ImageSmoothingQuality;
 }
@@ -12,17 +21,40 @@ const SOURCE_PIXELS_PER_MODULE = 8;
 const SCREENSHOT_WIDTH = 720;
 const SCREENSHOT_HEIGHT = 1280;
 
-// One synthetic migration payload is rasterized at several screenshot-like
-// densities. The source matrix contains only deterministic synthetic accounts;
-// no real export, identity, issuer, secret, URI, or raw protobuf is stored here.
+// These cases cover both the Human acceptance account count (2 accounts) at a
+// deliberately high QR version and a separate higher-payload stress fixture.
+// Each QR is rendered into a larger screenshot canvas with fractional geometry
+// and browser interpolation so the decoder sees screenshot-like antialiasing,
+// not a pristine integer-aligned module grid.
 const RASTER_CASES: RasterCase[] = [
-  { id: "moderate", targetPixels: 266.5, smoothingQuality: "medium" },
-  { id: "dense", targetPixels: 232.5, smoothingQuality: "high" },
-  { id: "very-dense", targetPixels: 211.5, smoothingQuality: "high" },
+  {
+    id: "two-account-v22-moderate",
+    fixture: TWO_ACCOUNT_DENSE_MIGRATION_FIXTURE,
+    targetPixels: 226.5,
+    smoothingQuality: "medium",
+  },
+  {
+    id: "two-account-v22-dense",
+    fixture: TWO_ACCOUNT_DENSE_MIGRATION_FIXTURE,
+    targetPixels: 198.5,
+    smoothingQuality: "high",
+  },
+  {
+    id: "ten-account-v27-moderate",
+    fixture: DENSE_MIGRATION_FIXTURE,
+    targetPixels: 266.5,
+    smoothingQuality: "medium",
+  },
+  {
+    id: "ten-account-v27-dense",
+    fixture: DENSE_MIGRATION_FIXTURE,
+    targetPixels: 232.5,
+    smoothingQuality: "high",
+  },
 ];
 
-function decodePackedMatrix(): Uint8Array {
-  const binary = atob(DENSE_MIGRATION_FIXTURE.packedMatrixBase64);
+function decodePackedMatrix(fixture: MatrixFixture): Uint8Array {
+  const binary = atob(fixture.packedMatrixBase64);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
@@ -34,9 +66,9 @@ function moduleIsDark(packed: Uint8Array, moduleIndex: number): boolean {
   return ((byte >> (7 - (moduleIndex & 7))) & 1) === 1;
 }
 
-function renderSourceMatrix(): HTMLCanvasElement {
-  const packed = decodePackedMatrix();
-  const size = DENSE_MIGRATION_FIXTURE.matrixSize;
+function renderSourceMatrix(fixture: MatrixFixture): HTMLCanvasElement {
+  const packed = decodePackedMatrix(fixture);
+  const size = fixture.matrixSize;
   const canvas = document.createElement("canvas");
   canvas.width = size * SOURCE_PIXELS_PER_MODULE;
   canvas.height = size * SOURCE_PIXELS_PER_MODULE;
@@ -82,7 +114,7 @@ async function canvasToPngFile(canvas: HTMLCanvasElement, id: string): Promise<F
 }
 
 async function createScreenshotLikeFile(raster: RasterCase): Promise<File> {
-  const source = renderSourceMatrix();
+  const source = renderSourceMatrix(raster.fixture);
   const screenshot = document.createElement("canvas");
   screenshot.width = SCREENSHOT_WIDTH;
   screenshot.height = SCREENSHOT_HEIGHT;
@@ -99,8 +131,6 @@ async function createScreenshotLikeFile(raster: RasterCase): Promise<File> {
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = raster.smoothingQuality;
 
-    // Fractional destination geometry intentionally exercises the interpolation
-    // produced by real screenshots/CSS layout instead of an integer module grid.
     const left = (SCREENSHOT_WIDTH - raster.targetPixels) / 2 + 0.35;
     const top = 218.65;
     context.drawImage(
@@ -144,7 +174,7 @@ export async function runDenseMigrationQrSmoke(): Promise<"pass" | "skipped-nati
       decoded = await decodeQrImage(file);
       document.body.dataset.stage = `qr-dense-${raster.id}-import-session`;
       const update = session.importDecodedText(decoded);
-      if (update.batch !== undefined || update.accounts.length !== DENSE_MIGRATION_FIXTURE.accountCount) {
+      if (update.batch !== undefined || update.accounts.length !== raster.fixture.accountCount) {
         throw new Error("Dense synthetic migration QR did not reach the expected import-session state");
       }
     } finally {
