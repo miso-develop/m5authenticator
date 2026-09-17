@@ -145,8 +145,11 @@ def run_isolated_build(
     source_root = source_root.resolve()
     isolated_firmware = prepare_isolated_firmware(source_root, work_root)
     subprocess.run(docker_command(isolated_firmware, image_reference), check=True)
-    verify_dependency_lock(source_root / "firmware", isolated_firmware)
+    # Validate all expected container-controlled output metadata before any
+    # post-container content read. Only after that metadata gate do we compare
+    # dependency-lock bytes with authoritative repository state.
     verify_build_outputs(isolated_firmware)
+    verify_dependency_lock(source_root / "firmware", isolated_firmware)
     return isolated_firmware / "build"
 
 
