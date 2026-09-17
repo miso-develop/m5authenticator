@@ -155,10 +155,10 @@ int main() {
         std::ios::binary
     );
     assert(protocol_file.good());
-    const std::string protocol_source(
+    const std::string protocol_source{
         std::istreambuf_iterator<char>(protocol_file),
         std::istreambuf_iterator<char>()
-    );
+    };
     const std::string_view protocol(protocol_source);
 
     const auto block_between = [&](std::string_view start_marker, std::string_view end_marker) {
