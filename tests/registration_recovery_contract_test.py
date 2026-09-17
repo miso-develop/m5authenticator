@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -165,6 +166,39 @@ class RegistrationRecoveryContractTests(unittest.TestCase):
         self.assertIn("install_recovered_vault", body)
         self.assertIn("default:", body)
         self.assertIn("vmk_sink_.cancel_pending();", body)
+
+    def test_canonical_factory_reset_behavior_uses_production_handler(self) -> None:
+        output = Path("/tmp/m5auth-canonical-reset-behavior-test")
+        command = [
+            "g++",
+            "-std=c++20",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pthread",
+            "-Itests/host_stubs",
+            "-Ifirmware/components/m5auth_core/include",
+            "-Ifirmware/components/m5auth_provisioning/include",
+            "-Ifirmware/components/m5auth_registration/include",
+            "-Ifirmware/components/m5auth_session/include",
+            "-Ifirmware/components/m5auth_time/include",
+            "-Ifirmware/components/m5auth_vault/include",
+            "-Ifirmware/components/m5auth_vault_runtime/include",
+            "tests/host_stubs/cJSON.cpp",
+            "firmware/components/m5auth_provisioning/canonical_protocol_v2.cpp",
+            "firmware/components/m5auth_session/session_protocol_v2.cpp",
+            "firmware/components/m5auth_session/p256_public_key.cpp",
+            "firmware/components/m5auth_session/user_presence.cpp",
+            "firmware/components/m5auth_vault/vault_format.cpp",
+            "firmware/components/m5auth_vault/vault_crypto.cpp",
+            "firmware/components/m5auth_vault_runtime/runtime.cpp",
+            "tests/canonical_protocol_v2_factory_reset_behavior_test.cpp",
+            "-lcrypto",
+            "-o",
+            str(output),
+        ]
+        subprocess.run(command, cwd=ROOT, check=True)
+        subprocess.run([str(output)], cwd=ROOT, check=True)
 
     def test_header_exposes_no_unconfirmed_device_id_reset_api(self) -> None:
         text = REGISTRATION_HPP.read_text(encoding="utf-8")
