@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class FactoryResetProtocolBehaviorBuildTest(unittest.TestCase):
     def test_canonical_factory_reset_protocol_behavior(self) -> None:
         output = Path("/tmp/m5auth-canonical-reset-behavior-test")
+        host_stubs = sorted(
+            str(path.relative_to(ROOT))
+            for path in (ROOT / "tests" / "host_stubs").glob("*.cpp")
+        )
         command = [
             "g++",
             "-std=c++20",
@@ -23,7 +27,7 @@ class FactoryResetProtocolBehaviorBuildTest(unittest.TestCase):
             "-Ifirmware/components/m5auth_time/include",
             "-Ifirmware/components/m5auth_vault/include",
             "-Ifirmware/components/m5auth_vault_runtime/include",
-            "tests/host_stubs/cJSON.cpp",
+            *host_stubs,
             "firmware/components/m5auth_provisioning/canonical_protocol_v2.cpp",
             "firmware/components/m5auth_session/session_protocol_v2.cpp",
             "firmware/components/m5auth_session/p256_public_key.cpp",
