@@ -381,7 +381,8 @@ void no_presence_stale_cancel_timeout_and_supersession_do_not_erase() {
         request(17, m5auth::provisioning::kFactoryResetStatusOperation, attempt_params(begin.attempt_id)),
         20'000 + m5auth::session::kAttemptTtlMs
     ));
-    assert(!status.ok && status.error == "expired");
+    assert(!status.ok && status.error == "invalid_state");
+    fixture.assert_healthy_unerased();
     status = parse_response(fixture.handler.handle_line(
         request(18, m5auth::provisioning::kFactoryResetStatusOperation, attempt_params(begin.attempt_id)),
         20'000 + m5auth::session::kAttemptTtlMs + 1
