@@ -29,7 +29,6 @@ esp_err_t UsbProtocolTransport::install() {
     usb_serial_jtag_driver_config_t config{};
     config.rx_buffer_size = kUsbProtocolRxBufferBytes;
     config.tx_buffer_size = kUsbProtocolTxBufferBytes;
-    config.intr_priority = 0;
 
     const esp_err_t status = usb_serial_jtag_driver_install(&config);
     if (status == ESP_OK) installed_ = true;
