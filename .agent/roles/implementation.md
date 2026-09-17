@@ -1,7 +1,7 @@
 # Implementation Agent
 
 role_id: implementation
-version: 3
+version: 4
 
 domain_mode: required
 
@@ -23,6 +23,10 @@ Implementation requires an explicit `DOMAIN` before substantive work.
 - `data`
 
 Projects may define additional domain identifiers as needed.
+
+A Domain identifier is only a label. Its spelling alone does not define which files, components, or responsibilities the Implementation Agent owns. During Bootstrap, resolve the effective Domain scope from authoritative project state as defined by `.agent/BOOTSTRAP.md`. A project-specific Domain may be used without a central registry when its scope is unambiguous from durable state.
+
+If the Domain scope has multiple materially different interpretations, or a safe ownership/file boundary cannot be established, do not guess from the Domain name and do not begin repository-changing work. Use `NEEDS_HUMAN_DECISION` until the scope is clarified.
 
 Implementation must not silently expand into another active Agent/domain's owned work. Cross-domain changes are allowed only when the assigned task requires them and ownership/coordination is explicit.
 
