@@ -16,6 +16,8 @@ DEFAULT_METADATA = REPO_ROOT / "firmware" / "components" / "m5auth_core" / "incl
 DEFAULT_PARTITIONS = REPO_ROOT / "firmware" / "partitions.csv"
 DEFAULT_BOOTSTRAP = REPO_ROOT / "firmware" / "main" / "app_main.cpp"
 DEFAULT_SDKCONFIG = REPO_ROOT / "firmware" / "sdkconfig.defaults"
+DEFAULT_TRANSPORT_HEADER = REPO_ROOT / "firmware" / "main" / "usb_protocol_transport.hpp"
+DEFAULT_TRANSPORT_CPP = REPO_ROOT / "firmware" / "main" / "usb_protocol_transport.cpp"
 DEFAULT_PROVISIONING_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_provisioning" / "CMakeLists.txt"
 DEFAULT_DEVICE_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "CMakeLists.txt"
 DEFAULT_TIME_CMAKE = REPO_ROOT / "firmware" / "components" / "m5auth_time" / "CMakeLists.txt"
@@ -121,6 +123,85 @@ def validate_canonical_bootstrap(path: Path = DEFAULT_BOOTSTRAP) -> None:
         _require(token not in source, f"legacy/synthetic credential bootstrap is release-ineligible: {token}")
 
 
+def validate_production_transport(
+    bootstrap_path: Path = DEFAULT_BOOTSTRAP,
+    sdkconfig_path: Path = DEFAULT_SDKCONFIG,
+    transport_header_path: Path = DEFAULT_TRANSPORT_HEADER,
+    transport_cpp_path: Path = DEFAULT_TRANSPORT_CPP,
+) -> None:
+    sdkconfig = _read_text(sdkconfig_path, "release sdkconfig defaults")
+    for required in (
+        "CONFIG_ESP_CONSOLE_NONE=y",
+        "CONFIG_ESP_CONSOLE_SECONDARY_NONE=y",
+        "CONFIG_LOG_DEFAULT_LEVEL_NONE=y",
+        "CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y",
+    ):
+        _require(
+            re.search(rf"^{re.escape(required)}$", sdkconfig, re.MULTILINE) is not None,
+            f"production Protocol transport requires {required}",
+        )
+    for forbidden in (
+        "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+        "CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y",
+        "CONFIG_ESP_CONSOLE_UART_DEFAULT=y",
+        "CONFIG_ESP_CONSOLE_UART_CUSTOM=y",
+        "CONFIG_ESP_CONSOLE_USB_CDC=y",
+    ):
+        _require(
+            forbidden not in sdkconfig,
+            f"production console/log sink can contaminate Protocol transport: {forbidden}",
+        )
+
+    transport_header = _read_text(transport_header_path, "USB Protocol transport header")
+    transport_cpp = _read_text(transport_cpp_path, "USB Protocol transport implementation")
+    bootstrap = _read_text(bootstrap_path, "firmware bootstrap")
+
+    for token in (
+        "kUsbProtocolRxBufferBytes = 1024",
+        "kUsbProtocolTxBufferBytes = 1024",
+        "kPreHandshake",
+        "kStrictPostHandshake",
+        "kFaulted",
+    ):
+        _require(token in transport_header, f"USB Protocol transport contract missing: {token}")
+
+    for token in (
+        "usb_serial_jtag_driver_install",
+        "usb_serial_jtag_read_bytes",
+        "usb_serial_jtag_write_bytes",
+        "usb_serial_jtag_wait_tx_done",
+        "usb_serial_jtag_driver_uninstall",
+        "usb_serial_jtag_is_connected",
+    ):
+        _require(token in transport_cpp, f"driver-backed USB Protocol transport missing: {token}")
+
+    for token in (
+        '"usb_protocol_transport.hpp"',
+        "g_protocol_transport.install()",
+        "g_protocol_transport.read(",
+        "g_protocol_transport.establish_handshake()",
+        "g_protocol_transport.fail_session()",
+        "g_protocol_transport.faulted()",
+        "classify_protocol_frame(request)",
+        "successful_protocol_response_for_id(response, frame_info.id)",
+    ):
+        _require(token in bootstrap, f"production Protocol ownership bootstrap missing: {token}")
+
+    for forbidden in (
+        "std::fgets(",
+        "std::fwrite(",
+        "std::fflush(",
+        "::fsync(",
+        "flockfile(",
+        "funlockfile(",
+        "STDOUT_FILENO",
+    ):
+        _require(
+            forbidden not in bootstrap,
+            f"production Protocol path must not depend on stdio/VFS transport: {forbidden}",
+        )
+
+
 def validate_release_build_surface(
     sdkconfig_path: Path = DEFAULT_SDKCONFIG,
     provisioning_cmake_path: Path = DEFAULT_PROVISIONING_CMAKE,
@@ -178,6 +259,9 @@ def validate_release(
     partitions_path: Path = DEFAULT_PARTITIONS,
     require_production: bool = False,
     bootstrap_path: Path = DEFAULT_BOOTSTRAP,
+    sdkconfig_path: Path = DEFAULT_SDKCONFIG,
+    transport_header_path: Path = DEFAULT_TRANSPORT_HEADER,
+    transport_cpp_path: Path = DEFAULT_TRANSPORT_CPP,
 ) -> dict[str, Any]:
     profile = load_profile(profile_path)
     metadata = parse_metadata(metadata_path)
@@ -206,7 +290,13 @@ def validate_release(
     _require(isinstance(eligible, bool), "production_release_allowed must be boolean")
 
     validate_canonical_bootstrap(bootstrap_path)
-    validate_release_build_surface()
+    validate_production_transport(
+        bootstrap_path,
+        sdkconfig_path,
+        transport_header_path,
+        transport_cpp_path,
+    )
+    validate_release_build_surface(sdkconfig_path=sdkconfig_path)
 
     for name in REQUIRED_PARTITIONS:
         _require(name in partitions, f"missing required partition: {name}")
