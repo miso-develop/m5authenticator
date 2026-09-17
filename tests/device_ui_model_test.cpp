@@ -1,5 +1,7 @@
 #include <cassert>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +41,14 @@ std::vector<m5auth::storage::AccountMetadata> make_max_accounts() {
     return accounts;
 }
 
+std::string read_text(const char* path) {
+    std::ifstream input(path);
+    assert(input.good());
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
 }  // namespace
 
 int main() {
@@ -72,6 +82,99 @@ int main() {
     assert(validity_60.period_index == 2 && validity_60.seconds_remaining == 30);
     assert(same_period(validity_0, validity_29));
     assert(!same_period(validity_29, validity_30));
+
+    // Issue #148 runtime/display contracts that are practical to verify on the
+    // host: rollover must blank the old OTP before drawing new-period validity,
+    // rollover refresh must not move the 10-second deadline, failure paths must
+    // hide stale OTP, and semantic status categories must remain stable.
+    const std::string canonical_ui = read_text(
+        "firmware/components/m5auth_device_sticks3/canonical_device.cpp"
+    );
+
+    const std::size_t render_region_start = canonical_ui.find(
+        "void CanonicalUiController::render_reveal_region()"
+    );
+    const std::size_t render_region_end = canonical_ui.find(
+        "\nvoid CanonicalUiController::render()",
+        render_region_start
+    );
+    assert(render_region_start != std::string::npos);
+    assert(render_region_end != std::string::npos);
+    const std::string render_region = canonical_ui.substr(
+        render_region_start,
+        render_region_end - render_region_start
+    );
+    const std::size_t erase_old_otp = render_region.find("kOtpY");
+    const std::size_t draw_new_validity = render_region.find("render_reveal_validity();");
+    const std::size_t draw_new_otp = render_region.find("draw_otp(revealed_code_);");
+    assert(erase_old_otp != std::string::npos);
+    assert(draw_new_validity != std::string::npos);
+    assert(draw_new_otp != std::string::npos);
+    assert(erase_old_otp < draw_new_validity);
+    assert(draw_new_validity < draw_new_otp);
+    assert(render_region.find("M5.Display.clear();") == std::string::npos);
+
+    const std::size_t refresh_start = canonical_ui.find(
+        "bool CanonicalUiController::refresh_revealed_totp()"
+    );
+    const std::size_t refresh_end = canonical_ui.find(
+        "\nvoid CanonicalUiController::reveal_selected",
+        refresh_start
+    );
+    assert(refresh_start != std::string::npos);
+    assert(refresh_end != std::string::npos);
+    const std::string refresh_reveal = canonical_ui.substr(
+        refresh_start,
+        refresh_end - refresh_start
+    );
+    assert(refresh_reveal.find("reveal_deadline_ms_ =") == std::string::npos);
+    assert(refresh_reveal.find("current_unix_seconds") != std::string::npos);
+    assert(refresh_reveal.find("same_period") != std::string::npos);
+
+    const std::size_t run_start = canonical_ui.find("void CanonicalUiController::run()");
+    assert(run_start != std::string::npos);
+    const std::string run_loop = canonical_ui.substr(run_start);
+    const std::size_t readiness_guard = run_loop.find(
+        "readiness != time::Readiness::kReady || now_ms >= reveal_deadline_ms_"
+    );
+    assert(readiness_guard != std::string::npos);
+    assert(run_loop.find("hide_reveal();", readiness_guard) != std::string::npos);
+
+    const std::size_t trusted_time_failure = run_loop.find(
+        "if (!time_service_.current_unix_seconds(&current_unix_seconds))"
+    );
+    assert(trusted_time_failure != std::string::npos);
+    const std::size_t trusted_time_else = run_loop.find("} else {", trusted_time_failure);
+    assert(trusted_time_else != std::string::npos);
+    const std::string trusted_time_failure_block = run_loop.substr(
+        trusted_time_failure,
+        trusted_time_else - trusted_time_failure
+    );
+    assert(trusted_time_failure_block.find("hide_reveal();") != std::string::npos);
+
+    const std::size_t rollover_start = run_loop.find(
+        "if (current_validity.period_index != revealed_period_index_)"
+    );
+    const std::size_t rollover_end = run_loop.find("} else if (", rollover_start);
+    assert(rollover_start != std::string::npos);
+    assert(rollover_end != std::string::npos);
+    const std::string rollover = run_loop.substr(
+        rollover_start,
+        rollover_end - rollover_start
+    );
+    assert(rollover.find("refresh_revealed_totp()") != std::string::npos);
+    assert(rollover.find("hide_reveal();") != std::string::npos);
+    assert(rollover.find("reveal_deadline_ms_ =") == std::string::npos);
+
+    assert(canonical_ui.find("constexpr std::uint16_t kColorGood = 0x07e0;") != std::string::npos);
+    assert(canonical_ui.find("constexpr std::uint16_t kColorAttention = 0xffe0;") != std::string::npos);
+    assert(canonical_ui.find("constexpr std::uint16_t kColorError = 0xf800;") != std::string::npos);
+    assert(canonical_ui.find("case time::Readiness::kReady: return kColorGood;") != std::string::npos);
+    assert(canonical_ui.find("case time::Readiness::kNotSynced: return kColorAttention;") != std::string::npos);
+    assert(canonical_ui.find("case time::Readiness::kStale: return kColorError;") != std::string::npos);
+    assert(canonical_ui.find("case vault_runtime::State::kUnlocked: return kColorGood;") != std::string::npos);
+    assert(canonical_ui.find("case vault_runtime::State::kLocked:\n        case vault_runtime::State::kUnprovisioned:\n            return kColorAttention;") != std::string::npos);
+    assert(canonical_ui.find("case vault_runtime::State::kReprovisionRequired:\n        case vault_runtime::State::kError:\n            return kColorError;") != std::string::npos);
 
     // Issue #139: clipped labels repeat a bounded monotonic cycle:
     // start dwell -> scroll -> end dwell -> reset -> start dwell -> repeat.
