@@ -24,7 +24,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
     quickStart: [
       "Open Firmware Flash. For a new or intentionally clean device, use First install. For an already provisioned device, use the state-preserving Update path instead of erasing user state.",
       "Return to Provisioner and connect the M5StickS3 with Desktop Chrome. Import a standard TOTP QR image or a Google Authenticator export image. QR images and imported secrets are processed locally.",
-      "For initial provisioning, choose and confirm a Recovery Passphrase. Apply the imported accounts, then confirm the dedicated request on the M5StickS3 when prompted.",
+      "For initial provisioning, choose and confirm a long unique Recovery Passphrase. M5Authenticator blocks obviously weak, repetitive, sequential, and common choices, but does not estimate or guarantee Passphrase entropy. Apply the imported accounts, then confirm the dedicated request on the M5StickS3 when prompted.",
       "After provisioning or reboot, use Unlock and confirm the UNLOCK REQUEST on the M5StickS3. A valid Trusted Browser registration does not bypass this physical confirmation.",
       "Before using OTP codes, make sure trusted time is ready. Use Sync PC time when needed; NTP can also use the Wi-Fi configuration stored inside the encrypted Vault.",
     ],
@@ -42,7 +42,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
     ],
     recoveryTitle: "Recovery and reset boundaries",
     recovery: [
-      "Recovery Packages are encrypted but remain security-sensitive offline Passphrase-guessing targets. Store them offline and keep the Recovery Passphrase separate.",
+      "Recovery Packages are encrypted but remain security-sensitive offline Passphrase-guessing targets. The local weak-Passphrase policy blocks only defined obvious patterns; it does not make human-chosen Passphrases immune to offline guessing. Store them offline and keep the Recovery Passphrase separate.",
       "Importing a Recovery Package creates replacement-pending browser state. Restore to a clean replacement Device only through the explicit recovery flow and physical confirmation.",
       "Factory Reset deletes the Device encrypted Vault and active registration plus the matching local canonical browser state. Recovery Factory Reset is only for the explicit inconsistent-ownership recovery state.",
       "Changing or rotating recovery material does not automatically erase older Recovery Packages that already exist. Export a current package when instructed and retire old copies you control.",
@@ -61,7 +61,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
     quickStart: [
       "「ファームウェア」を開きます。新品または意図したクリーンDeviceでは「初回インストール」を使用します。すでにプロビジョニング済みのDeviceでは、ユーザー状態を消去せず通常の「更新」を使用してください。",
       "「プロビジョニング」に戻り、Desktop ChromeからM5StickS3へ接続します。標準TOTP QR画像またはGoogle Authenticatorのエクスポート画像をインポートします。QR画像と秘密情報はローカルで処理されます。",
-      "初回プロビジョニングではRecovery Passphraseを設定して確認入力します。インポートしたアカウントを適用し、要求されたらM5StickS3上の専用確認画面で物理確認してください。",
+      "初回プロビジョニングでは長く一意なRecovery Passphraseを設定して確認入力します。M5Authenticatorは明らかに弱い、反復的、連続的、一般的なPassphraseを拒否しますが、Passphraseのentropyを測定または保証するものではありません。インポートしたアカウントを適用し、要求されたらM5StickS3上の専用確認画面で物理確認してください。",
       "プロビジョニング後または再起動後は「ロック解除」を実行し、M5StickS3上のUNLOCK REQUESTを確認します。有効なTrusted Browser登録があっても、この物理確認は省略されません。",
       "OTPを使用する前にTrusted timeがreadyであることを確認してください。必要に応じて「PC時刻を同期」を使用します。NTPは暗号化Vault内に保存したWi-Fi設定も利用できます。",
     ],
@@ -79,7 +79,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
     ],
     recoveryTitle: "RecoveryとResetの境界",
     recovery: [
-      "Recovery Packageは暗号化されていますが、オフラインPassphrase推測攻撃の対象となる重要データです。オフラインで保管し、Recovery Passphraseとは分離してください。",
+      "Recovery Packageは暗号化されていますが、オフラインPassphrase推測攻撃の対象となる重要データです。ローカルのweak-Passphrase policyは定義済みの明白なパターンだけを拒否し、人が選んだPassphraseへのオフライン推測耐性を保証しません。オフラインで保管し、Recovery Passphraseとは分離してください。",
       "Recovery Packageのインポート後はreplacement-pendingのbrowser stateになります。クリーンな交換Deviceへの復元は、明示的なRecovery flowと物理確認を通してのみ実行してください。",
       "Factory ResetはDeviceの暗号化Vaultと有効なregistration、および対応するローカルCanonical browser stateを削除します。Recovery Factory Resetはownership不整合が明示されたRecovery状態でのみ使用します。",
       "Recovery materialを変更またはローテーションしても、すでに存在する古いRecovery Packageが自動的に消えるわけではありません。指示された場合は最新Packageをエクスポートし、管理下の古いコピーを廃棄してください。",
