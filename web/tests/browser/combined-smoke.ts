@@ -1,6 +1,7 @@
 import { runArgon2CspSmoke, runProductionArgon2Smoke } from "./argon2-csp-smoke";
 import { runAutoLockContextSmoke } from "./auto-lock-context-smoke";
 import { runLocalizationReworkSmoke } from "./localization-rework-smoke";
+import { runPostProvisioningLayoutSmoke } from "./post-provisioning-layout-smoke";
 import { runDenseMigrationQrSmoke } from "./qr-dense-migration-smoke";
 
 async function run(): Promise<void> {
@@ -18,6 +19,12 @@ async function run(): Promise<void> {
   await runAutoLockContextSmoke();
   if (document.body.dataset.autoLockContextStatus !== "pass") {
     throw new Error("Automatic LOCK context DOM smoke did not complete successfully");
+  }
+
+  document.body.dataset.stage = "post-provisioning-layout";
+  await runPostProvisioningLayoutSmoke();
+  if (document.body.dataset.postProvisioningLayoutStatus !== "pass") {
+    throw new Error("Post-provisioning layout DOM smoke did not complete successfully");
   }
 
   document.body.dataset.stage = "qr-decode";
