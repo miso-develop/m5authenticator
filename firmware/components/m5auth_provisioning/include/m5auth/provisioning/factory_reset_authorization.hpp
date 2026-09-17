@@ -39,7 +39,10 @@ public:
     }
 
     bool expired(std::uint64_t now_ms) const {
-        return active_ && now_ms >= deadline_ms_;
+        // Keep the exact deadline observable to the current request so check()
+        // can return kExpired and terminally cancel it. Authorization is still
+        // unusable at now_ms == deadline_ms_ because check() rejects at >=.
+        return active_ && now_ms > deadline_ms_;
     }
 
     bool active() const {
