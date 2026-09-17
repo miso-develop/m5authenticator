@@ -77,14 +77,26 @@ NFC-normalized Passphrase UTF-8
   -> AES-256-GCM unwrap VMK
 ```
 
-Passphrase policy:
+Passphrase framing policy:
 
 - minimum 15 Unicode code points
 - maximum 128 Unicode code points
 - maximum 512 UTF-8 bytes after NFC normalization
 - no character-class composition requirement
 - paste/password-manager input allowed
-- six-digit PIN or similarly low-entropy value rejected
+
+For initial provisioning and any newly created Recovery Passphrase wrap, the Web Provisioner applies the same local deterministic `weak-passphrase-policy-v1` after NFC normalization and before Argon2id. It rejects:
+
+- a single Unicode code point repeated for the entire value
+- an exact repeated primitive block of 1 through 8 Unicode code points
+- ASCII-only forward/reverse contiguous, repeated, or cyclic walks through the fixed digit/alphabet/keyboard sequences defined in `docs/SECRET_VAULT.md`, using only the specified validation-only separator removal
+- a match in the bundled versioned `recovery-passphrase-denylist-v1`, using only validation-only ASCII lowercase and leading/trailing ASCII-whitespace trimming
+
+The denylist and sequence rules are bundled and require no runtime network access. Their comparison transforms do not change the NFC-normalized UTF-8 bytes passed to Argon2id.
+
+The policy blocks defined obviously weak/repetitive/sequential/common choices; it does not estimate or guarantee Passphrase entropy and does not impose uppercase/lowercase/digit/symbol composition rules. Users should still choose a long unique Recovery Passphrase because a stolen Recovery Package is an offline guessing target.
+
+Compatibility with previously exported Recovery Packages is preserved. Import/unwrap continues to accept the original NFC + framing contract and recorded KDF metadata, so a historical package does not become unreadable merely because its Passphrase would now be rejected for a newly created wrap. Argon2id/AES-GCM parameters, VMK semantics, and Recovery Package format/version are unchanged.
 
 KDF/wrap parameters are versioned with the state. Unknown parameters fail closed.
 
