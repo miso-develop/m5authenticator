@@ -1,7 +1,3 @@
-:root {
-  scrollbar-gutter: stable;
-}
-
 #initial-passphrase-fields:has(#initial-recovery-passphrase:disabled) {
   display: none;
 }
