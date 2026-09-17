@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,10 @@ SECRET_VAULT_DOC = ROOT / "docs/SECRET_VAULT.md"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
 SECURITY_WORKFLOW = ROOT / ".github/workflows/security.yml"
+SDKCONFIG = ROOT / "firmware/sdkconfig.defaults"
+TRANSPORT_HEADER = ROOT / "firmware/main/usb_protocol_transport.hpp"
+TRANSPORT_CPP = ROOT / "firmware/main/usb_protocol_transport.cpp"
+APP_MAIN = ROOT / "firmware/main/app_main.cpp"
 
 LEGACY_PROTOCOL_OPERATIONS = (
     "accounts.list",
@@ -96,6 +101,92 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertRegex(sdkconfig, r"(?m)^CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y$")
         self.assertNotIn("CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y", sdkconfig)
         self.assertNotIn("CONFIG_ESP_COREDUMP_ENABLE_TO_UART=y", sdkconfig)
+
+    def test_production_usb_serial_jtag_is_protocol_owned(self) -> None:
+        validate_release.validate_production_transport()
+        sdkconfig = SDKCONFIG.read_text(encoding="utf-8")
+        transport_header = TRANSPORT_HEADER.read_text(encoding="utf-8")
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        app = APP_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("CONFIG_ESP_CONSOLE_NONE=y", sdkconfig)
+        self.assertIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", sdkconfig)
+        self.assertIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", sdkconfig)
+        self.assertNotIn("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y", sdkconfig)
+        self.assertIn("kStrictPostHandshake", transport_header)
+        self.assertIn("kFaulted", transport_header)
+        self.assertIn("usb_serial_jtag_driver_install", transport)
+        self.assertIn("usb_serial_jtag_read_bytes", transport)
+        self.assertIn("usb_serial_jtag_write_bytes", transport)
+        self.assertIn("usb_serial_jtag_wait_tx_done", transport)
+        self.assertIn("g_protocol_transport.faulted()", app)
+        self.assertIn("g_protocol_transport.establish_handshake()", app)
+        self.assertIn("g_protocol_transport.fail_session()", app)
+        self.assertNotIn("std::fgets(", app)
+        self.assertNotIn("std::fwrite(", app)
+        self.assertNotIn("STDOUT_FILENO", app)
+
+    def test_faulted_transport_requires_physical_disconnect_before_rehandshake(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        disconnect = app.index("if (!g_protocol_transport.connected())")
+        fault = app.index("if (g_protocol_transport.faulted())", disconnect)
+        first_read = app.index("g_protocol_transport.read(", fault)
+        reset = app.index("g_protocol_transport.reset_pre_handshake();", disconnect)
+        fault_block_end = app.index("if (discard_oversized_input)", fault)
+        fault_block = app[fault:fault_block_end]
+
+        self.assertLess(disconnect, fault)
+        self.assertLess(fault, first_read)
+        self.assertLess(reset, fault)
+        self.assertIn("vTaskDelay(pdMS_TO_TICKS(20));", fault_block)
+        self.assertIn("continue;", fault_block)
+        self.assertNotIn("frame_info", fault_block)
+        self.assertNotIn("protocol.handle_line", fault_block)
+        self.assertNotIn("write_response", fault_block)
+        self.assertEqual(1, app.count("g_protocol_transport.reset_pre_handshake();"))
+
+    def test_pre_handshake_allows_only_strict_valid_hello_into_protocol_handler(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        classify = app.index("const ProtocolFrameInfo frame_info = classify_protocol_frame(request);")
+        gate = app.index(
+            "m5auth::device_transport::SessionPhase::kPreHandshake",
+            classify,
+        )
+        handler = app.index("protocol.handle_line(", gate)
+        gate_block = app[gate:handler]
+        response_write = app.index("write_response(response, timing_operation)", handler)
+        establish = app.index("g_protocol_transport.establish_handshake();", response_write)
+
+        self.assertIn("!(frame_info.valid && frame_info.hello)", gate_block)
+        self.assertIn("consume_input_prefix(input, &buffered_input, consumed);", gate_block)
+        self.assertIn("continue;", gate_block)
+        self.assertLess(gate, handler)
+        self.assertLess(handler, response_write)
+        self.assertLess(response_write, establish)
+
+    def test_release_validation_rejects_conflicting_usb_console(self) -> None:
+        original = SDKCONFIG.read_text(encoding="utf-8")
+        mutated = original.replace(
+            "CONFIG_ESP_CONSOLE_NONE=y",
+            "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sdkconfig.defaults"
+            path.write_text(mutated, encoding="utf-8")
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                validate_release.validate_production_transport(sdkconfig_path=path)
+
+    def test_release_validation_rejects_application_logging_reenable(self) -> None:
+        original = SDKCONFIG.read_text(encoding="utf-8")
+        mutated = original.replace(
+            "CONFIG_LOG_DEFAULT_LEVEL_NONE=y",
+            "CONFIG_LOG_DEFAULT_LEVEL_INFO=y",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sdkconfig.defaults"
+            path.write_text(mutated, encoding="utf-8")
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                validate_release.validate_production_transport(sdkconfig_path=path)
 
     def test_release_components_exclude_legacy_schema1_surfaces(self) -> None:
         validate_release.validate_release_build_surface()

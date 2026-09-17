@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware/main/app_main.cpp"
+TRANSPORT_CPP = ROOT / "firmware/main/usb_protocol_transport.cpp"
 
 
 def extract_braced_block(source: str, signature: str) -> str:
@@ -23,30 +24,37 @@ def extract_braced_block(source: str, signature: str) -> str:
 
 
 class ScreenSnapshotTxAtomicityTest(unittest.TestCase):
-    def test_response_and_newline_are_one_logical_stdio_write(self) -> None:
-        app = APP_MAIN.read_text(encoding="utf-8")
-        writer = extract_braced_block(app, "void write_response(")
+    def test_response_and_newline_are_one_driver_owned_logical_frame(self) -> None:
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        writer = extract_braced_block(transport, "bool UsbProtocolTransport::write_frame(")
 
         self.assertIn("std::string frame", writer)
-        self.assertIn("frame.append(response)", writer)
+        self.assertIn("frame.append(response.data(), response.size())", writer)
         self.assertIn("frame.push_back('\\n')", writer)
-        self.assertIn("std::fwrite(frame.data(), 1, frame.size(), stdout)", writer)
-        self.assertNotIn("std::fputc", writer)
+        self.assertIn("usb_serial_jtag_write_bytes", writer)
+        self.assertIn("usb_serial_jtag_wait_tx_done", writer)
+        self.assertNotIn("stdout", writer)
+        self.assertNotIn("fwrite", writer)
 
-    def test_stdout_file_lock_covers_frame_write_flush_and_fsync(self) -> None:
-        app = APP_MAIN.read_text(encoding="utf-8")
-        writer = extract_braced_block(app, "void write_response(")
+    def test_driver_write_chunks_frame_below_ring_buffer_capacity_then_waits_for_tx_done(self) -> None:
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        writer = extract_braced_block(transport, "bool UsbProtocolTransport::write_frame(")
 
-        lock = writer.index("::flockfile(stdout)")
-        write = writer.index("std::fwrite(frame.data(), 1, frame.size(), stdout)")
-        flush = writer.index("std::fflush(stdout)")
-        sync = writer.index("::fsync(STDOUT_FILENO)")
-        unlock = writer.index("::funlockfile(stdout)")
+        self.assertIn("kUsbProtocolWriteChunkBytes = 512", transport)
+        self.assertIn("static_assert(kUsbProtocolWriteChunkBytes <= kUsbProtocolTxBufferBytes)", transport)
+        loop = writer.index("while (offset < frame.size())")
+        chunk = writer.index("const std::size_t chunk = std::min(remaining, kUsbProtocolWriteChunkBytes)", loop)
+        write = writer.index("usb_serial_jtag_write_bytes", chunk)
+        require_full_chunk = writer.index("static_cast<std::size_t>(written) != chunk", write)
+        offset = writer.index("offset += chunk", require_full_chunk)
+        done = writer.index("usb_serial_jtag_wait_tx_done", offset)
 
-        self.assertLess(lock, write)
-        self.assertLess(write, flush)
-        self.assertLess(flush, sync)
-        self.assertLess(sync, unlock)
+        self.assertLess(loop, chunk)
+        self.assertLess(chunk, write)
+        self.assertLess(write, require_full_chunk)
+        self.assertLess(require_full_chunk, offset)
+        self.assertLess(offset, done)
+        self.assertIn("kUsbProtocolWriteTimeoutMs", writer)
 
     def test_tx_hardening_does_not_change_diagnostic_compile_gate(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
@@ -54,12 +62,15 @@ class ScreenSnapshotTxAtomicityTest(unittest.TestCase):
         self.assertIn("#if M5AUTH_TEST_SCREEN_SNAPSHOT", app)
         self.assertIn("constexpr bool kTestScreenSnapshotEnabled", app)
 
-    def test_writer_records_whole_frame_write_success(self) -> None:
+    def test_writer_records_driver_frame_success_without_stdio(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
-        writer = extract_braced_block(app, "void write_response(")
-        self.assertIn("fwrite_bytes == frame.size()", writer)
+        writer = extract_braced_block(app, "bool write_response(")
+        self.assertIn("g_protocol_transport.write_frame(response)", writer)
         self.assertIn("sample.response_bytes = response.size();", writer)
-        self.assertIn("sample.newline_ok =", writer)
+        self.assertIn("sample.newline_ok = write_ok ? 1 : 0;", writer)
+        self.assertIn("sample.fflush_ok = write_ok ? 1 : 0;", writer)
+        for forbidden in ("std::fwrite", "std::fflush", "::fsync", "stdout"):
+            self.assertNotIn(forbidden, writer)
 
 
 if __name__ == "__main__":

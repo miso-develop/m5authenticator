@@ -13,6 +13,7 @@ CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3
 CANONICAL_DEVICE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "canonical_device.hpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
+TRANSPORT_CPP = ROOT / "firmware" / "main" / "usb_protocol_transport.cpp"
 CANONICAL_PROTOCOL = ROOT / "firmware" / "components" / "m5auth_provisioning" / "canonical_protocol_v2.cpp"
 REGISTRATION_CPP = ROOT / "firmware" / "components" / "m5auth_registration" / "registration.cpp"
 VAULT_PERSISTENCE_CPP = ROOT / "firmware" / "components" / "m5auth_vault_runtime" / "nvs_persistence.cpp"
@@ -169,14 +170,16 @@ class StickS3RuntimeContractTests(unittest.TestCase):
     def test_idle_usb_runs_housekeeping_without_becoming_disconnect(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
         self.assertIn("protocol.housekeeping(monotonic_ms());", app)
-        self.assertIn("usb_serial_jtag_is_connected()", app)
-        idle_branch = re.search(
-            r"if \(std::fgets\([\s\S]+?== nullptr\) \{([\s\S]+?)continue;\n        \}",
-            app,
+        self.assertIn("if (!g_protocol_transport.connected())", app)
+        read_marker = (
+            "const int bytes_read = g_protocol_transport.read(\n"
+            "                input.data() + buffered_input"
         )
-        self.assertIsNotNone(idle_branch)
-        self.assertIn("if (!usb_serial_jtag_is_connected())", idle_branch.group(1))
-        self.assertIn("teardown_transport_session(protocol);", idle_branch.group(1))
+        read_start = app.index(read_marker)
+        read_end = app.index("buffered_input += static_cast<std::size_t>(bytes_read);", read_start)
+        idle_read = app[read_start:read_end]
+        self.assertIn("if (bytes_read == 0) continue;", idle_read)
+        self.assertNotIn("teardown_transport_session(protocol);", idle_read)
 
     def test_usb_serial_fragments_are_buffered_until_newline_and_wiped_on_disconnect(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
@@ -185,17 +188,21 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("bool discard_oversized_input = false;", app)
         self.assertIn("input.data() + buffered_input", app)
         self.assertIn("input.size() - buffered_input", app)
-        self.assertIn("buffered_input += std::strlen(input.data() + buffered_input);", app)
-        self.assertIn("buffered_input > 0 && input[buffered_input - 1] == '\\n'", app)
-        self.assertIn("USB Serial/JTAG VFS reads are non-blocking", app)
+        self.assertIn("buffered_input += static_cast<std::size_t>(bytes_read);", app)
+        self.assertIn("std::find(\n            input.begin(),\n            input.begin() + buffered_input,", app)
+        self.assertIn("consume_input_prefix(input, &buffered_input, consumed);", app)
         self.assertIn("discard_oversized_input = true;", app)
-        self.assertRegex(
-            app,
-            r"if \(!usb_serial_jtag_is_connected\(\)\) \{\s*"
+        disconnected = re.search(
+            r"if \(!g_protocol_transport\.connected\(\)\) \{\s*"
             r"teardown_transport_session\(protocol\);\s*"
+            r"g_protocol_transport\.reset_pre_handshake\(\);\s*"
             r"m5auth::vault_runtime::secure_zero\(input\.data\(\), input\.size\(\)\);\s*"
-            r"buffered_input = 0;\s*\}",
+            r"buffered_input = 0;\s*"
+            r"discard_oversized_input = false;",
+            app,
         )
+        self.assertIsNotNone(disconnected)
+        self.assertNotIn("std::fgets(", app)
         self.assertNotIn("discard_line_remainder", app)
 
     def test_canonical_presence_requires_neutral_and_quarantines_authorizing_gesture(self) -> None:
@@ -300,39 +307,37 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("ESP_LOG", app)
         self.assertNotIn("timing_diagnostics_response(request", app)
 
-    def test_issue_86_response_write_diagnostics_do_not_overwrite_themselves(self) -> None:
+    def test_issue_86_response_write_diagnostics_follow_driver_frame_result(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
 
-        self.assertIn("const std::size_t fwrite_bytes = std::fwrite", app)
-        self.assertIn("frame.push_back('\\n')", app)
-        self.assertNotIn("const int newline_result = std::fputc", app)
-        self.assertIn("const int fflush_result = std::fflush(stdout);", app)
-        self.assertIn("const int ferror_value = std::ferror(stdout);", app)
-        self.assertIn("write_response(response, timing_operation);", app)
-        self.assertIn("write_response(timing_diagnostics_response());", app)
+        self.assertIn("const bool write_ok = g_protocol_transport.write_frame(response);", app)
+        self.assertIn("sample.fwrite_ok = write_ok ? 1 : 0;", app)
+        self.assertIn("sample.newline_ok = write_ok ? 1 : 0;", app)
+        self.assertIn("sample.fflush_ok = write_ok ? 1 : 0;", app)
+        self.assertIn("sample.ferror_value = write_ok ? 0 : 1;", app)
+        self.assertIn("write_response(response, timing_operation)", app)
+        self.assertIn("write_response(timing_diagnostics_response())", app)
         self.assertIn(
             "const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;",
             app,
         )
         self.assertIn('case TimingOperation::kSessionStatus: return "session.status";', app)
+        for forbidden in ("std::fwrite", "std::fflush(stdout)", "std::ferror(stdout)"):
+            self.assertNotIn(forbidden, app)
 
-    def test_issue_86_response_writer_drains_usb_vfs_after_stdio_flush(self) -> None:
+    def test_issue_86_response_writer_uses_driver_tx_completion_without_stdio(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
-        start = app.index("void write_response(")
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        start = app.index("bool write_response(")
         end = app.index("\nstd::string timing_diagnostics_response()", start)
         writer = app[start:end]
 
-        self.assertIn("#include <unistd.h>", app)
-        self.assertEqual(1, writer.count("::fsync(STDOUT_FILENO)"))
-        self.assertIn("::flockfile(stdout)", writer)
-        self.assertIn("std::fwrite(frame.data(), 1, frame.size(), stdout)", writer)
-        self.assertNotIn("std::fputc", writer)
-        self.assertIn("::funlockfile(stdout)", writer)
-        self.assertLess(writer.index("::flockfile(stdout)"), writer.index("std::fwrite("))
-        self.assertLess(writer.index("std::fwrite("), writer.index("std::fflush(stdout)"))
-        self.assertLess(writer.index("std::fflush(stdout)"), writer.index("::fsync(STDOUT_FILENO)"))
-        self.assertLess(writer.index("::fsync(STDOUT_FILENO)"), writer.index("std::ferror(stdout)"))
-        self.assertLess(writer.index("std::ferror(stdout)"), writer.index("::funlockfile(stdout)"))
+        self.assertIn("g_protocol_transport.write_frame(response)", writer)
+        for forbidden in ("stdout", "std::fwrite", "std::fflush", "::fsync", "::flockfile"):
+            self.assertNotIn(forbidden, writer)
+        self.assertIn("usb_serial_jtag_write_bytes", transport)
+        self.assertIn("usb_serial_jtag_wait_tx_done", transport)
+        self.assertIn("kUsbProtocolWriteTimeoutMs", transport)
 
     def test_issue_86_timing_snapshot_uses_rtc_noinit_not_flash(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
@@ -346,10 +351,18 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("nvs_open", app)
         self.assertNotIn("nvs_set_blob", app)
         self.assertNotIn("nvs_commit", app)
-        self.assertRegex(
-            app,
-            r"if \(timing_recorded\) \{\s*persist_timing_diagnostics_to_rtc\(\);\s*\}\s*\n\s*m5auth::vault_runtime::secure_zero",
-        )
+
+        timing_start = app.index("const bool timing_recorded = kTimingDiagnosticsEnabled")
+        persist = app.index("persist_timing_diagnostics_to_rtc();", timing_start)
+        wipe = app.index("consume_input_prefix(input, &buffered_input, consumed);", persist)
+        transmit = app.index("write_response(response, timing_operation)", wipe)
+        self.assertLess(persist, wipe)
+        self.assertLess(wipe, transmit)
+
+        consume_start = app.index("void consume_input_prefix(")
+        consume_end = app.index("\n#if M5AUTH_TEST_SCREEN_SNAPSHOT", consume_start)
+        consume = app[consume_start:consume_end]
+        self.assertIn("m5auth::vault_runtime::secure_zero(", consume)
         self.assertNotIn("request.data()", app)
 
 

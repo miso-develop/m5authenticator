@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware/main/app_main.cpp"
+TRANSPORT_CPP = ROOT / "firmware/main/usb_protocol_transport.cpp"
 DEVICE_HEADER = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/canonical_device.hpp"
 DEVICE_CPP = ROOT / "firmware/components/m5auth_device_sticks3/canonical_device.cpp"
 
@@ -108,10 +109,6 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         self.assertGreater(render.index(snapshot_commit), render.rindex("M5.Display."))
         self.assertGreater(render.index(ready_commit), render.index(snapshot_commit))
 
-        # view_mutex_ is held by both run()/security_boundary_clear() callers, so
-        # a reader blocks during a later full render and can only see completed
-        # snapshot caches. Scroll-only label-band redraws intentionally do not
-        # publish a new sanitized snapshot because they do not change its fields.
         run = extract_braced_block(ui, "void CanonicalUiController::run()")
         security_clear = extract_braced_block(
             ui,
@@ -159,9 +156,6 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         self.assertIn("read_nonnegative_json_int", parser)
         self.assertIn("request_id_valid ? request_id : 0", parser)
         self.assertNotIn('"id":9002', parser)
-
-        # Malformed text carrying the exact diagnostic operation is intercepted
-        # fail-closed rather than being passed into the stateful Protocol handler.
         self.assertIn("raw_intent_hint", parser)
         self.assertIn("kInvalidDiagnostic", parser)
 
@@ -186,7 +180,7 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         self.assertIn("if (!ui.screen_snapshot(&snapshot))", dispatch)
         self.assertIn('"snapshot_not_ready"', dispatch)
         self.assertIn("screen_snapshot_response(snapshot_request.id, snapshot)", dispatch)
-        self.assertIn("write_response(response);", dispatch)
+        self.assertIn("write_response(response)", dispatch)
         self.assertIn("continue;", dispatch)
         for forbidden in (
             "protocol.handle_line",
@@ -201,8 +195,6 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, dispatch)
 
-        # Oversized framing rejection still occurs before diagnostic parsing, and
-        # ordinary Protocol v2 dispatch remains after the diagnostic branch.
         oversized = app.index("if (length > m5auth::provisioning::kMaxCanonicalV2MessageBytes)")
         diagnostic = app.index(marker)
         protocol = app.index("protocol.handle_line(", diagnostic)
@@ -247,21 +239,23 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         ):
             self.assertNotIn(f'\\"{forbidden}\\"', response.lower())
 
-    def test_response_uses_serialized_one_line_fsync_writer(self) -> None:
+    def test_response_uses_protocol_owned_driver_writer(self) -> None:
         app = APP_MAIN.read_text(encoding="utf-8")
-        writer = extract_braced_block(app, "void write_response(")
-        self.assertIn("frame.append(response)", writer)
-        self.assertIn("frame.push_back('\\n')", writer)
-        self.assertIn("::flockfile(stdout)", writer)
-        self.assertIn("std::fwrite(frame.data(), 1, frame.size(), stdout)", writer)
-        self.assertNotIn("std::fputc", writer)
-        self.assertIn("std::fflush(stdout)", writer)
-        self.assertIn("::fsync(STDOUT_FILENO)", writer)
-        self.assertIn("::funlockfile(stdout)", writer)
-        self.assertLess(writer.index("::flockfile(stdout)"), writer.index("std::fwrite("))
-        self.assertLess(writer.index("std::fwrite("), writer.index("std::fflush(stdout)"))
-        self.assertLess(writer.index("std::fflush(stdout)"), writer.index("::fsync(STDOUT_FILENO)"))
-        self.assertLess(writer.index("::fsync(STDOUT_FILENO)"), writer.index("::funlockfile(stdout)"))
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        writer = extract_braced_block(app, "bool write_response(")
+        self.assertIn("g_protocol_transport.write_frame(response)", writer)
+        for forbidden in (
+            "stdout",
+            "std::fwrite",
+            "std::fflush",
+            "::fsync",
+            "flockfile",
+            "funlockfile",
+        ):
+            self.assertNotIn(forbidden, writer)
+        self.assertIn("frame.push_back('\\n')", transport)
+        self.assertIn("usb_serial_jtag_write_bytes", transport)
+        self.assertIn("usb_serial_jtag_wait_tx_done", transport)
 
 
 if __name__ == "__main__":

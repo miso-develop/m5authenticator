@@ -117,6 +117,12 @@ A Recovery Package remains security-sensitive because theft permits offline Pass
 - VMK delivery is bound to a fresh session and never becomes a reusable plaintext operation.
 - Trusted Browser quick unlock requires active BRK authentication and current Device user presence.
 - Factory Reset is explicit/destructive and available only through the Provisioner in V1.
+- Production USB Serial/JTAG is owned by the Protocol-v2 driver path rather than by ESP-IDF console/VFS stdio. Application logging, bootloader logging, stdout/stderr console output, and alternate production UART console routing must not share that transport.
+- Before ownership is established, `PRE_HANDSHAKE` accepts only bounded synchronization for a strict-valid, current-version, read-only `hello`. Other production Protocol frames must not reach state-changing handlers before that handshake succeeds.
+- After a successful `hello`, the link is `STRICT_POST_HANDSHAKE`: framing is not salvaged around unexpected bytes, request id/version checks are not relaxed, and contaminated/malformed traffic fails the transport closed.
+- A faulted post-handshake transport cannot be recovered by another `hello` on the same physical USB connection. The host must disconnect, reconnect, and perform a fresh handshake.
+- Production firmware does not reserve G43/G44 as an alternate console. Explicit diagnostics belong only to clearly non-production test/development profiles and must not masquerade as release configuration.
+- ROM/pre-application residue is treated only as bounded pre-handshake synchronization input; M5Authenticator does not burn project-specific eFuse merely to suppress it.
 
 ### Tests and fixtures
 

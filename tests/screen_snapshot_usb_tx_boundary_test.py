@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
+TRANSPORT_CPP = ROOT / "firmware" / "main" / "usb_protocol_transport.cpp"
 MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 SDKCONFIG_DEFAULTS = ROOT / "firmware" / "sdkconfig.defaults"
 
@@ -11,7 +12,7 @@ TX_FLUSH_TIMEOUT_US = 50_000
 
 
 class UsbCdcTransactionModel:
-    """Small behavioral model for the ESP32-S3 64-byte CDC transaction edge."""
+    """Historical model for the no-driver 64-byte USB transfer edge."""
 
     PACKET_SIZE = 64
 
@@ -65,7 +66,7 @@ def idf_fsync_no_driver_model(
     last_tx_ts_us: int,
     writable_samples: list[bool],
 ) -> tuple[bool, int]:
-    """Model the v5.5.5 wait loop whose deadline is based on last_tx_ts."""
+    """Historical model of the v5.5.5 no-driver last_tx_ts failure mode."""
     checks = 0
     sample_index = 0
     while (now_us - last_tx_ts_us) < TX_FLUSH_TIMEOUT_US:
@@ -88,30 +89,9 @@ def idf_tx_char_no_driver_model(
     last_tx_ts_us: int,
     initially_writable: bool,
 ) -> bool:
-    """Model the first no-driver tx_char attempt and stale-timestamp drop edge."""
     if initially_writable:
         return True
     return (now_us - last_tx_ts_us) < TX_FLUSH_TIMEOUT_US
-
-
-def fresh_local_deadline_wait_model(
-    *,
-    samples: list[bool],
-    timeout_us: int = TX_FLUSH_TIMEOUT_US,
-    poll_us: int = 1_000,
-) -> tuple[bool, int]:
-    """Wait from a fresh local start; deliberately has no last_tx_ts input."""
-    elapsed = 0
-    checks = 0
-    sample_index = 0
-    while elapsed < timeout_us:
-        checks += 1
-        writable = samples[sample_index] if sample_index < len(samples) else False
-        sample_index += 1
-        if writable:
-            return True, checks
-        elapsed += poll_us
-    return False, checks
 
 
 class EspIdfStaleLastTxTimestampModelTest(unittest.TestCase):
@@ -141,16 +121,6 @@ class EspIdfStaleLastTxTimestampModelTest(unittest.TestCase):
         )
         self.assertFalse(sent)
 
-    def test_fresh_local_deadline_waits_independently_of_last_tx_ts(self) -> None:
-        ok, checks = fresh_local_deadline_wait_model(samples=[False, False, True])
-        self.assertTrue(ok)
-        self.assertEqual(3, checks)
-
-    def test_fresh_local_deadline_is_bounded_when_fifo_never_becomes_writable(self) -> None:
-        ok, checks = fresh_local_deadline_wait_model(samples=[])
-        self.assertFalse(ok)
-        self.assertEqual(TX_FLUSH_TIMEOUT_US // 1_000, checks)
-
 
 class Exact64UsbBoundaryModelTest(unittest.TestCase):
     RESPONSE = b'{"v":2,"id":7,"ok":true,"data":{"screen":"LOCKED"}}\n'
@@ -158,29 +128,13 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
     def _stale(self, length: int) -> bytes:
         return b"S" * length
 
-    def test_exactly_64_byte_stale_tx_can_join_later_valid_response(self) -> None:
+    def test_exactly_64_byte_stale_tx_can_join_later_valid_response_without_zlp(self) -> None:
         model = UsbCdcTransactionModel()
         model.emit_flushed_transfer(self._stale(64))
         model.open_listener()
         self.assertEqual(model.purge_host_queue(), b"")
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self._stale(64) + self.RESPONSE)
-
-    def test_63_byte_stale_tx_is_terminated_and_host_purgeable(self) -> None:
-        model = UsbCdcTransactionModel()
-        model.emit_flushed_transfer(self._stale(63))
-        model.open_listener()
-        self.assertEqual(model.purge_host_queue(), self._stale(63))
-        model.emit_flushed_transfer(self.RESPONSE)
-        self.assertEqual(model.read_host_queue(), self.RESPONSE)
-
-    def test_65_byte_stale_tx_is_terminated_and_host_purgeable(self) -> None:
-        model = UsbCdcTransactionModel()
-        model.emit_flushed_transfer(self._stale(65))
-        model.open_listener()
-        self.assertEqual(model.purge_host_queue(), self._stale(65))
-        model.emit_flushed_transfer(self.RESPONSE)
-        self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
     def test_exactly_64_byte_stale_tx_plus_zlp_becomes_purgeable(self) -> None:
         model = UsbCdcTransactionModel()
@@ -191,103 +145,61 @@ class Exact64UsbBoundaryModelTest(unittest.TestCase):
         model.emit_flushed_transfer(self.RESPONSE)
         self.assertEqual(model.read_host_queue(), self.RESPONSE)
 
-    def test_listener_after_stale64_plus_fresh_wait_and_delimiter_separates_frames(self) -> None:
-        model = UsbCdcTransactionModel()
-        model.emit_flushed_transfer(self._stale(64))
-        model.open_listener()
-        self.assertEqual(model.purge_host_queue(), b"")
-        writable, _ = fresh_local_deadline_wait_model(samples=[False, True])
-        self.assertTrue(writable)
-        model.emit_flushed_transfer(b"\n")
-        self.assertEqual(model.read_host_queue(), self._stale(64) + b"\n")
-        model.emit_flushed_transfer(self.RESPONSE)
-        self.assertEqual(model.read_host_queue(), self.RESPONSE)
-
-    def test_fifo_never_writable_fails_closed_without_current_response(self) -> None:
-        model = UsbCdcTransactionModel()
-        model.emit_flushed_transfer(self._stale(64))
-        model.open_listener()
-        writable, _ = fresh_local_deadline_wait_model(samples=[])
-        self.assertFalse(writable)
-        self.assertEqual(model.read_host_queue(), b"")
-
-    def test_clean_response_is_unchanged(self) -> None:
-        model = UsbCdcTransactionModel()
-        model.open_listener()
-        writable, _ = fresh_local_deadline_wait_model(samples=[True])
-        self.assertTrue(writable)
-        model.emit_flushed_transfer(b"\n")
-        self.assertEqual(model.read_host_queue(), b"\n")
-        model.emit_flushed_transfer(self.RESPONSE)
-        self.assertEqual(model.read_host_queue(), self.RESPONSE)
-
 
 class ScreenSnapshotTransportBoundarySourceContractTest(unittest.TestCase):
-    def test_fix_does_not_disable_production_logging_or_burn_rom_log_efuse(self) -> None:
+    def test_production_console_and_software_logging_are_disabled_without_efuse(self) -> None:
         defaults = SDKCONFIG_DEFAULTS.read_text(encoding="utf-8")
-        self.assertNotIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
-        self.assertNotIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
+        self.assertIn("CONFIG_ESP_CONSOLE_NONE=y", defaults)
+        self.assertIn("CONFIG_ESP_CONSOLE_SECONDARY_NONE=y", defaults)
+        self.assertIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
+        self.assertIn("CONFIG_LOG_DEFAULT_LEVEL_NONE=y", defaults)
+        self.assertNotIn("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y", defaults)
         self.assertNotIn("CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y", defaults)
+        self.assertNotIn("efuse", defaults.lower())
 
-    def test_low_level_hal_include_is_diagnostics_only_and_private_dependency_is_explicit(self) -> None:
-        source = APP_MAIN.read_text(encoding="utf-8")
-        include = '#include "hal/usb_serial_jtag_ll.h"'
-        include_at = source.index(include)
-        macro_at = source.rfind("#if M5AUTH_TEST_SCREEN_SNAPSHOT", 0, include_at)
-        endif_at = source.index("#endif", include_at)
-        self.assertGreaterEqual(macro_at, 0)
-        self.assertLess(macro_at, include_at)
-        self.assertLess(include_at, endif_at)
-
+    def test_snapshot_transport_uses_public_driver_not_private_hal_or_stdio(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
         cmake = MAIN_CMAKE.read_text(encoding="utf-8")
-        self.assertIn("PRIV_REQUIRES", cmake)
-        self.assertIn("hal", cmake)
 
-    def test_diagnostics_boundary_uses_fresh_ll_deadline_before_stdio_delimiter(self) -> None:
+        self.assertNotIn('"hal/usb_serial_jtag_ll.h"', app)
+        self.assertNotIn("usb_serial_jtag_ll_", app)
+        self.assertNotIn("flockfile", app)
+        self.assertNotIn("fsync(", app)
+        self.assertNotIn("fwrite(", app)
+        self.assertIn("usb_serial_jtag_driver_install", transport)
+        self.assertIn("usb_serial_jtag_write_bytes", transport)
+        self.assertIn("usb_serial_jtag_wait_tx_done", transport)
+        self.assertNotIn("hal\n", cmake)
+
+    def test_driver_writer_terminates_and_completes_each_logical_frame(self) -> None:
+        transport = TRANSPORT_CPP.read_text(encoding="utf-8")
+        start = transport.index("bool UsbProtocolTransport::write_frame")
+        end = transport.index("bool UsbProtocolTransport::connected", start)
+        writer = transport[start:end]
+
+        append = writer.index("frame.append(response.data(), response.size())")
+        newline = writer.index("frame.push_back('\\n')", append)
+        write = writer.index("usb_serial_jtag_write_bytes", newline)
+        done = writer.index("usb_serial_jtag_wait_tx_done", write)
+        self.assertLess(append, newline)
+        self.assertLess(newline, write)
+        self.assertLess(write, done)
+        self.assertIn("kUsbProtocolWriteTimeoutMs", writer)
+        self.assertIn("return completed;", writer)
+
+    def test_snapshot_response_uses_same_protocol_owned_writer(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
-        self.assertIn("wait_for_screen_snapshot_tx_fifo_writable", source)
-        self.assertIn("usb_serial_jtag_ll_txfifo_writable()", source)
-        self.assertIn("kScreenSnapshotTxBoundaryTimeoutUs", source)
-        self.assertIn("esp_timer_get_time()", source)
+        marker = "const ScreenSnapshotRequestParse snapshot_request = parse_screen_snapshot_request(request);"
+        start = source.index(marker)
+        end = source.index("const TimingOperation timing_operation", start)
+        dispatch = source[start:end]
+        self.assertIn("write_response(response)", dispatch)
+        self.assertIn("fail_transport_session(protocol)", dispatch)
+        self.assertNotIn("synchronize_screen_snapshot_response_boundary", source)
+        self.assertNotIn("wait_for_screen_snapshot_tx_fifo_writable", source)
 
-        boundary_start = source.index("bool synchronize_screen_snapshot_response_boundary")
-        boundary_end = source.index("enum class ScreenSnapshotRequestKind", boundary_start)
-        boundary = source[boundary_start:boundary_end]
-        wait_call = boundary.index("wait_for_screen_snapshot_tx_fifo_writable()")
-        delimiter = boundary.index("fputc('\\n', stdout)")
-        fflush_call = boundary.index("fflush(stdout)", delimiter)
-        fsync_call = boundary.index("fsync(STDOUT_FILENO)", fflush_call)
-        self.assertLess(wait_call, delimiter)
-        self.assertLess(delimiter, fflush_call)
-        self.assertLess(fflush_call, fsync_call)
-        self.assertNotIn("pre_fsync_result", boundary)
-
-    def test_sticky_file_error_is_not_cleared_or_used_as_fresh_boundary_evidence(self) -> None:
-        source = APP_MAIN.read_text(encoding="utf-8")
-        boundary_start = source.index("bool synchronize_screen_snapshot_response_boundary")
-        boundary_end = source.index("enum class ScreenSnapshotRequestKind", boundary_start)
-        boundary = source[boundary_start:boundary_end]
-        self.assertNotIn("std::clearerr(stdout)", boundary)
-        self.assertNotIn("std::ferror(stdout)", boundary)
-
-    def test_diagnostics_boundary_is_test_only_and_fail_closed(self) -> None:
-        source = APP_MAIN.read_text(encoding="utf-8")
-        self.assertIn("synchronize_screen_snapshot_response_boundary", source)
-        self.assertIn("if (!synchronize_screen_snapshot_response_boundary())", source)
-        diagnostics_start = source.index("#if M5AUTH_TEST_SCREEN_SNAPSHOT")
-        boundary_def = source.index("synchronize_screen_snapshot_response_boundary")
-        diagnostics_end = source.index("#endif", boundary_def)
-        self.assertLess(diagnostics_start, boundary_def)
-        self.assertLess(boundary_def, diagnostics_end)
-
-    def test_boundary_precedes_current_response_without_changing_response_body(self) -> None:
-        source = APP_MAIN.read_text(encoding="utf-8")
-        call = source.index("if (!synchronize_screen_snapshot_response_boundary())")
-        write = source.index("write_response(response", call)
-        self.assertLess(call, write)
-        self.assertIn("return;", source[call:write])
-
-    def test_production_default_off_boundary_remains_present(self) -> None:
+    def test_production_default_off_diagnostic_gate_remains_present(self) -> None:
         source = APP_MAIN.read_text(encoding="utf-8")
         self.assertIn("#if M5AUTH_TEST_SCREEN_SNAPSHOT", source)
         self.assertIn("#ifndef M5AUTH_TEST_SCREEN_SNAPSHOT", source)
