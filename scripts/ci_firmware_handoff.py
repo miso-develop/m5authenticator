@@ -8,9 +8,11 @@ import hashlib
 import json
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
+import ci_esp_idf_isolated_build
 import esp_idf_build_image
 
 
@@ -40,8 +42,12 @@ def require_source_commit(source_commit: str) -> str:
 
 
 def file_record(path: Path) -> dict[str, int | str]:
-    if not path.is_file():
-        raise ValueError(f"handoff file missing: {path}")
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"handoff file missing: {path}") from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        raise ValueError(f"handoff path is not a regular file: {path}")
     size = path.stat().st_size
     if size <= 0:
         raise ValueError(f"handoff file is empty: {path}")
@@ -61,18 +67,28 @@ def create_build_handoff(
     source_commit: str,
 ) -> None:
     source_commit = require_source_commit(source_commit)
-    clean_directory(artifact_dir)
 
+    validated_sources: dict[str, Path] = {}
     for output_name, relative_source in BUILD_ARTIFACT_SOURCES.items():
-        source = build_dir / relative_source
-        if not source.is_file():
-            raise ValueError(f"build output missing: {source}")
-        shutil.copyfile(source, artifact_dir / output_name)
+        validated_sources[output_name] = ci_esp_idf_isolated_build.require_contained_regular_file(
+            isolated_firmware_dir,
+            build_dir / relative_source,
+        )
+    validated_lock = ci_esp_idf_isolated_build.require_contained_regular_file(
+        isolated_firmware_dir,
+        isolated_firmware_dir / DEPENDENCY_LOCK_NAME,
+    )
 
-    dependency_lock = isolated_firmware_dir / DEPENDENCY_LOCK_NAME
-    if not dependency_lock.is_file():
-        raise ValueError(f"dependency lock missing: {dependency_lock}")
-    shutil.copyfile(dependency_lock, artifact_dir / DEPENDENCY_LOCK_NAME)
+    # Do not create or partially populate the artifact until every
+    # container-controlled source path has passed metadata validation.
+    clean_directory(artifact_dir)
+    for output_name, source in validated_sources.items():
+        shutil.copyfile(source, artifact_dir / output_name, follow_symlinks=False)
+    shutil.copyfile(
+        validated_lock,
+        artifact_dir / DEPENDENCY_LOCK_NAME,
+        follow_symlinks=False,
+    )
 
     records = [
         file_record(artifact_dir / name)
@@ -104,7 +120,15 @@ def load_build_provenance(artifact_dir: Path) -> dict[str, Any]:
 def verify_build_handoff(artifact_dir: Path, source_commit: str, expected_lock: Path) -> dict[str, Any]:
     source_commit = require_source_commit(source_commit)
     expected_names = set(BUILD_ARTIFACT_SOURCES) | {DEPENDENCY_LOCK_NAME, BUILD_PROVENANCE_NAME}
-    actual_names = {path.name for path in artifact_dir.iterdir() if path.is_file()}
+    entries = list(artifact_dir.iterdir())
+    for path in entries:
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"cannot inspect build handoff entry: {path}") from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise ValueError(f"build handoff contains non-regular entry: {path.name}")
+    actual_names = {path.name for path in entries}
     if actual_names != expected_names:
         raise ValueError(
             f"unexpected build handoff file set: expected {sorted(expected_names)}, got {sorted(actual_names)}"
