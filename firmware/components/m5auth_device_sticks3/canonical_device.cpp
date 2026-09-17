@@ -617,10 +617,10 @@ void CanonicalUiController::render_reveal_validity() {
 }
 
 void CanonicalUiController::render_reveal_region() {
-    // Numeric validity is intentionally placed in the existing status band so
-    // Issue #139's six-digit size/spacing remains untouched. Animation ticks and
-    // rollover redraw only bounded bands, never the whole 240x135 screen.
-    render_reveal_validity();
+    // A period rollover commits the new code and validity under view_mutex_.
+    // Erase the old OTP first so the new-period validity can never be shown next
+    // to old-period OTP pixels. The temporary blank OTP band is fail-safe and
+    // bounded; no whole-screen clear/redraw is introduced.
     M5.Display.fillRect(
         0,
         kOtpY,
@@ -628,6 +628,7 @@ void CanonicalUiController::render_reveal_region() {
         kOtpBandHeight,
         kColorBlack
     );
+    render_reveal_validity();
     draw_otp(revealed_code_);
 }
 
