@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -63,19 +65,76 @@ def docker_command(isolated_firmware: Path, image_reference: str) -> list[str]:
     ]
 
 
+def _absolute_without_symlink_resolution(path: Path) -> Path:
+    return Path(os.path.abspath(path))
+
+
+def require_contained_regular_file(root: Path, candidate: Path) -> Path:
+    """Validate container-controlled filesystem metadata before reading file bytes."""
+    root = _absolute_without_symlink_resolution(root)
+    candidate = _absolute_without_symlink_resolution(candidate)
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"untrusted file escapes isolated root: {candidate}") from exc
+    if not relative.parts:
+        raise ValueError("untrusted file path must name a file beneath the isolated root")
+
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"isolated root is unavailable: {root}") from exc
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        raise ValueError(f"isolated root must be a real directory: {root}")
+
+    current = root
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"untrusted file path is unavailable: {current}") from exc
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"untrusted file path contains a symlink: {current}")
+        if index < len(relative.parts) - 1:
+            if not stat.S_ISDIR(mode):
+                raise ValueError(f"untrusted file parent is not a directory: {current}")
+        elif not stat.S_ISREG(mode):
+            raise ValueError(f"untrusted file is not a regular file: {current}")
+
+    resolved_root = root.resolve(strict=True)
+    resolved_candidate = candidate.resolve(strict=True)
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"untrusted file resolves outside isolated root: {candidate}") from exc
+    return resolved_candidate
+
+
 def verify_dependency_lock(authoritative_firmware: Path, isolated_firmware: Path) -> None:
     authoritative_lock = authoritative_firmware / "dependencies.lock"
-    isolated_lock = isolated_firmware / "dependencies.lock"
-    if not authoritative_lock.is_file() or not isolated_lock.is_file():
-        raise RuntimeError("ESP-IDF dependency lockfile is missing")
+    isolated_lock = require_contained_regular_file(
+        isolated_firmware,
+        isolated_firmware / "dependencies.lock",
+    )
+    if not authoritative_lock.is_file():
+        raise RuntimeError("authoritative ESP-IDF dependency lockfile is missing")
     if authoritative_lock.read_bytes() != isolated_lock.read_bytes():
         raise RuntimeError("ESP-IDF build changed dependencies.lock in the isolated workspace")
 
 
 def verify_build_outputs(isolated_firmware: Path) -> None:
-    missing = [str(path) for path in EXPECTED_BUILD_OUTPUTS if not (isolated_firmware / path).is_file()]
-    if missing:
-        raise RuntimeError("ESP-IDF build outputs missing: " + ", ".join(missing))
+    errors: list[str] = []
+    for relative_path in EXPECTED_BUILD_OUTPUTS:
+        try:
+            require_contained_regular_file(
+                isolated_firmware,
+                isolated_firmware / relative_path,
+            )
+        except ValueError as exc:
+            errors.append(f"{relative_path}: {exc}")
+    if errors:
+        raise RuntimeError("invalid ESP-IDF build outputs: " + "; ".join(errors))
 
 
 def run_isolated_build(
