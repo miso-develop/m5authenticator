@@ -19,7 +19,9 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
-The build uses `sdkconfig.defaults` to select the bidirectional USB Serial/JTAG console and the custom dual-OTA partition layout in `partitions.csv`.
+The build uses `sdkconfig.defaults` to select the production USB Serial/JTAG Protocol-v2 driver path, disable conflicting production software console/log output, and use the custom dual-OTA partition layout in `partitions.csv`.
+
+Production USB Serial/JTAG has a bounded `PRE_HANDSHAKE` phase that accepts only the initial current-version read-only `hello`. After a successful `hello`, the driver path is Protocol-v2-owned. Malformed post-handshake framing faults the transport until physical USB disconnect/reconnect and a fresh handshake; it is not parsed around. G43/G44 remain available to the product and are not reserved for a production debug console. Explicit diagnostic builds may enable test-only diagnostics, but a conflicting console/log configuration must not pass production release validation.
 
 Do not switch the canonical build to Arduino Framework or PlatformIO.
 
@@ -56,7 +58,7 @@ Decision #40 superseded the former HMAC/eFuse production-security plan. Task #26
 - no M5Authenticator-specific eFuse requirement
 - post-update state `LOCKED`
 
-`scripts/validate_release.py` verifies those fields against firmware metadata, the canonical bootstrap, the release component surface, core-dump policy, and the fixed Flash layout. It rejects a regression to the legacy synthetic credential bootstrap even when release eligibility is enabled.
+`scripts/validate_release.py` verifies those fields against firmware metadata, the canonical bootstrap, the release component surface, core-dump policy, the production USB transport/console policy, and the fixed Flash layout. It rejects a regression to the legacy synthetic credential bootstrap or a conflicting production console/log transport even when release eligibility is enabled.
 
 Task #15 completed the final cross-surface security closeout and enabled `production_release_allowed: true` only after Security/Foundation, ESP-IDF 5.5.5 build, merged-firmware surface inspection, synthetic Vault plaintext-at-rest inspection, and package validation were green. `python scripts/validate_release.py --require-production` is therefore expected to succeed on the final V1 closeout state.
 
@@ -75,6 +77,7 @@ Production eligibility is not permission to weaken the V1 contract. Do not:
 - change settled KDF/AEAD/session parameters without a new Decision
 - weaken Protocol/Storage/Vault/security-profile/build-surface validation to make a release pass
 - re-enable credential-bearing crash/core-dump persistence
+- re-enable a production console/log sink that can write to the Protocol-owned USB Serial/JTAG path
 
 The native state-codec check can be run from the repository root with:
 
