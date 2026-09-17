@@ -27,6 +27,9 @@ export async function runPostProvisioningLayoutSmoke(): Promise<void> {
     await verifyProvisioningPresentation();
     await verifyFirmwareGeometry();
     document.body.dataset.postProvisioningLayoutStatus = "pass";
+  } catch (error) {
+    document.body.dataset.postProvisioningLayoutError = error instanceof Error ? error.message : "Unknown layout smoke failure";
+    throw error;
   } finally {
     document.body.replaceChildren();
     document.body.append(saved);
