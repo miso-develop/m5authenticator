@@ -9,6 +9,9 @@
 namespace m5auth::device_transport {
 namespace {
 
+constexpr std::size_t kUsbProtocolWriteChunkBytes = 512;
+static_assert(kUsbProtocolWriteChunkBytes <= kUsbProtocolTxBufferBytes);
+
 TickType_t timeout_ticks(std::uint32_t milliseconds) {
     const TickType_t ticks = pdMS_TO_TICKS(milliseconds);
     return ticks == 0 ? 1 : ticks;
@@ -56,16 +59,17 @@ bool UsbProtocolTransport::write_frame(std::string_view response) {
     std::size_t offset = 0;
     while (offset < frame.size()) {
         const std::size_t remaining = frame.size() - offset;
+        const std::size_t chunk = std::min(remaining, kUsbProtocolWriteChunkBytes);
         const int written = usb_serial_jtag_write_bytes(
             frame.data() + offset,
-            remaining,
+            chunk,
             timeout_ticks(kUsbProtocolWriteTimeoutMs)
         );
-        if (written <= 0 || static_cast<std::size_t>(written) > remaining) {
+        if (written <= 0 || static_cast<std::size_t>(written) != chunk) {
             std::fill(frame.begin(), frame.end(), '\0');
             return false;
         }
-        offset += static_cast<std::size_t>(written);
+        offset += chunk;
     }
 
     const bool completed = usb_serial_jtag_wait_tx_done(
