@@ -1,5 +1,7 @@
 idf_component_register(
-    SRCS "app_main.cpp"
+    SRCS
+        "app_main.cpp"
+        "usb_protocol_transport.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_usb_serial_jtag
