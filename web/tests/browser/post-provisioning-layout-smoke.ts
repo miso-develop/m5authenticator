@@ -13,10 +13,8 @@ function near(left: number, right: number): boolean {
   return Math.abs(left - right) <= GEOMETRY_EPSILON_PX;
 }
 
-function afterLayout(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
+function flushLayout(): void {
+  void document.documentElement.offsetWidth;
 }
 
 export async function runPostProvisioningLayoutSmoke(): Promise<void> {
@@ -24,8 +22,8 @@ export async function runPostProvisioningLayoutSmoke(): Promise<void> {
   for (const node of Array.from(document.body.childNodes)) saved.append(node);
 
   try {
-    await verifyProvisioningPresentation();
-    await verifyFirmwareGeometry();
+    verifyProvisioningPresentation();
+    verifyFirmwareGeometry();
     document.body.dataset.postProvisioningLayoutStatus = "pass";
   } catch (error) {
     document.body.dataset.postProvisioningLayoutError = error instanceof Error ? error.message : "Unknown layout smoke failure";
@@ -36,7 +34,7 @@ export async function runPostProvisioningLayoutSmoke(): Promise<void> {
   }
 }
 
-async function verifyProvisioningPresentation(): Promise<void> {
+function verifyProvisioningPresentation(): void {
   const root = document.createElement("main");
   root.id = "app";
   root.innerHTML = `
@@ -58,7 +56,7 @@ async function verifyProvisioningPresentation(): Promise<void> {
     </main>
   `;
   document.body.append(root);
-  await afterLayout();
+  flushLayout();
 
   const shell = root.querySelector<HTMLElement>(".shell");
   const firstPanel = root.querySelector<HTMLElement>("#first-panel");
@@ -71,7 +69,7 @@ async function verifyProvisioningPresentation(): Promise<void> {
   assert(getComputedStyle(passphraseFields).display === "none", "Inactive initial Recovery Passphrase fields must be hidden");
   passphrase.disabled = false;
   passphraseConfirm.disabled = false;
-  await afterLayout();
+  flushLayout();
   assert(getComputedStyle(passphraseFields).display !== "none", "Initial provisioning must expose Recovery Passphrase fields");
 
   const firstStyle = getComputedStyle(firstPanel);
@@ -81,13 +79,13 @@ async function verifyProvisioningPresentation(): Promise<void> {
   assert(parseFloat(subsequentStyle.paddingTop) >= 32, "Subsequent Provisioning headings require at least 32px boundary padding");
 
   installWebBuildInfo(shell);
-  await afterLayout();
+  flushLayout();
   assert(shell.lastElementChild?.id === "web-build-identity", "Web build provenance must follow primary Provisioning content");
 
   root.remove();
 }
 
-async function verifyFirmwareGeometry(): Promise<void> {
+function verifyFirmwareGeometry(): void {
   assert(window.innerWidth >= 720, "Firmware geometry smoke requires a supported desktop viewport");
 
   const header = document.createElement("header");
@@ -118,7 +116,7 @@ async function verifyFirmwareGeometry(): Promise<void> {
   assert(nav && shell && status, "Firmware layout fixture is incomplete");
 
   const updateBuildInfo = installFirmwareBuildInfo(shell);
-  await afterLayout();
+  flushLayout();
   assert(shell.lastElementChild?.id === "firmware-build-identity", "Firmware build provenance must follow Flash/Update content");
 
   const beforeShell = shell.getBoundingClientRect();
@@ -132,7 +130,6 @@ async function verifyFirmwareGeometry(): Promise<void> {
     resolvedContent.append(paragraph);
   }
   status.replaceChildren(resolvedContent);
-  await Promise.resolve();
   updateBuildInfo({
     status: "ready",
     identity: {
@@ -141,7 +138,7 @@ async function verifyFirmwareGeometry(): Promise<void> {
       exactRelease: false,
     },
   });
-  await afterLayout();
+  flushLayout();
 
   const afterShell = shell.getBoundingClientRect();
   const afterNav = nav.getBoundingClientRect();
