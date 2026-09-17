@@ -11,6 +11,8 @@ on:
       - "firmware/components/m5auth_session/**"
       - "firmware/components/m5auth_vault_runtime/**"
       - "tests/screen_snapshot_*"
+      - "tests/esp_idf_image_pin_contract_test.py"
+      - "scripts/esp_idf_build_image.py"
       - "tools/diagnostics/screen_snapshot.py"
       - "scripts/windows/**"
       - "docs/testing/screen-snapshot-diagnostics.md"
@@ -46,12 +48,15 @@ jobs:
           tests/screen_snapshot_tx_atomicity_test.py
           tests/screen_snapshot_usage_contract_test.py
           tests/screen_snapshot_windows_scripts_contract_test.py
+      - name: Verify immutable ESP-IDF build image contract
+        run: python3 -m unittest tests/esp_idf_image_pin_contract_test.py
       - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
         run: >-
-          docker run --rm
+          ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
+          && docker run --rm
           -v "$GITHUB_WORKSPACE:/project"
           -w /project/firmware
-          espressif/idf:v5.5.5
+          "$ESP_IDF_IMAGE"
           bash -lc 'git config --global --add safe.directory /project && idf.py -B build-screen-snapshot set-target esp32s3 && idf.py -B build-screen-snapshot -DM5AUTH_TEST_SCREEN_SNAPSHOT=ON build && grep -Fx "M5AUTH_TEST_SCREEN_SNAPSHOT:BOOL=ON" build-screen-snapshot/CMakeCache.txt'
       - name: Verify dependency lockfile is unchanged
         run: git diff --exit-code -- firmware/dependencies.lock
