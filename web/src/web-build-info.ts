@@ -1,3 +1,4 @@
+import "./post-provisioning-layout.css";
 import {
   buildIdentityLabels,
   currentWebBuildIdentity,
@@ -36,9 +37,7 @@ function install(): void {
   render();
   onLanguageChange(render);
 
-  const description = shell.querySelector(".description");
-  if (description) description.insertAdjacentElement("afterend", block);
-  else shell.prepend(block);
+  shell.append(block);
 }
 
 if (document.readyState === "loading") {
