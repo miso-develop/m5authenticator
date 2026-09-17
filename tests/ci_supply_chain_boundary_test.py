@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,10 +72,101 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci_esp_idf_isolated_build.docker_command(isolated, "espressif/idf:v5.5.5")
 
+    def test_container_controlled_symlinks_are_rejected_before_host_io(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            isolated_firmware = base / "isolated-firmware"
+            build = isolated_firmware / "build"
+            (build / "bootloader").mkdir(parents=True)
+            (build / "partition_table").mkdir(parents=True)
+            regular_outputs = (
+                (build / "m5authenticator-merged.bin", b"merged"),
+                (build / "bootloader" / "bootloader.bin", b"bootloader"),
+                (build / "partition_table" / "partition-table.bin", b"partitions"),
+                (build / "m5authenticator.bin", b"app"),
+            )
+            for path, payload in regular_outputs:
+                path.write_bytes(payload)
+            (isolated_firmware / "dependencies.lock").write_text("locked\n", encoding="utf-8")
+
+            outside_file = base / "outside-secret.txt"
+            outside_file.write_text("must-not-be-read-or-copied\n", encoding="utf-8")
+            merged = build / "m5authenticator-merged.bin"
+            merged.unlink()
+            merged.symlink_to(outside_file)
+            artifact = base / "artifact"
+
+            with mock.patch.object(
+                ci_firmware_handoff.shutil,
+                "copyfile",
+                side_effect=AssertionError("copy must not run for rejected inputs"),
+            ) as copyfile:
+                with self.assertRaises(ValueError):
+                    ci_firmware_handoff.create_build_handoff(
+                        build,
+                        isolated_firmware,
+                        artifact,
+                        "a" * 40,
+                    )
+                copyfile.assert_not_called()
+            self.assertFalse(artifact.exists())
+
+            merged.unlink()
+            merged.write_bytes(b"merged")
+            isolated_lock = isolated_firmware / "dependencies.lock"
+            isolated_lock.unlink()
+            isolated_lock.symlink_to(outside_file)
+            authoritative_firmware = base / "authoritative" / "firmware"
+            authoritative_firmware.mkdir(parents=True)
+            (authoritative_firmware / "dependencies.lock").write_text("locked\n", encoding="utf-8")
+
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("read must not run for rejected lock symlink"),
+            ) as read_bytes:
+                with self.assertRaises(ValueError):
+                    ci_esp_idf_isolated_build.verify_dependency_lock(
+                        authoritative_firmware,
+                        isolated_firmware,
+                    )
+                read_bytes.assert_not_called()
+
+    def test_untrusted_path_guard_rejects_parent_symlink_non_regular_and_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            isolated = base / "isolated"
+            isolated.mkdir()
+            outside = base / "outside"
+            outside.mkdir()
+            outside_file = outside / "m5authenticator.bin"
+            outside_file.write_bytes(b"outside")
+
+            (isolated / "build").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                ci_esp_idf_isolated_build.require_contained_regular_file(
+                    isolated,
+                    isolated / "build" / "m5authenticator.bin",
+                )
+            with self.assertRaises(ValueError):
+                ci_esp_idf_isolated_build.require_contained_regular_file(
+                    isolated,
+                    outside_file,
+                )
+
+            directory_candidate = isolated / "directory-not-file"
+            directory_candidate.mkdir()
+            with self.assertRaises(ValueError):
+                ci_esp_idf_isolated_build.require_contained_regular_file(
+                    isolated,
+                    directory_candidate,
+                )
+
     def test_build_handoff_detects_artifact_or_lock_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            build = base / "build"
+            isolated_firmware = base / "isolated-firmware"
+            build = isolated_firmware / "build"
             (build / "bootloader").mkdir(parents=True)
             (build / "partition_table").mkdir(parents=True)
             for path, payload in (
@@ -84,8 +176,6 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
                 (build / "m5authenticator.bin", b"app"),
             ):
                 path.write_bytes(payload)
-            isolated_firmware = base / "isolated-firmware"
-            isolated_firmware.mkdir()
             expected_lock = base / "dependencies.lock"
             expected_lock.write_text("locked\n", encoding="utf-8")
             (isolated_firmware / "dependencies.lock").write_bytes(expected_lock.read_bytes())
