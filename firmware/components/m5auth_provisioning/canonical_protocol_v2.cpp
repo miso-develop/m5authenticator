@@ -284,6 +284,7 @@ std::string hello_success(
     cJSON_AddStringToObject(data, "state", runtime_state_name(runtime_metadata.state));
     cJSON_AddBoolToObject(data, "storage_ready", runtime_metadata.schema_ready);
     cJSON_AddBoolToObject(data, "recovery_reset_required", recovery_reset_required);
+    cJSON_AddBoolToObject(data, kFactoryResetPresenceCapability, true);
     cJSON_AddBoolToObject(data, "vault_present", runtime_metadata.has_vault);
     if (runtime_metadata.has_vault) {
         const std::string vault_id = session::protocol_v2::base64url_encode(runtime_metadata.vault_id);
@@ -341,7 +342,7 @@ CanonicalProtocolV2Handler::CanonicalProtocolV2Handler(
     time::TimeService& time_service,
     StagedSessionV2Handler& session_handler,
     CanonicalVmkSink& vmk_sink,
-    session::protocol_v2::PresenceBinding& recovery_presence,
+    session::protocol_v2::PresenceBinding& reset_presence,
     std::recursive_mutex& runtime_access_mutex,
     std::function<void()> security_boundary_clear
 ) : metadata_(metadata),
@@ -350,7 +351,7 @@ CanonicalProtocolV2Handler::CanonicalProtocolV2Handler(
     time_service_(time_service),
     session_handler_(session_handler),
     vmk_sink_(vmk_sink),
-    recovery_presence_(recovery_presence),
+    reset_presence_(reset_presence),
     runtime_access_mutex_(runtime_access_mutex),
     security_boundary_clear_(std::move(security_boundary_clear)) {}
 
@@ -358,8 +359,13 @@ CanonicalProtocolV2Handler::~CanonicalProtocolV2Handler() {
     disconnect();
 }
 
+void CanonicalProtocolV2Handler::cancel_healthy_factory_reset() {
+    if (healthy_factory_reset_.active()) reset_presence_.cancel_presence();
+    healthy_factory_reset_.cancel();
+}
+
 void CanonicalProtocolV2Handler::cancel_recovery_reset() {
-    if (recovery_reset_active_) recovery_presence_.cancel_presence();
+    if (recovery_reset_active_) reset_presence_.cancel_presence();
     recovery_reset_attempt_id_.fill(0);
     recovery_reset_deadline_ms_ = 0;
     recovery_reset_active_ = false;
@@ -372,6 +378,7 @@ void CanonicalProtocolV2Handler::notify_security_boundary() {
 vault_runtime::Status CanonicalProtocolV2Handler::lock_security_boundary() {
     session_handler_.disconnect();
     vmk_sink_.cancel_pending();
+    cancel_healthy_factory_reset();
     cancel_recovery_reset();
     return time_service_.with_secret_boundary([&]() {
         vault_runtime::Status result = vault_runtime::Status::kIo;
@@ -387,6 +394,9 @@ vault_runtime::Status CanonicalProtocolV2Handler::lock_security_boundary() {
 void CanonicalProtocolV2Handler::housekeeping(std::uint64_t now_ms) {
     (void)session_handler_.expire(now_ms);
     (void)vmk_sink_.expire_pending(now_ms);
+    if (healthy_factory_reset_.expired(now_ms)) {
+        cancel_healthy_factory_reset();
+    }
     if (recovery_reset_active_ && now_ms >= recovery_reset_deadline_ms_) {
         cancel_recovery_reset();
     }
@@ -464,6 +474,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
     const std::string operation(op_value->valuestring);
 
     if (operation.rfind("session.", 0) == 0) {
+        cancel_healthy_factory_reset();
         cancel_recovery_reset();
         if (line.size() > kMaxSessionV2MessageBytes) {
             delete_request(root);
@@ -527,6 +538,128 @@ std::string CanonicalProtocolV2Handler::handle_line(
                 decision == RecoveryResetDecision::kRequired
             );
         }
+    } else if (operation == kFactoryResetBeginOperation) {
+        vault_runtime::Metadata runtime_metadata{};
+        registration::Snapshot registration_snapshot{};
+        registration::Status registration_status = registration::Status::kIo;
+        const RecoveryResetDecision decision = recovery_reset_decision(
+            &runtime_metadata, &registration_snapshot, &registration_status
+        );
+        if (decision != RecoveryResetDecision::kNotRequired ||
+            runtime_metadata.state != vault_runtime::State::kUnlocked) {
+            response = error_response(id, "invalid_state");
+        } else {
+            session_handler_.disconnect();
+            vmk_sink_.cancel_pending();
+            cancel_healthy_factory_reset();
+            cancel_recovery_reset();
+
+            session::AttemptId attempt_id{};
+            do {
+                esp_fill_random(attempt_id.data(), attempt_id.size());
+            } while (all_zero_attempt(attempt_id));
+
+            if (!reset_presence_.begin_presence(
+                    session::PresenceOperation::kFactoryReset,
+                    attempt_id,
+                    now_ms
+                )) {
+                attempt_id.fill(0);
+                response = error_response(id, "invalid_state");
+            } else {
+                healthy_factory_reset_.begin(attempt_id, now_ms);
+                response = recovery_reset_begin_success(id, attempt_id);
+                attempt_id.fill(0);
+            }
+        }
+    } else if (operation == kFactoryResetStatusOperation) {
+        session::AttemptId attempt_id{};
+        if (!read_binary(params, "attempt_id", &attempt_id)) {
+            response = error_response(id, "invalid_request");
+        } else {
+            const auto check = healthy_factory_reset_.check(attempt_id, now_ms);
+            if (check == FactoryResetAuthorization::Check::kExpired) {
+                cancel_healthy_factory_reset();
+                response = error_response(id, "expired");
+            } else if (check != FactoryResetAuthorization::Check::kOk) {
+                response = error_response(id, "invalid_state");
+            } else {
+                response = recovery_reset_status_success(id, reset_presence_.presence_confirmed());
+            }
+        }
+        attempt_id.fill(0);
+    } else if (operation == kFactoryResetCancelOperation) {
+        session::AttemptId attempt_id{};
+        if (!read_binary(params, "attempt_id", &attempt_id)) {
+            response = error_response(id, "invalid_request");
+        } else {
+            const auto check = healthy_factory_reset_.check(attempt_id, now_ms);
+            if (check == FactoryResetAuthorization::Check::kExpired) {
+                cancel_healthy_factory_reset();
+                response = error_response(id, "expired");
+            } else if (check != FactoryResetAuthorization::Check::kOk) {
+                response = error_response(id, "invalid_state");
+            } else {
+                cancel_healthy_factory_reset();
+                response = empty_success(id);
+            }
+        }
+        attempt_id.fill(0);
+    } else if (operation == kFactoryResetCommitOperation) {
+        session::AttemptId attempt_id{};
+        if (!read_binary(params, "attempt_id", &attempt_id)) {
+            response = error_response(id, "invalid_request");
+        } else {
+            const auto check = healthy_factory_reset_.check(attempt_id, now_ms);
+            if (check == FactoryResetAuthorization::Check::kExpired) {
+                cancel_healthy_factory_reset();
+                response = error_response(id, "expired");
+            } else if (check != FactoryResetAuthorization::Check::kOk) {
+                response = error_response(id, "invalid_state");
+            } else if (!reset_presence_.consume_presence(attempt_id, now_ms)) {
+                response = error_response(id, "presence_required");
+            } else {
+                // Presence is consumed before any destructive mutation. The
+                // authorization is terminal even if the reset later fails.
+                healthy_factory_reset_.consume();
+
+                vault_runtime::Metadata current_runtime{};
+                registration::Snapshot current_registration{};
+                registration::Status current_registration_status = registration::Status::kIo;
+                const RecoveryResetDecision current_decision = recovery_reset_decision(
+                    &current_runtime, &current_registration, &current_registration_status
+                );
+                if (current_decision != RecoveryResetDecision::kNotRequired ||
+                    current_runtime.state != vault_runtime::State::kUnlocked) {
+                    response = error_response(id, "invalid_state");
+                } else {
+                    session_handler_.disconnect();
+                    vmk_sink_.cancel_pending();
+                    cancel_recovery_reset();
+
+                    vault_runtime::Status vault_status = vault_runtime::Status::kIo;
+                    registration::Status registration_clear_status = registration::Status::kIo;
+                    time_service_.with_secret_boundary([&]() {
+                        {
+                            std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
+                            vault_status = runtime_.factory_reset();
+                            registration_clear_status = vault_status == vault_runtime::Status::kOk
+                                ? registration_.clear_registration()
+                                : registration::Status::kIo;
+                        }
+                        if (vault_status == vault_runtime::Status::kOk &&
+                            registration_clear_status == registration::Status::kOk) {
+                            notify_security_boundary();
+                        }
+                    });
+                    response = vault_status == vault_runtime::Status::kOk &&
+                            registration_clear_status == registration::Status::kOk
+                        ? empty_success(id)
+                        : error_response(id, "reset_failed");
+                }
+            }
+        }
+        attempt_id.fill(0);
     } else if (operation == "factory_reset.recovery_begin") {
         vault_runtime::Metadata runtime_metadata{};
         registration::Snapshot registration_snapshot{};
@@ -538,6 +671,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
         } else {
             session_handler_.disconnect();
             vmk_sink_.cancel_pending();
+            cancel_healthy_factory_reset();
             cancel_recovery_reset();
 
             const vault_runtime::Status boundary_status = time_service_.with_secret_boundary([&]() {
@@ -562,7 +696,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
                     esp_fill_random(recovery_reset_attempt_id_.data(), recovery_reset_attempt_id_.size());
                 } while (all_zero_attempt(recovery_reset_attempt_id_));
                 recovery_reset_deadline_ms_ = recovery_deadline_from(now_ms);
-                recovery_reset_active_ = recovery_presence_.begin_presence(
+                recovery_reset_active_ = reset_presence_.begin_presence(
                     session::PresenceOperation::kFactoryReset,
                     recovery_reset_attempt_id_,
                     now_ms
@@ -585,7 +719,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
             cancel_recovery_reset();
             response = error_response(id, "expired");
         } else {
-            response = recovery_reset_status_success(id, recovery_presence_.presence_confirmed());
+            response = recovery_reset_status_success(id, reset_presence_.presence_confirmed());
         }
         attempt_id.fill(0);
     } else if (operation == "factory_reset.recovery_complete") {
@@ -597,7 +731,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
         } else if (now_ms >= recovery_reset_deadline_ms_) {
             cancel_recovery_reset();
             response = error_response(id, "expired");
-        } else if (!recovery_presence_.consume_presence(attempt_id, now_ms)) {
+        } else if (!reset_presence_.consume_presence(attempt_id, now_ms)) {
             response = error_response(id, "presence_required");
         } else {
             recovery_reset_active_ = false;
@@ -741,35 +875,10 @@ std::string CanonicalProtocolV2Handler::handle_line(
         const RecoveryResetDecision decision = recovery_reset_decision(
             &runtime_metadata, &registration_snapshot, &registration_status
         );
-        const bool reset_allowed = decision == RecoveryResetDecision::kNotRequired &&
-            runtime_metadata.state == vault_runtime::State::kUnlocked;
-        if (!reset_allowed) {
-            response = error_response(id, "invalid_state");
-        } else {
-            session_handler_.disconnect();
-            vmk_sink_.cancel_pending();
-            cancel_recovery_reset();
-
-            vault_runtime::Status vault_status = vault_runtime::Status::kIo;
-            registration::Status registration_clear_status = registration::Status::kIo;
-            time_service_.with_secret_boundary([&]() {
-                {
-                    std::lock_guard<std::recursive_mutex> access(runtime_access_mutex_);
-                    vault_status = runtime_.factory_reset();
-                    registration_clear_status = vault_status == vault_runtime::Status::kOk
-                        ? registration_.clear_registration()
-                        : registration::Status::kIo;
-                }
-                if (vault_status == vault_runtime::Status::kOk &&
-                    registration_clear_status == registration::Status::kOk) {
-                    notify_security_boundary();
-                }
-            });
-            response = vault_status == vault_runtime::Status::kOk &&
-                    registration_clear_status == registration::Status::kOk
-                ? empty_success(id)
-                : error_response(id, "reset_failed");
-        }
+        response = decision == RecoveryResetDecision::kNotRequired &&
+                runtime_metadata.state == vault_runtime::State::kUnlocked
+            ? error_response(id, "presence_required")
+            : error_response(id, "invalid_state");
     } else {
         response = error_response(id, "unsupported_op");
     }
@@ -781,6 +890,7 @@ std::string CanonicalProtocolV2Handler::handle_line(
 void CanonicalProtocolV2Handler::disconnect() {
     session_handler_.disconnect();
     vmk_sink_.cancel_pending();
+    cancel_healthy_factory_reset();
     cancel_recovery_reset();
 }
 
