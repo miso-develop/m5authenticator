@@ -27,7 +27,7 @@ const ja: Record<string, string> = {
   "Finish or clear the active Google Authenticator migration batch first.": "先に現在のGoogle Authenticator移行batchを完了するか消去してください。",
   "The import session has reached the V1 limit of 32 accounts.": "インポートセッションがV1上限の32アカウントに達しました。",
   "The QR code format is not supported.": "このQRコード形式には対応していません。",
-  "Finish the active Google Authenticator migration batch before provisioning.": "プロビジョニング前に現在のGoogle Authenticator migration batchを完了してください。",
+  "Finish the active Google Authenticator migration batch before provisioning.": "プロビジョニング前に現在のGoogle Authenticator移行batchを完了してください。",
   "No imported accounts are ready for provisioning.": "プロビジョニング可能なインポート済みアカウントがありません。",
   "The import session is inconsistent.": "インポートセッションの状態が不整合です。",
   "Select an image file containing a QR code.": "QRコードを含む画像ファイルを選択してください。",
