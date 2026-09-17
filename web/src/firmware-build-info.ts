@@ -1,3 +1,4 @@
+import "./post-provisioning-layout.css";
 import {
   buildIdentityLabels,
   formatCompactBuildIdentity,
@@ -55,9 +56,7 @@ export function installFirmwareBuildInfo(shell: HTMLElement): (state: FirmwareBu
     commitValue.textContent = formatFullBuildCommit(current.identity);
   };
 
-  const description = shell.querySelector(".description");
-  if (description) description.insertAdjacentElement("afterend", block);
-  else shell.prepend(block);
+  shell.append(block);
 
   render();
   onLanguageChange(render);
