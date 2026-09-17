@@ -51,14 +51,16 @@ espressif/idf:v5.5.5@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7
 
 For GitHub-hosted `linux/amd64` runners, that index currently selects manifest digest `sha256:6e2800a69f1c6521a5651da524f811e237d13e34cad369687916d0ad0bc4ef89`. The tag is retained only as reviewable version provenance; the digest is the execution identity. Changing either digest is therefore an explicit supply-chain change, not an implicit ESP-IDF tag refresh.
 
-The build then runs:
+Official Foundation, Pages, and Release builds do not mount the authoritative checkout into the ESP-IDF container. `scripts/ci_esp_idf_isolated_build.py` copies only `firmware/` into a disposable runner-temporary workspace, mounts that isolated copy read/write, and verifies that the isolated `dependencies.lock` still equals the authoritative lockfile after the build. Host-side verification, packaging, Web building, and publication continue from the untouched checkout or a fresh checkout in a later job.
+
+The isolated build runs:
 
 ```text
 idf.py build
 idf.py merge-bin -o m5authenticator-merged.bin -f raw
 ```
 
-`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so the merged First Install/M5Burner image is `firmware/build/m5authenticator-merged.bin`.
+`idf.py merge-bin` runs esptool from ESP-IDF's build directory, so the merged First Install/M5Burner image is the isolated build's `firmware/build/m5authenticator-merged.bin`.
 
 Normal Update does **not** reuse the merged offset-0 image. `scripts/package_firmware.py` additionally packages the exact ESP-IDF build outputs:
 
@@ -152,7 +154,7 @@ The Pages site contains:
 
 No runtime CDN is used. The Provisioner retains `connect-src 'none'`; the separate Flasher page allows only `connect-src 'self'` so same-origin firmware assets can be fetched.
 
-With production eligibility enabled, CI may place the exact validated package binaries/manifests under `/firmware/` only after the same V1 release/profile and firmware security checks pass.
+With production eligibility enabled, CI may place the exact validated package binaries/manifests under `/firmware/` only after the same V1 release/profile and firmware security checks pass. The ESP-IDF container receives only a disposable copy of `firmware/`; it cannot rewrite `web/`, repository validation scripts, or the authoritative checkout that is subsequently used to build same-origin production content.
 
 ### First install — destructive
 
@@ -176,29 +178,28 @@ The Web app fetches each same-origin asset before opening the Serial chooser and
 
 ## GitHub Releases
 
-`.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags. It:
+`.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags and separates third-party build execution from publication authority:
 
-1. requires the exact V1 security contract and production eligibility;
-2. verifies tag equals `v<firmware_version>`;
-3. builds firmware with the immutable digest-pinned ESP-IDF 5.5.5 image identity recorded in `scripts/esp_idf_build_image.py`;
-4. verifies the actual merged firmware security surface;
-5. packages the destructive merged image plus validated three-part Normal Update set and records the exact ESP-IDF image identity in `release-metadata.json`;
-6. uploads all package files directly to the GitHub Release.
+1. the `build` job has `contents: read`, requires the production contract, verifies the tag and immutable image contract, and executes ESP-IDF only against a disposable firmware-only copy;
+2. the build job creates a short-lived raw-build handoff containing only the merged/component binaries, `dependencies.lock`, source commit, exact ESP-IDF provenance, and per-file size/SHA-256 metadata;
+3. the `verify` job also has only `contents: read`, checks out the authoritative tagged commit independently, verifies every raw handoff digest/provenance field and dependency lock, scans the final merged image, and packages the release with authoritative repository scripts;
+4. the verification job validates `release-metadata.json` against the raw build provenance, validates every `SHA256SUMS` entry, and uploads only the independently verified package as a second short-lived handoff;
+5. only the `publish` job receives `contents: write`; it never runs the ESP-IDF container, verifies that the downloaded `SHA256SUMS` file itself matches the digest emitted by the verification job, rechecks every packaged file with `sha256sum -c`, and publishes those exact bytes without rebuilding;
+6. a separate cleanup job has `actions: write` but no publication authority and deletes the transient Release handoff artifacts after the workflow completes.
 
 The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
 
-GitHub Actions Artifact is not used as an intermediate or long-term firmware store.
+## Transient GitHub Actions Artifact policy
 
-## GitHub Pages staging artifact policy
+Actions Artifacts exist only where a job boundary requires an explicit transient handoff:
 
-Pages deployment requires one staging artifact. It is the only intentional Actions Artifact in the current distribution path.
+- Pages deployment staging artifact: `retention-days: 1`, consumed by the deploy job, then deleted by exact artifact ID;
+- Release raw-build handoff: `retention-days: 1`, source-commit/image/file-hash provenance bound and independently verified before packaging;
+- Release verified-package handoff: `retention-days: 1`, consumed only by the `contents: write` publish job after checksum identity verification;
+- the Release cleanup job deletes both handoff artifacts by exact artifact ID as soon as practical;
+- ordinary Security and Foundation jobs do not upload Actions Artifacts.
 
-- `retention-days: 1`
-- deployment consumes it
-- deploy job then deletes that exact artifact ID using repository-scoped token
-- ordinary Security/Foundation/Release jobs do not upload Actions Artifacts
-
-No credential-bearing data or user Recovery Package may enter an Actions Artifact.
+These transient artifacts contain only user-independent firmware outputs and non-secret provenance. No credential-bearing data, Device dump, Recovery Package, Vault material, or user state may enter an Actions Artifact.
 
 ## M5Burner
 
@@ -219,6 +220,6 @@ M5Burner remains a deliberate manual distribution surface, not the designated st
 
 ## Build-output retention
 
-Normal PR CI builds firmware for verification and discards it. It does not upload Actions Artifacts.
+Normal PR CI builds firmware for verification and discards it. It does not upload Actions Artifacts. Release builds use only the two bounded, one-day transient handoffs described above and delete them after publication/cleanup.
 
 If physical testing later requires exact non-Release CI binaries, a separate temporary-build storage decision may be introduced. Such storage must remain secret-free and must not become a path for user Vault/Recovery/dump retention.
