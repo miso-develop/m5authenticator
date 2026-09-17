@@ -801,6 +801,18 @@ extern "C" void app_main(void) {
             continue;
         }
 
+        // A post-handshake framing failure latches the transport until the host
+        // physically disconnects. Do not read, parse, or answer even a fresh
+        // hello on the same USB connection; the disconnect branch above is the
+        // only transition back to PRE_HANDSHAKE.
+        if (g_protocol_transport.faulted()) {
+            m5auth::vault_runtime::secure_zero(input.data(), input.size());
+            buffered_input = 0;
+            discard_oversized_input = false;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
         if (discard_oversized_input) {
             const int bytes_read = g_protocol_transport.read(input.data(), input.size());
             if (bytes_read < 0) {
@@ -885,10 +897,6 @@ extern "C" void app_main(void) {
 
         const std::string_view request(input.data(), length);
         const ProtocolFrameInfo frame_info = classify_protocol_frame(request);
-        if (g_protocol_transport.faulted() && !(frame_info.valid && frame_info.hello)) {
-            consume_input_prefix(input, &buffered_input, consumed);
-            continue;
-        }
 
         if (is_timing_diagnostics_query(request)) {
             consume_input_prefix(input, &buffered_input, consumed);
@@ -921,6 +929,17 @@ extern "C" void app_main(void) {
             continue;
         }
 #endif
+
+        // Production PRE_HANDSHAKE is synchronization-only: only a strict-valid
+        // current-version hello may enter the canonical Protocol-v2 handler.
+        // Other frames are boundedly discarded and cannot mutate Device state.
+        if (g_protocol_transport.phase() ==
+                m5auth::device_transport::SessionPhase::kPreHandshake &&
+            !(frame_info.valid && frame_info.hello)) {
+            consume_input_prefix(input, &buffered_input, consumed);
+            continue;
+        }
+
         const TimingOperation timing_operation = kTimingDiagnosticsEnabled
             ? classify_timing_operation(request)
             : TimingOperation::kNone;
