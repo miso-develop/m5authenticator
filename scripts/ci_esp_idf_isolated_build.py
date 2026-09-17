@@ -60,6 +60,30 @@ def docker_command(isolated_firmware: Path, image_reference: str) -> list[str]:
         image_reference,
         "bash",
         "-lc",
+        "set -euo pipefail && "
+        "gcc -std=c11 -I\"$IDF_PATH/components/json/cJSON\" "
+        "-c \"$IDF_PATH/components/json/cJSON/cJSON.c\" -o /tmp/m5auth-cjson.o && "
+        "g++ -std=c++20 -Wall -Wextra -Werror -pthread "
+        "-Icomponents/m5auth_provisioning/test_host/stubs "
+        "-Icomponents/m5auth_core/include "
+        "-Icomponents/m5auth_provisioning/include "
+        "-Icomponents/m5auth_registration/include "
+        "-Icomponents/m5auth_session/include "
+        "-Icomponents/m5auth_time/include "
+        "-Icomponents/m5auth_vault/include "
+        "-Icomponents/m5auth_vault_runtime/include "
+        "-I\"$IDF_PATH/components/json/cJSON\" "
+        "components/m5auth_provisioning/canonical_protocol_v2.cpp "
+        "components/m5auth_session/session_protocol_v2.cpp "
+        "components/m5auth_session/p256_public_key.cpp "
+        "components/m5auth_session/user_presence.cpp "
+        "components/m5auth_vault/vault_format.cpp "
+        "components/m5auth_vault/vault_crypto.cpp "
+        "components/m5auth_vault_runtime/runtime.cpp "
+        "components/m5auth_provisioning/test_host/canonical_factory_reset_protocol_test.cpp "
+        "/tmp/m5auth-cjson.o -lcrypto "
+        "-o /tmp/m5auth-canonical-factory-reset-protocol-test && "
+        "/tmp/m5auth-canonical-factory-reset-protocol-test && "
         "idf.py set-target esp32s3 && idf.py build && "
         "idf.py merge-bin -o m5authenticator-merged.bin -f raw",
     ]
