@@ -126,6 +126,44 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertNotIn("std::fwrite(", app)
         self.assertNotIn("STDOUT_FILENO", app)
 
+    def test_faulted_transport_requires_physical_disconnect_before_rehandshake(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        disconnect = app.index("if (!g_protocol_transport.connected())")
+        fault = app.index("if (g_protocol_transport.faulted())", disconnect)
+        first_read = app.index("g_protocol_transport.read(", fault)
+        reset = app.index("g_protocol_transport.reset_pre_handshake();", disconnect)
+        fault_block_end = app.index("if (discard_oversized_input)", fault)
+        fault_block = app[fault:fault_block_end]
+
+        self.assertLess(disconnect, fault)
+        self.assertLess(fault, first_read)
+        self.assertLess(reset, fault)
+        self.assertIn("vTaskDelay(pdMS_TO_TICKS(20));", fault_block)
+        self.assertIn("continue;", fault_block)
+        self.assertNotIn("frame_info", fault_block)
+        self.assertNotIn("protocol.handle_line", fault_block)
+        self.assertNotIn("write_response", fault_block)
+        self.assertEqual(1, app.count("g_protocol_transport.reset_pre_handshake();"))
+
+    def test_pre_handshake_allows_only_strict_valid_hello_into_protocol_handler(self) -> None:
+        app = APP_MAIN.read_text(encoding="utf-8")
+        classify = app.index("const ProtocolFrameInfo frame_info = classify_protocol_frame(request);")
+        gate = app.index(
+            "m5auth::device_transport::SessionPhase::kPreHandshake",
+            classify,
+        )
+        handler = app.index("protocol.handle_line(", gate)
+        gate_block = app[gate:handler]
+        response_write = app.index("write_response(response, timing_operation)", handler)
+        establish = app.index("g_protocol_transport.establish_handshake();", response_write)
+
+        self.assertIn("!(frame_info.valid && frame_info.hello)", gate_block)
+        self.assertIn("consume_input_prefix(input, &buffered_input, consumed);", gate_block)
+        self.assertIn("continue;", gate_block)
+        self.assertLess(gate, handler)
+        self.assertLess(handler, response_write)
+        self.assertLess(response_write, establish)
+
     def test_release_validation_rejects_conflicting_usb_console(self) -> None:
         original = SDKCONFIG.read_text(encoding="utf-8")
         mutated = original.replace(
