@@ -169,11 +169,9 @@ int main() {
         return protocol.substr(start, end - start);
     };
 
-    const auto hello_block = block_between(
-        "if (operation == \"hello\")",
-        "else if (operation == kFactoryResetBeginOperation)"
-    );
-    assert(hello_block.find("kFactoryResetPresenceCapability") != std::string_view::npos);
+    assert(protocol.find(
+        "cJSON_AddBoolToObject(data, kFactoryResetPresenceCapability, true);"
+    ) != std::string_view::npos);
 
     const auto begin_block = block_between(
         "else if (operation == kFactoryResetBeginOperation)",
