@@ -21,6 +21,8 @@ jobs:
           fetch-depth: 0
       - name: Require production release profile
         run: python scripts/validate_release.py --require-production
+      - name: Verify immutable ESP-IDF build image contract
+        run: python -m unittest tests/esp_idf_image_pin_contract_test.py
       - name: Verify tag matches firmware version
         shell: bash
         run: |
@@ -34,12 +36,13 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match release profile $EXPECTED"
             exit 1
           fi
-      - name: Build and merge with ESP-IDF 5.5.5
+      - name: Build and merge with immutable ESP-IDF 5.5.5 image
         run: |
+          ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/project" \
             -w /project/firmware \
-            espressif/idf:v5.5.5 \
+            "$ESP_IDF_IMAGE" \
             bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
       - name: Verify final firmware security surface
         run: python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
