@@ -43,7 +43,15 @@ Future changes must preserve or explicitly supersede these contracts through a n
 
 ## Canonical firmware package
 
-CI builds with exact-pinned ESP-IDF 5.5.5 and runs:
+CI builds with ESP-IDF 5.5.5 using an immutable Docker image identity. The human-readable tag remains `espressif/idf:v5.5.5`, while execution is pinned to the multi-platform index digest recorded in `scripts/esp_idf_build_image.py`:
+
+```text
+espressif/idf:v5.5.5@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2
+```
+
+For GitHub-hosted `linux/amd64` runners, that index currently selects manifest digest `sha256:6e2800a69f1c6521a5651da524f811e237d13e34cad369687916d0ad0bc4ef89`. The tag is retained only as reviewable version provenance; the digest is the execution identity. Changing either digest is therefore an explicit supply-chain change, not an implicit ESP-IDF tag refresh.
+
+The build then runs:
 
 ```text
 idf.py build
@@ -77,7 +85,7 @@ The merged `.bin` is the destructive First Install / M5Burner artifact. The thre
 
 Before packaging succeeds, `scripts/package_firmware.py` validates the real binary sizes against the flash write windows and rejects any Normal Update part whose write range overlaps a partition other than the intended `ota_0` application slot. This mechanically protects ordinary `nvs`, `otadata`, `phy_init`, `ota_1`, and `auth_nvs`; in particular the #107 persistent-state contract requires preservation of both ordinary `nvs` and `auth_nvs`.
 
-`release-metadata.json` contains only non-secret build/device/release-contract metadata, including independent Firmware / Protocol / Storage Schema / Vault Format versions, security profile/version, VMK persistence mode, post-update state, production-eligibility state, and the validated Normal Update write plan. `SHA256SUMS` covers all downloadable package files.
+`release-metadata.json` contains only non-secret build/device/release-contract metadata, including independent Firmware / Protocol / Storage Schema / Vault Format versions, security profile/version, VMK persistence mode, post-update state, production-eligibility state, the validated Normal Update write plan, and `build_environment.esp_idf` provenance. The ESP-IDF provenance records the repository, human-readable `v5.5.5` tag, immutable index digest, selected `linux/amd64` manifest digest, and exact tag-plus-digest reference. `SHA256SUMS` covers all downloadable package files.
 
 There is no separately rebuilt M5Burner package. M5Burner `USER CUSTOM` publication uses the merged `.bin` from the same CI build.
 
@@ -172,9 +180,9 @@ The Web app fetches each same-origin asset before opening the Serial chooser and
 
 1. requires the exact V1 security contract and production eligibility;
 2. verifies tag equals `v<firmware_version>`;
-3. builds firmware in pinned ESP-IDF 5.5.5 and produces both merged and component binaries;
+3. builds firmware with the immutable digest-pinned ESP-IDF 5.5.5 image identity recorded in `scripts/esp_idf_build_image.py`;
 4. verifies the actual merged firmware security surface;
-5. packages the destructive merged image plus validated three-part Normal Update set;
+5. packages the destructive merged image plus validated three-part Normal Update set and records the exact ESP-IDF image identity in `release-metadata.json`;
 6. uploads all package files directly to the GitHub Release.
 
 The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
