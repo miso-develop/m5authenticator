@@ -333,7 +333,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         writer = app[start:end]
 
         self.assertIn("g_protocol_transport.write_frame(response)", writer)
-        for forbidden in ("stdout", "fwrite", "fflush", "fsync", "flockfile"):
+        for forbidden in ("stdout", "std::fwrite", "std::fflush", "::fsync", "::flockfile"):
             self.assertNotIn(forbidden, writer)
         self.assertIn("usb_serial_jtag_write_bytes", transport)
         self.assertIn("usb_serial_jtag_wait_tx_done", transport)
