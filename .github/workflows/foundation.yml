@@ -315,12 +315,15 @@ jobs:
           python scripts/validate_release.py
           python -m unittest tests/release_package_test.py
           python -m unittest tests/security_closeout_contract_test.py
-      - name: Build and merge with ESP-IDF 5.5.5
+      - name: Verify immutable ESP-IDF build image contract
+        run: python -m unittest tests/esp_idf_image_pin_contract_test.py
+      - name: Build and merge with immutable ESP-IDF 5.5.5 image
         run: >-
-          docker run --rm
+          ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
+          && docker run --rm
           -v "$GITHUB_WORKSPACE:/project"
           -w /project/firmware
-          espressif/idf:v5.5.5
+          "$ESP_IDF_IMAGE"
           bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
       - name: Validate the CI-built distribution package
         run: |
