@@ -6,13 +6,17 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: release-firmware
+  build:
+    name: build-firmware-unprivileged
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload-build.outputs.artifact-id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,6 +27,8 @@ jobs:
         run: python scripts/validate_release.py --require-production
       - name: Verify immutable ESP-IDF build image contract
         run: python -m unittest tests/esp_idf_image_pin_contract_test.py
+      - name: Verify CI supply-chain privilege and workspace boundaries
+        run: python -m unittest tests/ci_supply_chain_boundary_test.py
       - name: Verify tag matches firmware version
         shell: bash
         run: |
@@ -36,39 +42,159 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match release profile $EXPECTED"
             exit 1
           fi
-      - name: Build and merge with immutable ESP-IDF 5.5.5 image
+      - name: Build in isolated firmware-only workspace
+        shell: bash
         run: |
+          set -euo pipefail
           ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/project" \
-            -w /project/firmware \
-            "$ESP_IDF_IMAGE" \
-            bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
+          BUILD_ROOT="$RUNNER_TEMP/m5auth-release-build"
+          python scripts/ci_esp_idf_isolated_build.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --work-root "$BUILD_ROOT" \
+            --image-reference "$ESP_IDF_IMAGE"
+          git diff --exit-code
+          python scripts/ci_firmware_handoff.py create-build \
+            --build-dir "$BUILD_ROOT/firmware/build" \
+            --isolated-firmware-dir "$BUILD_ROOT/firmware" \
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \
+            --source-commit "$GITHUB_SHA"
+      - name: Upload bounded raw build handoff
+        id: upload-build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m5auth-build-${{ github.sha }}
+          path: ${{ runner.temp }}/m5auth-build-handoff
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    name: verify-firmware-unprivileged
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload-release.outputs.artifact-id }}
+      checksums-sha256: ${{ steps.verify-package.outputs.checksums-sha256 }}
+    steps:
+      - name: Checkout authoritative repository source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Require production release profile
+        run: python scripts/validate_release.py --require-production
+      - name: Verify immutable ESP-IDF build image contract
+        run: python -m unittest tests/esp_idf_image_pin_contract_test.py
+      - name: Verify CI supply-chain privilege and workspace boundaries
+        run: python -m unittest tests/ci_supply_chain_boundary_test.py
+      - name: Download raw build handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: m5auth-build-${{ github.sha }}
+          path: ${{ runner.temp }}/m5auth-build-handoff
+      - name: Independently verify raw build provenance
+        run: |
+          python scripts/ci_firmware_handoff.py verify-build \
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \
+            --source-commit "$GITHUB_SHA" \
+            --expected-lock firmware/dependencies.lock
       - name: Verify final firmware security surface
-        run: python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
-      - name: Package the exact CI-built firmware
+        run: python scripts/verify_firmware_image.py "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin"
+      - name: Package independently verified firmware
         run: |
           python scripts/package_firmware.py \
-            --merged-binary firmware/build/m5authenticator-merged.bin \
-            --output-dir /tmp/m5auth-release \
+            --merged-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin" \
+            --bootloader-binary "$RUNNER_TEMP/m5auth-build-handoff/bootloader.bin" \
+            --partition-table-binary "$RUNNER_TEMP/m5auth-build-handoff/partition-table.bin" \
+            --app-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator.bin" \
+            --output-dir "$RUNNER_TEMP/m5auth-release" \
             --build-commit "$GITHUB_SHA" \
             --exact-release \
             --require-production
-          git diff --exit-code -- firmware/dependencies.lock
-      - name: Publish GitHub Release directly
+          git diff --exit-code
+      - name: Verify final package provenance and checksums
+        id: verify-package
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHECKSUMS_SHA256="$(python scripts/ci_firmware_handoff.py verify-release-package \
+            --package-dir "$RUNNER_TEMP/m5auth-release" \
+            --build-provenance "$RUNNER_TEMP/m5auth-build-handoff/build-provenance.json" \
+            --source-commit "$GITHUB_SHA")"
+          echo "checksums-sha256=$CHECKSUMS_SHA256" >> "$GITHUB_OUTPUT"
+      - name: Upload bounded verified release handoff
+        id: upload-release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m5auth-release-${{ github.sha }}
+          path: ${{ runner.temp }}/m5auth-release
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish-verified-release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download independently verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: m5auth-release-${{ github.sha }}
+          path: ${{ runner.temp }}/m5auth-release
+      - name: Confirm publish bytes match verification output
+        shell: bash
+        env:
+          EXPECTED_SHA256SUMS: ${{ needs.verify.outputs.checksums-sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/m5auth-release"
+          ACTUAL_SHA256SUMS="$(sha256sum SHA256SUMS | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA256SUMS" != "$EXPECTED_SHA256SUMS" ]; then
+            echo "verified SHA256SUMS identity changed across artifact handoff"
+            exit 1
+          fi
+          sha256sum -c SHA256SUMS
+      - name: Publish exactly the verified GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            /tmp/m5auth-release/m5authenticator-v*-m5sticks3.bin \
-            /tmp/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \
-            /tmp/m5auth-release/factory-manifest.json \
-            /tmp/m5auth-release/update-manifest.json \
-            /tmp/m5auth-release/factory-manifest-*.json \
-            /tmp/m5auth-release/update-manifest-*.json \
-            /tmp/m5auth-release/firmware-target.json \
-            /tmp/m5auth-release/release-metadata.json \
-            /tmp/m5auth-release/SHA256SUMS \
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3.bin \
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest.json \
+            "$RUNNER_TEMP"/m5auth-release/update-manifest.json \
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest-*.json \
+            "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json \
+            "$RUNNER_TEMP"/m5auth-release/firmware-target.json \
+            "$RUNNER_TEMP"/m5auth-release/release-metadata.json \
+            "$RUNNER_TEMP"/m5auth-release/SHA256SUMS \
             --verify-tag \
             --title "M5Authenticator $GITHUB_REF_NAME" \
             --generate-notes
+
+  cleanup:
+    name: cleanup-transient-release-artifacts
+    if: always()
+    needs: [build, verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete transient build and release handoffs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+          RELEASE_ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}
+        run: |
+          for artifact_id in "$BUILD_ARTIFACT_ID" "$RELEASE_ARTIFACT_ID"; do
+            if [ -n "$artifact_id" ]; then
+              gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+            fi
+          done
