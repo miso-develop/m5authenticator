@@ -76,16 +76,19 @@ jobs:
       - name: Install exact Web dependencies
         working-directory: web
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build production firmware for Web Flasher
+      - name: Verify immutable ESP-IDF build image contract
+        run: python -m unittest tests/esp_idf_image_pin_contract_test.py
+      - name: Build production firmware for Web Flasher with immutable ESP-IDF 5.5.5 image
         if: steps.profile.outputs.production == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python scripts/validate_release.py --require-production
+          ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/project" \
             -w /project/firmware \
-            espressif/idf:v5.5.5 \
+            "$ESP_IDF_IMAGE" \
             bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
           python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
           EXACT_RELEASE_ARGS=()
