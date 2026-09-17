@@ -98,6 +98,7 @@ async function createSyntheticPrePolicyWeakWrapper(
 const REJECTED = [
   "aaaaaaaaaaaaaaa",
   "界界界界界界界界界界界界界界界",
+  "秘密秘密秘密秘密秘密秘密秘密秘密",
   "passwordpassword",
   "abcdabcdabcdabcd",
   "1234123412341234",
@@ -118,6 +119,7 @@ const ACCEPTED = [
   "onlylowercasewordsthatstayvalid",
   "all digits 731905284617390",
   "no-uppercase-or-symbol-requirement",
+  "abc/defghijklmnop",
   "これは十分に長く一意な回復用パスフレーズです",
   "pässphrase-with-varied-unicode-文字列",
 ] as const;
