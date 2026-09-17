@@ -22,8 +22,14 @@ EXPECTED_BUILD_OUTPUTS = (
 def prepare_isolated_firmware(source_root: Path, work_root: Path) -> Path:
     source_root = source_root.resolve()
     work_root = work_root.resolve()
-    if source_root == work_root or source_root in work_root.parents:
-        raise ValueError("isolated build workspace must be outside the authoritative checkout")
+    if (
+        source_root == work_root
+        or source_root in work_root.parents
+        or work_root in source_root.parents
+    ):
+        raise ValueError(
+            "isolated build workspace must be disjoint from the authoritative checkout"
+        )
 
     source_firmware = source_root / "firmware"
     if not source_firmware.is_dir():
