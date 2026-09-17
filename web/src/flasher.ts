@@ -10,7 +10,8 @@ import {
 const app = document.querySelector<HTMLElement>("#flash-app");
 if (!app) throw new Error("Firmware flash root is missing");
 
-const flashEnabled = import.meta.env.VITE_M5AUTH_FLASH_ENABLED === "true";
+const layoutSmoke = import.meta.env.MODE === "qr-smoke" && new URLSearchParams(window.location.search).has("layout-smoke");
+const flashEnabled = import.meta.env.VITE_M5AUTH_FLASH_ENABLED === "true" || layoutSmoke;
 const base = import.meta.env.BASE_URL;
 const targetMetadataPath = `${base}firmware/firmware-target.json`;
 
@@ -46,7 +47,8 @@ if (!flashEnabled) {
   status.append(loading);
 
   void loadPinnedFirmwareTarget(targetMetadataPath)
-    .then((target) => {
+    .then(async (target) => {
+      await layoutSmokeSettleDelay();
       updateBuildInfo({ status: "ready", identity: target.identity });
       status.replaceChildren(
         firstInstallChoice(
@@ -61,7 +63,8 @@ if (!flashEnabled) {
         ),
       );
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      await layoutSmokeSettleDelay();
       updateBuildInfo({ status: "unavailable" });
       const heading = document.createElement("h2");
       heading.textContent = "Firmware target unavailable";
@@ -70,6 +73,11 @@ if (!flashEnabled) {
       explanation.textContent = error instanceof Error ? error.message : "Firmware target validation failed";
       status.replaceChildren(heading, explanation);
     });
+}
+
+async function layoutSmokeSettleDelay(): Promise<void> {
+  if (!layoutSmoke) return;
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
 }
 
 function firstInstallChoice(title: string, description: string, target: PinnedFirmwareTarget): HTMLElement {
