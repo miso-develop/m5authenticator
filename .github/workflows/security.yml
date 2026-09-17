@@ -23,6 +23,8 @@ jobs:
         run: python3 --version
       - name: Verify immutable ESP-IDF build image contract
         run: python3 -m unittest tests/esp_idf_image_pin_contract_test.py
+      - name: Verify CI supply-chain privilege and workspace boundaries
+        run: python3 -m unittest tests/ci_supply_chain_boundary_test.py
       - name: Verify V1 release security closeout contract
         run: python3 -m unittest tests/security_closeout_contract_test.py
       - name: Verify automatic lock Protocol-v2 security contract
