@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,9 +21,25 @@ BUILD_WORKFLOWS = (
 )
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 PACKAGE_SCRIPT = ROOT / "scripts" / "package_firmware.py"
+WORKFLOW_EXTENSIONS = (".yml", ".yaml")
+MUTABLE_ESP_IDF_REFERENCE = re.compile(r"espressif/idf:[^\s\"']+")
+
+
+def workflow_files(workflows_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in workflows_dir.iterdir()
+        if path.is_file() and path.suffix in WORKFLOW_EXTENSIONS
+    )
 
 
 class EspIdfImagePinContractTest(unittest.TestCase):
+    def assert_no_mutable_esp_idf_references(self, workflows_dir: Path) -> None:
+        for path in workflow_files(workflows_dir):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                self.assertEqual(MUTABLE_ESP_IDF_REFERENCE.findall(text), [])
+
     def test_v555_identity_is_exact_and_immutable(self) -> None:
         self.assertEqual(esp_idf_build_image.ESP_IDF_VERSION, "5.5.5")
         self.assertEqual(esp_idf_build_image.ESP_IDF_IMAGE_REPOSITORY, "espressif/idf")
@@ -52,11 +69,18 @@ class EspIdfImagePinContractTest(unittest.TestCase):
                 self.assertIn("tests/esp_idf_image_pin_contract_test.py", text)
 
     def test_official_workflows_do_not_embed_mutable_espressif_idf_tags(self) -> None:
-        mutable_reference = re.compile(r"espressif/idf:[^\s\"']+")
-        for path in (ROOT / ".github" / "workflows").glob("*.yml"):
-            text = path.read_text(encoding="utf-8")
-            with self.subTest(workflow=path.name):
-                self.assertEqual(mutable_reference.findall(text), [])
+        self.assert_no_mutable_esp_idf_references(ROOT / ".github" / "workflows")
+
+    def test_mutable_reference_guard_rejects_yml_and_yaml_workflows(self) -> None:
+        for extension in WORKFLOW_EXTENSIONS:
+            with self.subTest(extension=extension), tempfile.TemporaryDirectory() as directory:
+                workflows_dir = Path(directory)
+                (workflows_dir / f"regression-probe{extension}").write_text(
+                    "jobs:\n  firmware:\n    container: espressif/idf:v5.5.5\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(AssertionError):
+                    self.assert_no_mutable_esp_idf_references(workflows_dir)
 
     def test_release_package_records_exact_build_image_provenance(self) -> None:
         text = PACKAGE_SCRIPT.read_text(encoding="utf-8")
