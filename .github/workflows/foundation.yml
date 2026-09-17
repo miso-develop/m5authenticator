@@ -54,19 +54,11 @@ jobs:
           done
           curl -fsS "$smoke_url" >/dev/null
 
-          google-chrome \
-            --headless=new \
-            --no-sandbox \
-            --disable-gpu \
-            --virtual-time-budget=5000 \
-            --dump-dom \
-            "$smoke_url" \
-            >/tmp/qr-smoke-dom.html
-
-          if ! grep -q 'data-status="pass"' /tmp/qr-smoke-dom.html; then
-            cat /tmp/qr-smoke-dom.html
-            exit 1
-          fi
+          chrome_path="$(command -v google-chrome)"
+          node scripts/browser-smoke-terminal.mjs \
+            --chrome "$chrome_path" \
+            --url "$smoke_url" \
+            --timeout-ms 120000
       - name: Build Web App
         working-directory: web
         run: npm run build
