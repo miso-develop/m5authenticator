@@ -33,13 +33,16 @@ def workflow_files(workflows_dir: Path) -> list[Path]:
     )
 
 
-class EspIdfImagePinContractTest(unittest.TestCase):
-    def assert_no_mutable_esp_idf_references(self, workflows_dir: Path) -> None:
-        for path in workflow_files(workflows_dir):
-            text = path.read_text(encoding="utf-8")
-            with self.subTest(workflow=path.name):
-                self.assertEqual(MUTABLE_ESP_IDF_REFERENCE.findall(text), [])
+def mutable_esp_idf_references(workflows_dir: Path) -> dict[str, list[str]]:
+    violations: dict[str, list[str]] = {}
+    for path in workflow_files(workflows_dir):
+        matches = MUTABLE_ESP_IDF_REFERENCE.findall(path.read_text(encoding="utf-8"))
+        if matches:
+            violations[path.name] = matches
+    return violations
 
+
+class EspIdfImagePinContractTest(unittest.TestCase):
     def test_v555_identity_is_exact_and_immutable(self) -> None:
         self.assertEqual(esp_idf_build_image.ESP_IDF_VERSION, "5.5.5")
         self.assertEqual(esp_idf_build_image.ESP_IDF_IMAGE_REPOSITORY, "espressif/idf")
@@ -69,18 +72,24 @@ class EspIdfImagePinContractTest(unittest.TestCase):
                 self.assertIn("tests/esp_idf_image_pin_contract_test.py", text)
 
     def test_official_workflows_do_not_embed_mutable_espressif_idf_tags(self) -> None:
-        self.assert_no_mutable_esp_idf_references(ROOT / ".github" / "workflows")
+        self.assertEqual(
+            mutable_esp_idf_references(ROOT / ".github" / "workflows"),
+            {},
+        )
 
     def test_mutable_reference_guard_rejects_yml_and_yaml_workflows(self) -> None:
         for extension in WORKFLOW_EXTENSIONS:
             with self.subTest(extension=extension), tempfile.TemporaryDirectory() as directory:
                 workflows_dir = Path(directory)
-                (workflows_dir / f"regression-probe{extension}").write_text(
+                filename = f"regression-probe{extension}"
+                (workflows_dir / filename).write_text(
                     "jobs:\n  firmware:\n    container: espressif/idf:v5.5.5\n",
                     encoding="utf-8",
                 )
-                with self.assertRaises(AssertionError):
-                    self.assert_no_mutable_esp_idf_references(workflows_dir)
+                self.assertEqual(
+                    mutable_esp_idf_references(workflows_dir),
+                    {filename: ["espressif/idf:v5.5.5"]},
+                )
 
     def test_release_package_records_exact_build_image_provenance(self) -> None:
         text = PACKAGE_SCRIPT.read_text(encoding="utf-8")
