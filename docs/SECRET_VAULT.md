@@ -59,7 +59,7 @@ BUK and the Browser Registration Key (BRK) have separate roles. BUK protects the
 
 Before KDF processing, the Passphrase is Unicode NFC-normalized and encoded as UTF-8.
 
-V1 accepts:
+V1 accepts only values that satisfy all framing limits:
 
 - minimum 15 Unicode code points
 - maximum 128 Unicode code points
@@ -67,7 +67,18 @@ V1 accepts:
 - arbitrary characters without character-class composition requirements
 - paste and password-manager input
 
-A six-digit PIN or similarly low-entropy value is not an acceptable offline Recovery-Package protection secret.
+When creating a new Passphrase-wrapped Recovery VMK, Web additionally applies the local deterministic `weak-passphrase-policy-v1` after NFC normalization and before Argon2id. The policy rejects exactly the following classes:
+
+- the entire normalized value is one Unicode code point repeated
+- the entire normalized value is an exact repetition of a primitive block of 1 through 8 Unicode code points, repeated at least twice
+- for ASCII-only input, the validation-only lowercase form with ASCII space, tab, hyphen, underscore, and period removed is at least 15 characters and is a forward/reverse contiguous, repeated, or cyclic walk through one of the fixed sequences `0123456789`, `1234567890`, `abcdefghijklmnopqrstuvwxyz`, `qwertyuiop`, `asdfghjkl`, or `zxcvbnm`
+- for ASCII-only input, the validation-only lowercase value with leading/trailing ASCII whitespace removed matches the bundled versioned `recovery-passphrase-denylist-v1`
+
+The denylist is bundled with the application, deterministic, reviewable, and requires no network access. It includes the Decision-defined common examples plus explicit long `password...` / `letmein...` variants. The comparison forms above exist only for validation; they do not alter the NFC-normalized UTF-8 bytes supplied to Argon2id.
+
+This policy is intentionally bounded. It blocks defined obviously weak/repetitive/sequential/common choices but does **not** estimate entropy, guarantee strength, or replace the requirement to choose a long unique Recovery Passphrase. No remote breached-password or strength service is used.
+
+Recovery Package compatibility is preserved: existing packages are still unwrapped using the original NFC + framing-bound validation before the recorded KDF. A Passphrase that is newly disallowed by `weak-passphrase-policy-v1` therefore does not make an already-exported Recovery Package unreadable. The stricter policy is an acceptance boundary for newly created Recovery wraps; it does not change Argon2id parameters, AES-GCM wrapping, VMK semantics, or Recovery Package format/version.
 
 The Argon2id algorithm/version, memory/time/parallelism parameters, salt, wrapping algorithm, nonce, and package format are encoded explicitly. Unknown or unsupported parameters fail closed and are not silently reinterpreted.
 

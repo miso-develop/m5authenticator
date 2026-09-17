@@ -49,6 +49,8 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 - nonce must not be derived solely from generation.
 - Vault AAD binds version/domain, logical `vault_id`, storage schema, and generation.
 - Passphrase protection uses Argon2id v19 with the parameters defined in `docs/SECRET_VAULT.md`, deriving a KEK used to AES-256-GCM-wrap the VMK.
+- newly created Recovery Passphrase wraps apply the bundled deterministic `weak-passphrase-policy-v1` before Argon2id; it blocks only the specified obvious weak/repetitive/sequential/common classes and must not be described as entropy estimation or a strength guarantee.
+- existing Recovery Packages remain unwrap-compatible under the original NFC/framing/KDF contract even when their historical Passphrase would now be rejected for a newly created wrap; the weak-policy change must not alter Argon2id/AES-GCM/package format or VMK semantics.
 - unsupported format/KDF parameters fail closed; do not silently reinterpret them.
 
 ### Trusted Browser

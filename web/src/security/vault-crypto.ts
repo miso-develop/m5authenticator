@@ -1,4 +1,5 @@
 import { argon2id } from "hash-wasm";
+import { assertRecoveryPassphraseNotObviouslyWeak } from "./recovery-passphrase-policy";
 import {
   LEGACY_VAULT_FORMAT_VERSION,
   RECOVERY_PACKAGE_VERSION,
@@ -246,7 +247,7 @@ export async function decryptVault(
   return aesGcmDecrypt(vmk, envelope.nonce, envelope.ciphertext, envelope.tag, aad);
 }
 
-export function normalizeAndValidatePassphrase(passphrase: string): Uint8Array {
+function normalizeAndEncodePassphrase(passphrase: string): { normalized: string; encoded: Uint8Array } {
   const normalized = passphrase.normalize("NFC");
   const codePoints = Array.from(normalized).length;
   if (codePoints < 15 || codePoints > 128) {
@@ -257,7 +258,28 @@ export function normalizeAndValidatePassphrase(passphrase: string): Uint8Array {
     encoded.fill(0);
     throw new Error("Passphrase exceeds the 512-byte UTF-8 limit after NFC normalization");
   }
-  return encoded;
+  return { normalized, encoded };
+}
+
+// Bounds-only validation is intentionally retained for existing Recovery Package
+// decryption. Tightening this path would make already-exported packages with a
+// now-disallowed weak Passphrase unreadable.
+export function normalizeAndValidatePassphrase(passphrase: string): Uint8Array {
+  return normalizeAndEncodePassphrase(passphrase).encoded;
+}
+
+// Canonical acceptance policy for every newly created Recovery Passphrase wrap.
+// This preserves KDF input bytes while rejecting deterministic weak choices
+// before Argon2id work or package construction starts.
+export function normalizeAndValidateNewRecoveryPassphrase(passphrase: string): Uint8Array {
+  const { normalized, encoded } = normalizeAndEncodePassphrase(passphrase);
+  try {
+    assertRecoveryPassphraseNotObviouslyWeak(normalized);
+    return encoded;
+  } catch (error) {
+    encoded.fill(0);
+    throw error;
+  }
 }
 
 export function createArgon2idMetadata(source: RandomSource = browserRandomSource): Argon2idKdfMetadata {
@@ -340,6 +362,8 @@ export async function wrapVmkWithPassphraseForFormat(
   assertSupportedVaultFormatVersion(vaultFormatVersion);
   assertLength(vmk, AES_GCM_KEY_BYTES, "VMK");
   assertLength(vaultId, VAULT_ID_BYTES, "vaultId");
+  const validatedPassphrase = normalizeAndValidateNewRecoveryPassphrase(passphrase);
+  validatedPassphrase.fill(0);
   validateKdfMetadata(kdf);
   const nonce = randomBytes(AES_GCM_NONCE_BYTES, source);
   const kek = await derivePassphraseKek(passphrase, kdf);
