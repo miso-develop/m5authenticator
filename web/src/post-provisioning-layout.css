@@ -1,0 +1,8 @@
+#initial-passphrase-fields:has(#initial-recovery-passphrase:disabled) {
+  display: none;
+}
+
+#app > main.shell > section.panel + section.panel {
+  margin-top: 48px;
+  padding-top: 32px;
+}

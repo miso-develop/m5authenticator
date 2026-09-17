@@ -1,3 +1,4 @@
+import "./post-provisioning-layout.css";
 import {
   buildIdentityLabels,
   currentWebBuildIdentity,
@@ -6,8 +7,9 @@ import {
 } from "./build-identity";
 import { getLanguage, onLanguageChange } from "./i18n";
 
-function install(): void {
-  const shell = document.querySelector<HTMLElement>("#app > .shell");
+export function installWebBuildInfo(
+  shell: HTMLElement | null = document.querySelector<HTMLElement>("#app > .shell"),
+): void {
   if (!shell || shell.querySelector("#web-build-identity")) return;
 
   const block = document.createElement("dl");
@@ -36,13 +38,11 @@ function install(): void {
   render();
   onLanguageChange(render);
 
-  const description = shell.querySelector(".description");
-  if (description) description.insertAdjacentElement("afterend", block);
-  else shell.prepend(block);
+  shell.append(block);
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", install, { once: true });
+  document.addEventListener("DOMContentLoaded", () => installWebBuildInfo(), { once: true });
 } else {
-  install();
+  installWebBuildInfo();
 }
