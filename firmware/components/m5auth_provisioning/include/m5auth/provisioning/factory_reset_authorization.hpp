@@ -39,9 +39,15 @@ public:
     }
 
     bool expired(std::uint64_t now_ms) const {
-        // Keep the exact deadline observable to the current request so check()
-        // can return kExpired and terminally cancel it. Authorization is still
-        // unusable at now_ms == deadline_ms_ because check() rejects at >=.
+        return active_ && now_ms >= deadline_ms_;
+    }
+
+    // Background housekeeping clears attempts only after the deadline has
+    // passed. At the exact deadline, operation dispatch still observes the
+    // attempt so check() can return kExpired and terminally cancel it. The
+    // authorization is never usable at the deadline because check() rejects
+    // now_ms >= deadline_ms_.
+    bool past_deadline(std::uint64_t now_ms) const {
         return active_ && now_ms > deadline_ms_;
     }
 
