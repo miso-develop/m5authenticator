@@ -78,25 +78,31 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify immutable ESP-IDF build image contract
         run: python -m unittest tests/esp_idf_image_pin_contract_test.py
-      - name: Build production firmware for Web Flasher with immutable ESP-IDF 5.5.5 image
+      - name: Verify CI supply-chain privilege and workspace boundaries
+        run: python -m unittest tests/ci_supply_chain_boundary_test.py
+      - name: Build production firmware in isolated firmware-only workspace
         if: steps.profile.outputs.production == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python scripts/validate_release.py --require-production
           ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/project" \
-            -w /project/firmware \
-            "$ESP_IDF_IMAGE" \
-            bash -lc 'git config --global --add safe.directory /project && idf.py set-target esp32s3 && idf.py build && idf.py merge-bin -o m5authenticator-merged.bin -f raw'
-          python scripts/verify_firmware_image.py firmware/build/m5authenticator-merged.bin
+          BUILD_ROOT="$RUNNER_TEMP/m5auth-pages-build"
+          python scripts/ci_esp_idf_isolated_build.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --work-root "$BUILD_ROOT" \
+            --image-reference "$ESP_IDF_IMAGE"
+          git diff --exit-code
+          python scripts/verify_firmware_image.py "$BUILD_ROOT/firmware/build/m5authenticator-merged.bin"
           EXACT_RELEASE_ARGS=()
           if [ "$M5AUTH_EXACT_RELEASE" = "true" ]; then
             EXACT_RELEASE_ARGS+=(--exact-release)
           fi
           python scripts/package_firmware.py \
-            --merged-binary firmware/build/m5authenticator-merged.bin \
+            --merged-binary "$BUILD_ROOT/firmware/build/m5authenticator-merged.bin" \
+            --bootloader-binary "$BUILD_ROOT/firmware/build/bootloader/bootloader.bin" \
+            --partition-table-binary "$BUILD_ROOT/firmware/build/partition_table/partition-table.bin" \
+            --app-binary "$BUILD_ROOT/firmware/build/m5authenticator.bin" \
             --output-dir /tmp/m5auth-release \
             --build-commit "$GITHUB_SHA" \
             --require-production \
