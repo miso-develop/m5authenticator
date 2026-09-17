@@ -9,10 +9,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <unistd.h>
 
 #include "cJSON.h"
-#include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -29,6 +27,7 @@
 #include "m5auth/time/trusted_time.hpp"
 #include "m5auth/totp/generator.hpp"
 #include "m5auth/vault_runtime/runtime.hpp"
+#include "usb_protocol_transport.hpp"
 
 #ifndef M5AUTH_BUILD_COMMIT
 #define M5AUTH_BUILD_COMMIT "unknown"
@@ -42,11 +41,9 @@
 #define M5AUTH_TEST_SCREEN_SNAPSHOT 0
 #endif
 
-#if M5AUTH_TEST_SCREEN_SNAPSHOT
-#include "hal/usb_serial_jtag_ll.h"
-#endif
-
 namespace {
+
+m5auth::device_transport::UsbProtocolTransport g_protocol_transport;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -59,6 +56,13 @@ void teardown_transport_session(
     m5auth::provisioning::CanonicalProtocolV2Handler& protocol
 ) {
     protocol.disconnect();
+}
+
+void fail_transport_session(
+    m5auth::provisioning::CanonicalProtocolV2Handler& protocol
+) {
+    teardown_transport_session(protocol);
+    g_protocol_transport.fail_session();
 }
 
 constexpr bool kTimingDiagnosticsEnabled = M5AUTH_TIMING_DIAGNOSTICS == 1;
@@ -305,35 +309,17 @@ bool record_timing(TimingOperation operation, std::int64_t started_us) {
     return true;
 }
 
-void write_response(
+bool write_response(
     const std::string& response,
     TimingOperation operation = TimingOperation::kNone
 ) {
     const bool measure = kTimingDiagnosticsEnabled && operation != TimingOperation::kNone;
     const std::int64_t started_us = measure ? esp_timer_get_time() : 0;
+    const bool write_ok = g_protocol_transport.write_frame(response);
 
-    // stdout is line-buffered and shared with ESP-IDF console logging. Keep the
-    // JSON body and its newline in one logical frame and hold the FILE lock across
-    // write/flush/fsync so another normal stdout writer cannot enter between them.
-    // The USB Serial/JTAG VFS adds its own write lock for stdout/stderr sharing.
-    std::string frame;
-    frame.reserve(response.size() + 1);
-    frame.append(response);
-    frame.push_back('\n');
-
-    ::flockfile(stdout);
-    const std::size_t fwrite_bytes = std::fwrite(frame.data(), 1, frame.size(), stdout);
-    const int fflush_result = std::fflush(stdout);
-    // fflush() drains libc buffering. ESP-IDF's USB Serial/JTAG VFS fsync path
-    // waits for host pickup and emits the terminating ZLP needed when a transfer
-    // lands on an exact 64-byte USB packet boundary.
-    (void)::fsync(STDOUT_FILENO);
-    const int ferror_value = std::ferror(stdout);
-    ::funlockfile(stdout);
-
-    if (!measure || started_us <= 0) return;
+    if (!measure || started_us <= 0) return write_ok;
     const std::int64_t finished_us = esp_timer_get_time();
-    if (finished_us < started_us) return;
+    if (finished_us < started_us) return write_ok;
 
     const auto elapsed_us = static_cast<std::uint64_t>(finished_us - started_us);
     auto& sample = g_timing_diagnostics.response_write;
@@ -342,11 +328,14 @@ void write_response(
     sample.max_us = std::max(sample.max_us, elapsed_us);
     sample.operation = static_cast<std::uint64_t>(operation);
     sample.response_bytes = response.size();
-    sample.fwrite_ok = fwrite_bytes == frame.size() ? 1 : 0;
-    sample.newline_ok = fwrite_bytes == frame.size() && frame.back() == '\n' ? 1 : 0;
-    sample.fflush_ok = fflush_result == 0 ? 1 : 0;
-    sample.ferror_value = ferror_value == 0 ? 0 : 1;
+    // Keep the historical diagnostic JSON keys stable for existing Human tooling.
+    // They now report the equivalent driver-backed frame/TX completion result.
+    sample.fwrite_ok = write_ok ? 1 : 0;
+    sample.newline_ok = write_ok ? 1 : 0;
+    sample.fflush_ok = write_ok ? 1 : 0;
+    sample.ferror_value = write_ok ? 0 : 1;
     persist_timing_diagnostics_to_rtc();
+    return write_ok;
 }
 
 std::string timing_diagnostics_response() {
@@ -403,62 +392,100 @@ std::string timing_diagnostics_response() {
     return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
+bool read_nonnegative_transport_int(cJSON* item, int* value) {
+    if (value == nullptr || !cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) ||
+        item->valuedouble < 0 || item->valuedouble > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    const int parsed = static_cast<int>(item->valuedouble);
+    if (static_cast<double>(parsed) != item->valuedouble) return false;
+    *value = parsed;
+    return true;
+}
+
+struct ProtocolFrameInfo {
+    bool valid{false};
+    bool hello{false};
+    int id{0};
+};
+
+ProtocolFrameInfo classify_protocol_frame(std::string_view line) {
+    const std::string json(line);
+    cJSON* root = cJSON_ParseWithLengthOpts(
+        json.c_str(),
+        json.size() + 1,
+        nullptr,
+        true
+    );
+    if (root == nullptr || !cJSON_IsObject(root)) {
+        if (root != nullptr) cJSON_Delete(root);
+        return {};
+    }
+
+    int version = 0;
+    int id = 0;
+    cJSON* op = cJSON_GetObjectItemCaseSensitive(root, "op");
+    cJSON* params = cJSON_GetObjectItemCaseSensitive(root, "params");
+    const bool valid =
+        read_nonnegative_transport_int(cJSON_GetObjectItemCaseSensitive(root, "v"), &version) &&
+        version == m5auth::session::protocol_v2::kProtocolVersion &&
+        read_nonnegative_transport_int(cJSON_GetObjectItemCaseSensitive(root, "id"), &id) &&
+        cJSON_IsString(op) && op->valuestring != nullptr &&
+        cJSON_IsObject(params);
+    const bool hello = valid && std::strcmp(op->valuestring, "hello") == 0;
+    cJSON_Delete(root);
+    return ProtocolFrameInfo{valid, hello, id};
+}
+
+bool successful_protocol_response_for_id(std::string_view response, int id) {
+    const std::string json(response);
+    cJSON* root = cJSON_ParseWithLengthOpts(
+        json.c_str(),
+        json.size() + 1,
+        nullptr,
+        true
+    );
+    if (root == nullptr || !cJSON_IsObject(root)) {
+        if (root != nullptr) cJSON_Delete(root);
+        return false;
+    }
+    int response_version = 0;
+    int response_id = 0;
+    const bool valid =
+        read_nonnegative_transport_int(
+            cJSON_GetObjectItemCaseSensitive(root, "v"),
+            &response_version
+        ) &&
+        response_version == m5auth::session::protocol_v2::kProtocolVersion &&
+        read_nonnegative_transport_int(
+            cJSON_GetObjectItemCaseSensitive(root, "id"),
+            &response_id
+        ) &&
+        response_id == id &&
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "ok"));
+    cJSON_Delete(root);
+    return valid;
+}
+
+void consume_input_prefix(
+    std::vector<char>& input,
+    std::size_t* buffered_input,
+    std::size_t consumed
+) {
+    if (buffered_input == nullptr || consumed > *buffered_input) return;
+    const std::size_t remaining = *buffered_input - consumed;
+    if (remaining > 0) {
+        std::memmove(input.data(), input.data() + consumed, remaining);
+    }
+    m5auth::vault_runtime::secure_zero(
+        input.data() + remaining,
+        input.size() - remaining
+    );
+    *buffered_input = remaining;
+}
+
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
 constexpr std::string_view kScreenSnapshotOperation = "diagnostics.screen_snapshot";
-constexpr std::int64_t kScreenSnapshotTxBoundaryTimeoutUs = 50 * 1000LL;
-
-bool wait_for_screen_snapshot_tx_fifo_writable() {
-    const std::int64_t started_us = esp_timer_get_time();
-    if (started_us < 0) return false;
-
-    while (true) {
-        if (usb_serial_jtag_ll_txfifo_writable()) return true;
-
-        const std::int64_t now_us = esp_timer_get_time();
-        if (now_us < started_us ||
-            (now_us - started_us) >= kScreenSnapshotTxBoundaryTimeoutUs) {
-            return false;
-        }
-
-        // The deadline is wall-clock based, not tick-count based. Yield one RTOS
-        // tick between polls so other tasks can run while the host consumes the
-        // pending IN packet.
-        vTaskDelay(1);
-    }
-}
-
-bool synchronize_screen_snapshot_response_boundary() {
-    // Receipt of a valid diagnostics request proves that the user-space COM
-    // listener exists. Do not call ESP-IDF's no-driver fsync until a fresh local
-    // deadline has independently observed TX FIFO writability: v5.5.5 fsync uses
-    // the private VFS last_tx_ts as its timeout origin and can otherwise fail
-    // immediately when startup TX happened more than 50 ms earlier.
-    //
-    // Once writable, emit a one-byte newline through stdio. A successful VFS TX
-    // refreshes last_tx_ts; fflush + fsync can then use the normal VFS path to
-    // finish that short transfer. If a race prevents the newline from reaching
-    // the FIFO, last_tx_ts remains stale and fsync fails closed.
-    ::flockfile(stdout);
-    const bool writable = wait_for_screen_snapshot_tx_fifo_writable();
-    const int delimiter_result = writable ? std::fputc('\n', stdout) : EOF;
-    const int delimiter_fflush_result = delimiter_result != EOF
-        ? std::fflush(stdout)
-        : -1;
-    const int delimiter_fsync_result = delimiter_fflush_result == 0
-        ? ::fsync(STDOUT_FILENO)
-        : -1;
-    ::funlockfile(stdout);
-
-    // Do not consult or clear ferror(stdout) here. The FILE error indicator is
-    // sticky historical state, whereas the return values above describe this
-    // fresh boundary attempt. A current fputc/fflush/fsync failure still fails
-    // closed; an unrelated prior stream error is neither erased nor treated as
-    // proof that this fresh boundary failed.
-    return writable &&
-        delimiter_result != EOF &&
-        delimiter_fflush_result == 0 &&
-        delimiter_fsync_result == 0;
-}
 
 enum class ScreenSnapshotRequestKind {
     kNotDiagnostic,
@@ -492,10 +519,6 @@ ScreenSnapshotRequestParse parse_screen_snapshot_request(std::string_view line) 
     const bool raw_intent_hint = screen_snapshot_intent_hint(line);
     if (!raw_intent_hint) return {};
 
-    // Only diagnostic candidates are copied/parsed here. Ordinary Protocol-v2
-    // requests, which may contain sensitive payloads, never enter this parser.
-    // The explicit NUL-terminated copy avoids cJSON version-dependent end-pointer
-    // behavior for non-NUL-terminated string_view buffers.
     const std::string diagnostic_json(line);
     cJSON* root = cJSON_ParseWithLengthOpts(
         diagnostic_json.c_str(),
@@ -696,6 +719,10 @@ extern "C" void app_main(void) {
         M5AUTH_BUILD_COMMIT
     );
 
+    if (g_protocol_transport.install() != ESP_OK) {
+        return;
+    }
+
     std::recursive_mutex runtime_access_mutex;
 
     m5auth::registration::Store registration;
@@ -764,82 +791,110 @@ extern "C" void app_main(void) {
     while (true) {
         protocol.housekeeping(monotonic_ms());
 
-        if (discard_oversized_input) {
-            if (std::fgets(
-                    input.data(),
-                    static_cast<int>(input.size()),
-                    stdin
-                ) == nullptr) {
-                if (!usb_serial_jtag_is_connected()) {
-                    teardown_transport_session(protocol);
-                    discard_oversized_input = false;
-                }
-                m5auth::vault_runtime::secure_zero(input.data(), input.size());
-                std::clearerr(stdin);
-                vTaskDelay(pdMS_TO_TICKS(20));
-                continue;
-            }
-            const std::size_t discarded_length = std::strlen(input.data());
-            const bool discarded_complete_line =
-                discarded_length > 0 && input[discarded_length - 1] == '\n';
+        if (!g_protocol_transport.connected()) {
+            teardown_transport_session(protocol);
+            g_protocol_transport.reset_pre_handshake();
             m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            std::clearerr(stdin);
-            if (discarded_complete_line) {
-                discard_oversized_input = false;
-            }
-            continue;
-        }
-
-        if (std::fgets(
-                input.data() + buffered_input,
-                static_cast<int>(input.size() - buffered_input),
-                stdin
-            ) == nullptr) {
-            if (!usb_serial_jtag_is_connected()) {
-                teardown_transport_session(protocol);
-                m5auth::vault_runtime::secure_zero(input.data(), input.size());
-                buffered_input = 0;
-            }
-            std::clearerr(stdin);
+            buffered_input = 0;
+            discard_oversized_input = false;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        buffered_input += std::strlen(input.data() + buffered_input);
-        const bool complete_line =
-            buffered_input > 0 && input[buffered_input - 1] == '\n';
-        if (!complete_line) {
-            std::clearerr(stdin);
-            if (buffered_input > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+        if (discard_oversized_input) {
+            const int bytes_read = g_protocol_transport.read(input.data(), input.size());
+            if (bytes_read < 0) {
+                fail_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            if (bytes_read == 0) continue;
+
+            const std::size_t received = static_cast<std::size_t>(bytes_read);
+            const auto newline = std::find(input.begin(), input.begin() + received, '\n');
+            if (newline == input.begin() + received) {
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                continue;
+            }
+
+            const std::size_t consumed =
+                static_cast<std::size_t>(newline - input.begin()) + 1;
+            buffered_input = received;
+            consume_input_prefix(input, &buffered_input, consumed);
+            discard_oversized_input = false;
+            continue;
+        }
+
+        const auto newline = std::find(
+            input.begin(),
+            input.begin() + buffered_input,
+            '\n'
+        );
+        if (newline == input.begin() + buffered_input) {
+            if (buffered_input >= input.size()) {
+                const bool strict = g_protocol_transport.strict_post_handshake();
                 teardown_transport_session(protocol);
+                if (!write_response(
+                        m5auth::provisioning::canonical_v2_message_too_large_response()
+                    )) {
+                    fail_transport_session(protocol);
+                } else if (strict) {
+                    g_protocol_transport.fail_session();
+                }
                 m5auth::vault_runtime::secure_zero(input.data(), input.size());
                 buffered_input = 0;
                 discard_oversized_input = true;
-                write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
-            } else {
-                // USB Serial/JTAG VFS reads are non-blocking. A valid JSON line can
-                // arrive in multiple reads, so keep the bounded fragment in RAM
-                // until the newline arrives. Disconnect handling above wipes it.
-                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+
+            const int bytes_read = g_protocol_transport.read(
+                input.data() + buffered_input,
+                input.size() - buffered_input
+            );
+            if (bytes_read < 0) {
+                fail_transport_session(protocol);
+                m5auth::vault_runtime::secure_zero(input.data(), input.size());
+                buffered_input = 0;
+                continue;
+            }
+            if (bytes_read == 0) continue;
+            buffered_input += static_cast<std::size_t>(bytes_read);
+            continue;
+        }
+
+        const std::size_t line_bytes =
+            static_cast<std::size_t>(newline - input.begin());
+        std::size_t length = line_bytes;
+        while (length > 0 && input[length - 1] == '\r') --length;
+        const std::size_t consumed = line_bytes + 1;
+
+        if (length > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
+            const bool strict = g_protocol_transport.strict_post_handshake();
+            teardown_transport_session(protocol);
+            consume_input_prefix(input, &buffered_input, consumed);
+            if (!write_response(
+                    m5auth::provisioning::canonical_v2_message_too_large_response()
+                )) {
+                fail_transport_session(protocol);
+            } else if (strict) {
+                g_protocol_transport.fail_session();
             }
             continue;
         }
 
-        std::size_t length = buffered_input;
-        while (length > 0 && (input[length - 1] == '\n' || input[length - 1] == '\r')) --length;
-        if (length > m5auth::provisioning::kMaxCanonicalV2MessageBytes) {
-            teardown_transport_session(protocol);
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            buffered_input = 0;
-            write_response(m5auth::provisioning::canonical_v2_message_too_large_response());
+        const std::string_view request(input.data(), length);
+        const ProtocolFrameInfo frame_info = classify_protocol_frame(request);
+        if (g_protocol_transport.faulted() && !(frame_info.valid && frame_info.hello)) {
+            consume_input_prefix(input, &buffered_input, consumed);
             continue;
         }
-        const std::string_view request(input.data(), length);
 
         if (is_timing_diagnostics_query(request)) {
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            buffered_input = 0;
-            write_response(timing_diagnostics_response());
+            consume_input_prefix(input, &buffered_input, consumed);
+            if (!write_response(timing_diagnostics_response())) {
+                fail_transport_session(protocol);
+            }
             continue;
         }
 #if M5AUTH_TEST_SCREEN_SNAPSHOT
@@ -859,16 +914,10 @@ extern "C" void app_main(void) {
                     response = screen_snapshot_response(snapshot_request.id, snapshot);
                 }
             }
-            m5auth::vault_runtime::secure_zero(input.data(), input.size());
-            buffered_input = 0;
-            if (!synchronize_screen_snapshot_response_boundary()) {
-                // Fail closed without emitting the current JSON frame. Returning
-                // stops this protocol task; the Device UI/runtime tasks remain,
-                // while the Human helper times out rather than accepting an
-                // ambiguously framed response.
-                return;
+            consume_input_prefix(input, &buffered_input, consumed);
+            if (!write_response(response)) {
+                fail_transport_session(protocol);
             }
-            write_response(response);
             continue;
         }
 #endif
@@ -878,11 +927,16 @@ extern "C" void app_main(void) {
         const std::int64_t timing_started_us = timing_operation == TimingOperation::kNone
             ? 0
             : esp_timer_get_time();
+        const bool strict_before = g_protocol_transport.strict_post_handshake();
 
         const std::string response = protocol.handle_line(
             request,
             monotonic_ms()
         );
+        const bool establishes_handshake =
+            frame_info.valid &&
+            frame_info.hello &&
+            successful_protocol_response_for_id(response, frame_info.id);
 
         const bool timing_recorded = kTimingDiagnosticsEnabled
             ? record_timing(timing_operation, timing_started_us)
@@ -891,8 +945,16 @@ extern "C" void app_main(void) {
             persist_timing_diagnostics_to_rtc();
         }
 
-        m5auth::vault_runtime::secure_zero(input.data(), input.size());
-        buffered_input = 0;
-        write_response(response, timing_operation);
+        consume_input_prefix(input, &buffered_input, consumed);
+        if (!write_response(response, timing_operation)) {
+            fail_transport_session(protocol);
+            continue;
+        }
+
+        if (establishes_handshake) {
+            g_protocol_transport.establish_handshake();
+        } else if (strict_before && !frame_info.valid) {
+            g_protocol_transport.fail_session();
+        }
     }
 }
