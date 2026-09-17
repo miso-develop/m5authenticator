@@ -6,6 +6,7 @@ import { installWebBuildInfo } from "../../src/web-build-info";
 
 const GEOMETRY_EPSILON_PX = 0.5;
 const ROUTE_WIDTH_PX = 1280;
+const FIRMWARE_SMOKE_BUILD_COMMIT = "fedcba9876543210";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -137,16 +138,20 @@ async function verifyProductionFirmwareGeometry(): Promise<void> {
 
     frameWindow.__m5authFirmwareLayoutSmoke!.resume();
     await waitUntil(
-      () => status.textContent?.includes("Loading and validating pinned firmware target") !== true,
-      "Production Firmware route did not settle actual target resolution",
+      () => status.querySelectorAll("button").length === 2 && buildIdentity.textContent?.includes(FIRMWARE_SMOKE_BUILD_COMMIT) === true,
+      "Production Firmware route did not reach the ready Flash/Update UI through pinned target resolution",
     );
     flushLayout(doc);
+
+    assert(status.textContent?.includes("Firmware target unavailable") !== true, "Firmware layout smoke must exercise the successful target-resolution path");
+    assert(status.querySelectorAll("button").length === 2, "Successful Firmware resolution must render First install and Update controls");
+    assert(buildIdentity.textContent?.includes(FIRMWARE_SMOKE_BUILD_COMMIT) === true, "Successful Firmware resolution must display the pinned fixture build identity");
 
     const afterShell = shell.getBoundingClientRect();
     const afterNav = nav.getBoundingClientRect();
     assert(getComputedStyle(doc.documentElement).scrollbarGutter.includes("stable"), "Firmware route must use the shared stable scrollbar policy");
-    assert(near(beforeShell.left, afterShell.left) && near(beforeShell.width, afterShell.width), "Production Firmware shell geometry shifted after asynchronous target resolution");
-    assert(near(beforeNav.left, afterNav.left) && near(beforeNav.width, afterNav.width), "Production Firmware top navigation geometry shifted after asynchronous target resolution");
+    assert(near(beforeShell.left, afterShell.left) && near(beforeShell.width, afterShell.width), "Production Firmware shell geometry shifted after successful asynchronous target resolution");
+    assert(near(beforeNav.left, afterNav.left) && near(beforeNav.width, afterNav.width), "Production Firmware top navigation geometry shifted after successful asynchronous target resolution");
   } finally {
     frame.remove();
   }
