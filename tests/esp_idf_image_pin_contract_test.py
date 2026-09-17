@@ -19,6 +19,7 @@ BUILD_WORKFLOWS = (
     ROOT / ".github" / "workflows" / "issue117-screen-snapshot.yml",
 )
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
+PACKAGE_SCRIPT = ROOT / "scripts" / "package_firmware.py"
 
 
 class EspIdfImagePinContractTest(unittest.TestCase):
@@ -56,6 +57,21 @@ class EspIdfImagePinContractTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             with self.subTest(workflow=path.name):
                 self.assertEqual(mutable_reference.findall(text), [])
+
+    def test_release_package_records_exact_build_image_provenance(self) -> None:
+        text = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("import esp_idf_build_image", text)
+        self.assertIn('"esp_idf": esp_idf_build_image.provenance()', text)
+        provenance = esp_idf_build_image.provenance()
+        self.assertEqual(provenance["version"], "5.5.5")
+        self.assertEqual(provenance["repository"], "espressif/idf")
+        self.assertEqual(provenance["tag"], "v5.5.5")
+        self.assertEqual(provenance["index_digest"], esp_idf_build_image.ESP_IDF_IMAGE_INDEX_DIGEST)
+        self.assertEqual(
+            provenance["linux_amd64_manifest_digest"],
+            esp_idf_build_image.ESP_IDF_IMAGE_LINUX_AMD64_MANIFEST_DIGEST,
+        )
+        self.assertEqual(provenance["reference"], esp_idf_build_image.ESP_IDF_IMAGE_REFERENCE)
 
     def test_security_workflow_enforces_image_pin_contract(self) -> None:
         text = SECURITY_WORKFLOW.read_text(encoding="utf-8")
