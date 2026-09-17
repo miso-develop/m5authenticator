@@ -29,6 +29,7 @@ app.innerHTML = `
 const shell = document.querySelector<HTMLElement>("#flash-app > .shell");
 const status = document.querySelector<HTMLElement>("#flash-status");
 if (!shell || !status) throw new Error("Firmware flash UI is incomplete");
+const statusElement = status;
 
 const updateBuildInfo = installFirmwareBuildInfo(shell);
 const layoutSmokeGate = createLayoutSmokeGate();
@@ -40,12 +41,12 @@ if (!flashEnabled) {
   const explanation = document.createElement("p");
   explanation.className = "hint";
   explanation.textContent = "The V1 Encrypted Vault / RAM-only VMK release contract is active, but production firmware publishing remains fail-closed until the final V1 security closeout explicitly enables release eligibility.";
-  status.append(heading, explanation);
+  statusElement.append(heading, explanation);
 } else {
   const loading = document.createElement("p");
   loading.className = "notice";
   loading.textContent = "Loading and validating pinned firmware target…";
-  status.append(loading);
+  statusElement.append(loading);
 
   void settlePinnedFirmwareTarget();
 }
@@ -55,7 +56,7 @@ async function settlePinnedFirmwareTarget(): Promise<void> {
     const target = await loadPinnedFirmwareTarget(targetMetadataPath);
     await layoutSmokeGate;
     updateBuildInfo({ status: "ready", identity: target.identity });
-    status.replaceChildren(
+    statusElement.replaceChildren(
       firstInstallChoice(
         "First install — erase device",
         "Use only for a new device or an intentional clean installation. This path erases flash user state before installing the displayed firmware build.",
@@ -75,7 +76,7 @@ async function settlePinnedFirmwareTarget(): Promise<void> {
     const explanation = document.createElement("p");
     explanation.className = "notice";
     explanation.textContent = error instanceof Error ? error.message : "Firmware target validation failed";
-    status.replaceChildren(heading, explanation);
+    statusElement.replaceChildren(heading, explanation);
   }
 }
 
