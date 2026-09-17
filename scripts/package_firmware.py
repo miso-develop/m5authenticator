@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import esp_idf_build_image
 from validate_release import ReleaseValidationError, validate_release
 
 UPDATE_BOOTLOADER_OFFSET = 0x000000
@@ -254,6 +255,9 @@ def package_firmware(
             "post_update_state": profile["post_update_state"],
             "build_commit": build_commit,
             "exact_release": exact_release,
+            "build_environment": {
+                "esp_idf": esp_idf_build_image.provenance(),
+            },
             "production_release_allowed": profile["production_release_allowed"],
             "flash_offset": 0,
             "merged_image_bytes": merged_size,
