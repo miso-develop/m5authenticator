@@ -125,6 +125,10 @@ h3 { margin-top: 24px; }
   border-top: 1px solid #e5e5e5;
 }
 
+.security-subsection[data-security-subsection="change-passphrase"] {
+  margin-top: 48px;
+}
+
 .security-subsection > h3 {
   margin-top: 0;
 }
@@ -458,4 +462,8 @@ button:disabled, input:disabled, select:disabled {
   .shell { padding: 24px; }
   .status div, .build-identity div { grid-template-columns: 1fr; gap: 4px; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
+
+  .security-subsection[data-security-subsection="change-passphrase"] {
+    margin-top: 40px;
+  }
 }
