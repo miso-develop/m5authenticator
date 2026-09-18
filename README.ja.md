@@ -2,6 +2,8 @@
 
 [English](README.md) | **日本語**
 
+![M5Authenticatorの概要](docs/assets/m5authenticator-overview.jpg)
+
 M5Authenticatorは、**M5StickS3**で使うスタンドアロンのTOTP認証器です。TOTP認証情報はDevice上の暗号化Vaultに保存し、Vault Master Key（VMK）はUnlock中のみRAMに保持します。Provisioning、アカウント管理、Firmware更新、Recoveryには、ローカル処理を前提としたWebアプリを使用します。
 
 最新安定版の**Desktop Chrome**とWeb Serialで、Hosted Webアプリを利用できます。
