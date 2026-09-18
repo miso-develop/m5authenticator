@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SEMVER_TAG_RE = re.compile(
+    r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
 
 
 def normalize_sha(value: str, label: str) -> str:
@@ -17,6 +20,18 @@ def normalize_sha(value: str, label: str) -> str:
     if not SHA_RE.fullmatch(value):
         raise ValueError(f"{label} must be a full 40-character lowercase Git SHA")
     return value
+
+
+def require_requested_tag(requested_tag: str, firmware_version: str) -> str:
+    requested = requested_tag.strip()
+    if not SEMVER_TAG_RE.fullmatch(requested):
+        raise ValueError("requested tag must use exact vX.Y.Z SemVer syntax")
+    expected = f"v{firmware_version.strip()}"
+    if requested != expected:
+        raise ValueError(
+            f"requested tag {requested} does not match release profile {expected}"
+        )
+    return requested
 
 
 def require_exact_main(source_sha: str, main_sha: str) -> str:
@@ -27,6 +42,15 @@ def require_exact_main(source_sha: str, main_sha: str) -> str:
             f"release source {source} is not the exact current protected-main HEAD {main}"
         )
     return source
+
+
+def require_existing_tag_at_source(tag_sha: str, source_sha: str) -> None:
+    tag = normalize_sha(tag_sha, "tag SHA")
+    source = normalize_sha(source_sha, "source SHA")
+    if tag != source:
+        raise ValueError(
+            f"existing release tag resolves to {tag}, not exact protected-main source {source}"
+        )
 
 
 def required_status_checks(main_rules_payload: object) -> list[tuple[str, int | None]]:
@@ -111,8 +135,8 @@ def require_protected_main_checks(
             integration_id,
             check_runs_payload,
         )
-        # An integration-bound ruleset check must come from that exact GitHub App.
-        # For an unbound context, GitHub also permits a classic commit status.
+        # Integration-bound rules must come from that exact GitHub App.
+        # Unbound contexts may also be satisfied by a classic commit status.
         if not satisfied and integration_id is None:
             satisfied = _successful_commit_status(context, statuses_payload)
         if not satisfied:
@@ -129,24 +153,32 @@ def require_protected_main_checks(
 def authorize_release(
     source_sha: str,
     main_sha: str,
+    requested_tag: str,
+    firmware_version: str,
+    tag_sha: str,
     main_rules_payload: object,
     check_runs_payload: dict[str, Any],
     statuses_payload: dict[str, Any],
 ) -> str:
+    requested = require_requested_tag(requested_tag, firmware_version)
     source = require_exact_main(source_sha, main_sha)
+    require_existing_tag_at_source(tag_sha, source)
     require_protected_main_checks(
         source,
         main_rules_payload,
         check_runs_payload,
         statuses_payload,
     )
-    return source
+    return requested
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--main-sha", required=True)
+    parser.add_argument("--requested-tag", required=True)
+    parser.add_argument("--firmware-version", required=True)
+    parser.add_argument("--tag-sha", required=True)
     parser.add_argument("--main-rules", type=Path, required=True)
     parser.add_argument("--check-runs", type=Path, required=True)
     parser.add_argument("--statuses", type=Path, required=True)
@@ -156,9 +188,12 @@ def main() -> int:
         main_rules_payload = json.loads(args.main_rules.read_text(encoding="utf-8"))
         check_runs_payload = json.loads(args.check_runs.read_text(encoding="utf-8"))
         statuses_payload = json.loads(args.statuses.read_text(encoding="utf-8"))
-        source = authorize_release(
+        requested = authorize_release(
             args.source_sha,
             args.main_sha,
+            args.requested_tag,
+            args.firmware_version,
+            args.tag_sha,
             main_rules_payload,
             check_runs_payload,
             statuses_payload,
@@ -167,7 +202,7 @@ def main() -> int:
         print(f"Release authorization failed: {exc}")
         return 1
 
-    print(f"Release authorization passed for exact protected-main HEAD {source}")
+    print(requested)
     return 0
 
 
