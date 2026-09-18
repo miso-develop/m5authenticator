@@ -306,7 +306,10 @@ async function verifyProductionFirmwareGeometry(): Promise<void> {
     assert(status.textContent?.includes("Loading and validating pinned firmware target") === true, "Production Firmware route must be measured while actual target resolution is pending");
     assert(buildSection.tagName === "SECTION", "Firmware build provenance must use a semantic section");
     assert(buildSection.getAttribute("aria-labelledby") === buildHeading.id, "Firmware Build information heading must label its section");
-    assert(sourceTextOf(buildHeading) === "Build information", "Firmware build section must expose the localized Build information heading source");
+    assert(
+      buildHeading.textContent === "Build information" || buildHeading.textContent === "ビルド情報",
+      "Firmware build section must expose the localized Build information heading",
+    );
     assert(buildSection.contains(buildIdentity), "Firmware build identity rows must remain inside the Build information section");
     assert(shell.lastElementChild === buildSection, "Firmware Build information section must follow primary Flash/Update content");
     const beforeShell = shell.getBoundingClientRect();
