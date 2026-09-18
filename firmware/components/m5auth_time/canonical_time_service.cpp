@@ -43,6 +43,7 @@ const char* sync_result_code(SyncResult result) {
         case SyncResult::kLocked: return "invalid_state";
         case SyncResult::kNotDue: return "time_sync_not_due";
         case SyncResult::kInvalidTime: return "invalid_time";
+        case SyncResult::kRejectedJump: return "time_jump_rejected";
         case SyncResult::kNetworkUnavailable: return "network_unavailable";
         case SyncResult::kSyncFailed: return "time_sync_failed";
         case SyncResult::kInternalError: return "time_internal_error";
@@ -190,11 +191,15 @@ SyncResult TimeService::connect_and_sync(
     // All NTP callers hold sync_mutex_ across this method. Security boundaries
     // use the same mutex and cannot return while an earlier credential-bearing
     // network operation still retains Wi-Fi material or can update the anchor.
-    clock_.mark_synchronized(
-        static_cast<std::uint64_t>(now.tv_sec),
-        esp_timer_get_time(),
-        Source::kNtp
-    );
+    // A current-boot accepted anchor also constrains unauthenticated network
+    // time to the bounded monotonic projection defined by Decision #159.
+    const std::int64_t monotonic_us = esp_timer_get_time();
+    if (!clock_.accept_ntp_sample(
+            static_cast<std::uint64_t>(now.tv_sec),
+            monotonic_us
+        )) {
+        return SyncResult::kRejectedJump;
+    }
     return SyncResult::kOk;
 }
 
