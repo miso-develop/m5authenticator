@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { CanonicalDeviceManagement } from "./canonical-management";
+import {
+  CanonicalDeviceManagement,
+  FactoryResetCancelledError,
+  FactoryResetExpiredError,
+} from "./canonical-management";
 import { CanonicalRecoveryResetController } from "./canonical-recovery-reset";
 import type { CanonicalHelloData, CanonicalWireOperation } from "./canonical-protocol-v2";
 import {
@@ -37,8 +41,8 @@ class MemoryStore {
   private state: BrowserCanonicalState | null;
   failNextDelete = false;
 
-  constructor(initial: BrowserCanonicalState) {
-    this.state = sanitizeBrowserCanonicalState(initial);
+  constructor(initial: BrowserCanonicalState | null) {
+    this.state = initial ? sanitizeBrowserCanonicalState(initial) : null;
   }
 
   async get(vaultId: Uint8Array): Promise<BrowserCanonicalState | null> {
@@ -160,16 +164,56 @@ class MemoryResetIntents {
 
 class ResetDevice implements CanonicalV2Transport {
   resetCommitted = false;
+  resetCanceled = false;
+  commitCalls = 0;
+  readonly operations: CanonicalWireOperation[] = [];
+  private readonly attemptId = bytes(16, 0xb1);
 
-  constructor(private readonly state: BrowserCanonicalState) {}
+  constructor(
+    private readonly state: BrowserCanonicalState,
+    private readonly options: {
+      capability?: unknown;
+      expiresInMs?: number;
+      status?: "awaiting_confirmation" | "confirmed";
+    } = {},
+  ) {}
 
-  async requestCanonicalV2(op: CanonicalWireOperation): Promise<Record<string, unknown>> {
-    if (op === "hello") return this.resetCommitted ? cleanHello() : provisionedHello(this.state);
+  async requestCanonicalV2(
+    op: CanonicalWireOperation,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    this.operations.push(op);
+    if (op === "hello") {
+      return this.resetCommitted
+        ? cleanHello()
+        : provisionedHello(this.state, this.options.capability ?? true);
+    }
     if (op === "time.status") return readyTime();
-    if (op === "factory_reset") {
+    if (op === "factory_reset.begin") {
+      return {
+        attempt_id: encodeBase64UrlCanonical(this.attemptId),
+        expires_in_ms: this.options.expiresInMs ?? 30_000,
+      };
+    }
+    if (op === "factory_reset.status") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      return { state: this.options.status ?? "confirmed" };
+    }
+    if (op === "factory_reset.cancel") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      this.resetCanceled = true;
+      return {};
+    }
+    if (op === "factory_reset.commit") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      this.commitCalls += 1;
+      if ((this.options.status ?? "confirmed") !== "confirmed") {
+        throw new Error("commit before confirmation");
+      }
       this.resetCommitted = true;
       return {};
     }
+    if (op === "factory_reset") throw new Error("legacy Factory Reset must never be used");
     throw new Error(`unexpected canonical operation ${op}`);
   }
 
@@ -226,6 +270,7 @@ function typedProvisionedHello(state: BrowserCanonicalState): CanonicalHelloData
     state: "unlocked",
     storageReady: true,
     recoveryResetRequired: false,
+    factoryResetPresenceRequired: true,
     vaultPresent: true,
     vaultId: state.vault.vaultId.slice(),
     generation: state.vault.generation,
@@ -258,7 +303,10 @@ function typedRecoveryHello(state: BrowserCanonicalState): CanonicalHelloData {
   };
 }
 
-function provisionedHello(state: BrowserCanonicalState): Record<string, unknown> {
+function provisionedHello(
+  state: BrowserCanonicalState,
+  factoryResetPresenceRequired: unknown = true,
+): Record<string, unknown> {
   return {
     device: "M5StickS3",
     device_id: deviceId,
@@ -270,6 +318,7 @@ function provisionedHello(state: BrowserCanonicalState): Record<string, unknown>
     state: "unlocked",
     storage_ready: true,
     recovery_reset_required: false,
+    factory_reset_presence_required: factoryResetPresenceRequired,
     vault_present: true,
     vault_id: encodeBase64UrlCanonical(state.vault.vaultId),
     generation: state.vault.generation.toString(10),
@@ -336,6 +385,7 @@ function typedCleanHello(): CanonicalHelloData {
     state: "unprovisioned",
     storageReady: false,
     recoveryResetRequired: false,
+    factoryResetPresenceRequired: true,
     vaultPresent: false,
     vaultId: null,
     generation: 0n,
@@ -392,6 +442,146 @@ async function fixture(): Promise<{ state: BrowserCanonicalState; vmk: Uint8Arra
     plaintext.credentials[0]!.secret.fill(0);
   }
 }
+
+describe("presence-gated healthy Factory Reset", () => {
+  it("uses begin/status/commit and never sends the legacy one-shot operation", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const journal = new MemoryJournal();
+      const resetIntents = new MemoryResetIntents();
+      const device = new ResetDevice(state);
+      const manager = new CanonicalDeviceManagement(
+        device,
+        typedProvisionedHello(state),
+        store.asIndexedDb(),
+        journal.asIndexedDb(),
+        resetIntents.asIndexedDb(),
+      );
+      await manager.initialize();
+
+      await manager.factoryReset({ pollIntervalMs: 0 });
+
+      expect(device.operations).toContain("factory_reset.begin");
+      expect(device.operations).toContain("factory_reset.status");
+      expect(device.operations).toContain("factory_reset.commit");
+      expect(device.operations).not.toContain("factory_reset");
+      expect(device.commitCalls).toBe(1);
+      expect(store.current()).toBeNull();
+      expect(journal.current()).toBeNull();
+      expect(resetIntents.current()).toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("refuses missing/false capability without beginning an unsafe reset", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      for (const capability of [false, undefined] as const) {
+        const store = new MemoryStore(state);
+        const device = new ResetDevice(state, { capability });
+        const hello = { ...typedProvisionedHello(state), factoryResetPresenceRequired: capability };
+        const manager = new CanonicalDeviceManagement(device, hello, store.asIndexedDb());
+        await manager.initialize();
+
+        await expect(manager.factoryReset({ pollIntervalMs: 0 })).rejects.toThrow(/requires updated firmware/i);
+        expect(device.operations).not.toContain("factory_reset.begin");
+        expect(device.operations).not.toContain("factory_reset");
+        expect(store.current()).not.toBeNull();
+      }
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("fails closed on malformed capability metadata before reset begins", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const device = new ResetDevice(state, { capability: "true" });
+      const manager = new CanonicalDeviceManagement(device, typedProvisionedHello(state), store.asIndexedDb());
+      await expect(manager.factoryReset({ pollIntervalMs: 0 })).rejects.toThrow(/incompatible canonical metadata/);
+      expect(device.operations).not.toContain("factory_reset.begin");
+      expect(store.current()).not.toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("preserves active-writer authorization before begin", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const emptyStore = new MemoryStore(null);
+      const device = new ResetDevice(state);
+      const manager = new CanonicalDeviceManagement(device, typedProvisionedHello(state), emptyStore.asIndexedDb());
+      await expect(manager.factoryReset({ pollIntervalMs: 0 })).rejects.toThrow(/active Trusted Browser/i);
+      expect(device.operations).not.toContain("factory_reset.begin");
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("best-effort cancels a pending attempt on explicit browser cancellation", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const journal = new MemoryJournal();
+      const resetIntents = new MemoryResetIntents();
+      const device = new ResetDevice(state, { status: "awaiting_confirmation" });
+      const manager = new CanonicalDeviceManagement(
+        device,
+        typedProvisionedHello(state),
+        store.asIndexedDb(),
+        journal.asIndexedDb(),
+        resetIntents.asIndexedDb(),
+      );
+      await manager.initialize();
+      const abort = new AbortController();
+
+      await expect(manager.factoryReset({
+        pollIntervalMs: 0,
+        signal: abort.signal,
+        onAwaitingConfirmation: () => abort.abort(),
+      })).rejects.toThrow(FactoryResetCancelledError);
+
+      expect(device.resetCanceled).toBe(true);
+      expect(device.commitCalls).toBe(0);
+      expect(store.current()).not.toBeNull();
+      expect(journal.current()).toBeNull();
+      expect(resetIntents.current()).toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("expires without commit and leaves browser canonical state intact", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const journal = new MemoryJournal();
+      const resetIntents = new MemoryResetIntents();
+      const device = new ResetDevice(state, { status: "awaiting_confirmation", expiresInMs: 2 });
+      const manager = new CanonicalDeviceManagement(
+        device,
+        typedProvisionedHello(state),
+        store.asIndexedDb(),
+        journal.asIndexedDb(),
+        resetIntents.asIndexedDb(),
+      );
+      await manager.initialize();
+
+      await expect(manager.factoryReset({ pollIntervalMs: 1 })).rejects.toThrow(FactoryResetExpiredError);
+      expect(device.resetCanceled).toBe(true);
+      expect(device.commitCalls).toBe(0);
+      expect(store.current()).not.toBeNull();
+      expect(journal.current()).toBeNull();
+      expect(resetIntents.current()).toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+});
 
 describe("Factory Reset browser cleanup reconciliation", () => {
   it("retains durable reset intent after local delete failure and completes cleanup on clean reconnect", async () => {
