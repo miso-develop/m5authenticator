@@ -350,6 +350,19 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
       return { nav, shell };
     });
 
+    const provisioningDoc = requiredFrameDocument(frames[0]!);
+    const provisioningShell = required<HTMLElement>(provisioningDoc, "#app > .shell");
+    const productionBuildSection = required<HTMLElement>(provisioningDoc, "#web-build-info-section");
+    const productionPanels = Array.from(provisioningShell.querySelectorAll<HTMLElement>(":scope > section.panel"));
+    assert(productionPanels.length >= 7, "Production Provisioning route must keep all major peer sections on the shared panel contract");
+    assert(provisioningShell.lastElementChild === productionBuildSection, "Production Web Build information section must remain the final Provisioning peer section");
+    for (const [index, section] of productionPanels.entries()) {
+      const style = getComputedStyle(section);
+      assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `Production Provisioning peer section ${index + 1} must retain a visible top divider`);
+      assert(section.querySelector("h2") !== null, `Production Provisioning peer section ${index + 1} must retain a section heading`);
+      assert(section.querySelector(":scope > hr") === null, `Production Provisioning peer section ${index + 1} must not duplicate the shared divider with an hr`);
+    }
+
     const baseline = geometries[0]!;
     for (let index = 1; index < geometries.length; index += 1) {
       const current = geometries[index]!;
