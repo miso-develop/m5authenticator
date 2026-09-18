@@ -41,6 +41,7 @@ function response(id: number, data: Record<string, unknown> = {}): string {
 function makeMockPort(startup: string, responses: MockResponse[]) {
   let readableController: ReadableStreamDefaultController<Uint8Array> | undefined;
   const writes: string[] = [];
+  const closeEvents: string[] = [];
 
   const readable = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -74,10 +75,16 @@ function makeMockPort(startup: string, responses: MockResponse[]) {
     readable,
     writable,
     open: vi.fn(async () => undefined),
-    close: vi.fn(async () => undefined),
+    setSignals: vi.fn(async (signals: { requestToSend?: boolean; dataTerminalReady?: boolean }) => {
+      if ("requestToSend" in signals) closeEvents.push(`rts:${String(signals.requestToSend)}`);
+      if ("dataTerminalReady" in signals) closeEvents.push(`dtr:${String(signals.dataTerminalReady)}`);
+    }),
+    close: vi.fn(async () => {
+      closeEvents.push("close");
+    }),
   };
 
-  return { port, writes };
+  return { port, writes, closeEvents };
 }
 
 function installSerial(port: ReturnType<typeof makeMockPort>["port"]): void {
@@ -95,6 +102,57 @@ function parsedWrites(writes: string[]): Array<Record<string, unknown>> {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe("SerialSession USB Serial/JTAG close boundary", () => {
+  it("deasserts RTS before DTR in separate operations before closing the port", async () => {
+    const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    await session.close();
+
+    expect(port.setSignals).toHaveBeenNthCalledWith(1, { requestToSend: false });
+    expect(port.setSignals).toHaveBeenNthCalledWith(2, { dataTerminalReady: false });
+    expect(closeEvents).toEqual(["rts:false", "dtr:false", "close"]);
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not deassert DTR when RTS deassertion cannot be established", async () => {
+    const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    port.setSignals.mockImplementationOnce(async () => {
+      closeEvents.push("rts:failed");
+      throw new Error("synthetic RTS failure");
+    });
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    await session.close();
+
+    expect(port.setSignals).toHaveBeenCalledTimes(1);
+    expect(port.setSignals).toHaveBeenCalledWith({ requestToSend: false });
+    expect(closeEvents).toEqual(["rts:failed", "close"]);
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  it("still closes after DTR deassertion fails once RTS is safely deasserted", async () => {
+    const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    port.setSignals.mockImplementationOnce(async (signals) => {
+      closeEvents.push(`rts:${String(signals.requestToSend)}`);
+    });
+    port.setSignals.mockImplementationOnce(async () => {
+      closeEvents.push("dtr:failed");
+      throw new Error("synthetic DTR failure");
+    });
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    await session.close();
+
+    expect(port.setSignals).toHaveBeenCalledTimes(2);
+    expect(closeEvents).toEqual(["rts:false", "dtr:failed", "close"]);
+    expect(port.close).toHaveBeenCalledOnce();
+  });
 });
 
 describe("SerialSession initial Protocol 2 synchronization", () => {
