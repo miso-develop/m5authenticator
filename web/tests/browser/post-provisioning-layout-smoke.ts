@@ -385,7 +385,16 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
 function createSnapshot(
   provisioned: boolean,
   factoryResetPresenceRequired = false,
+  overrides: {
+    state?: CanonicalDeviceSnapshot["hello"]["state"];
+    ownership?: CanonicalDeviceSnapshot["browserOwnership"];
+    readiness?: CanonicalDeviceSnapshot["time"]["readiness"];
+  } = {},
 ): CanonicalDeviceSnapshot {
+  const state = overrides.state ?? (provisioned ? "unlocked" : "unprovisioned");
+  const ownership = overrides.ownership ?? (provisioned ? "active" : "none");
+  const readiness = overrides.readiness ?? (provisioned ? "ready" : "not_synced");
+  const ready = readiness === "ready";
   return {
     hello: {
       device: "M5StickS3",
@@ -396,7 +405,7 @@ function createSnapshot(
       vaultFormat: 2,
       supportedVaultFormats: [1, 2],
       buildCommit: "abcdef0123456789abcdef0123456789abcdef01",
-      state: provisioned ? "unlocked" : "unprovisioned",
+      state,
       storageReady: true,
       recoveryResetRequired: false,
       factoryResetPresenceRequired,
@@ -409,20 +418,20 @@ function createSnapshot(
       brkPublicKey: provisioned ? new Uint8Array(65) : null,
     },
     time: {
-      readiness: provisioned ? "ready" : "not_synced",
-      source: provisioned ? "usb" : "none",
-      sourceAuthenticity: provisioned ? "local_host_asserted" : "none",
-      lastSyncUnixSeconds: provisioned ? 1n : 0n,
+      readiness,
+      source: ready ? "usb" : "none",
+      sourceAuthenticity: ready ? "local_host_asserted" : "none",
+      lastSyncUnixSeconds: ready ? 1n : 0n,
       ageSeconds: 0,
-      resyncDue: false,
+      resyncDue: readiness === "stale",
     },
-    browserOwnership: provisioned ? "active" : "none",
-    unlockRequired: false,
+    browserOwnership: ownership,
+    unlockRequired: state === "locked" && ownership === "active",
     recoveryProvisioningAvailable: false,
     recoveryProvisioningCandidates: 0,
     accounts: [],
     wifi: { configured: false, ssid: "" },
-    autoLock: { known: provisioned, days: null, format2Writable: provisioned },
+    autoLock: { known: state === "unlocked" && ownership === "active", days: null, format2Writable: provisioned },
   };
 }
 
