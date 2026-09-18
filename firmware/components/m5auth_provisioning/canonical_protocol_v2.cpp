@@ -320,6 +320,11 @@ std::string time_status_success(int id, const time::Snapshot& snapshot) {
     }
     cJSON_AddStringToObject(data, "readiness", time::readiness_name(snapshot.readiness));
     cJSON_AddStringToObject(data, "source", time::source_name(snapshot.source));
+    cJSON_AddStringToObject(
+        data,
+        "source_authenticity",
+        time::source_authenticity_name(snapshot.source)
+    );
     cJSON_AddStringToObject(data, "last_sync_unix_seconds", std::to_string(snapshot.last_sync_unix_seconds).c_str());
     cJSON_AddNumberToObject(data, "age_seconds", static_cast<double>(snapshot.age_seconds));
     cJSON_AddBoolToObject(data, "resync_due", snapshot.resync_due);
