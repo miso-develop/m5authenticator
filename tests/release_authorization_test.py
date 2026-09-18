@@ -14,6 +14,8 @@ import release_authorization
 SOURCE_SHA = "a" * 40
 OTHER_SHA = "b" * 40
 ACTIONS_APP_ID = 15368
+FIRMWARE_VERSION = "0.2.0"
+REQUESTED_TAG = "v0.2.0"
 
 
 def main_rules(
@@ -69,30 +71,51 @@ def statuses(
     }
 
 
+def authorize(
+    *,
+    source_sha: str = SOURCE_SHA,
+    main_sha: str = SOURCE_SHA,
+    requested_tag: str = REQUESTED_TAG,
+    firmware_version: str = FIRMWARE_VERSION,
+    tag_sha: str = SOURCE_SHA,
+    rules: object | None = None,
+    runs: dict[str, object] | None = None,
+    status_payload: dict[str, object] | None = None,
+) -> str:
+    return release_authorization.authorize_release(
+        source_sha,
+        main_sha,
+        requested_tag,
+        firmware_version,
+        tag_sha,
+        main_rules() if rules is None else rules,
+        check_runs() if runs is None else runs,
+        statuses() if status_payload is None else status_payload,
+    )
+
+
 class ReleaseAuthorizationTest(unittest.TestCase):
-    def test_exact_main_with_all_active_ruleset_checks_passes(self) -> None:
-        self.assertEqual(
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                main_rules(),
-                check_runs(),
-                statuses(),
-            ),
-            SOURCE_SHA,
-        )
+    def test_exact_main_existing_tag_and_all_active_ruleset_checks_pass(self) -> None:
+        self.assertEqual(authorize(), REQUESTED_TAG)
+
+    def test_requested_tag_must_be_exact_semver_and_match_release_profile(self) -> None:
+        for requested in ("0.2.0", "v0.2", "v0.2.0-rc.1", "v00.2.0", "refs/tags/v0.2.0"):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(ValueError, "vX.Y.Z"):
+                    authorize(requested_tag=requested)
+
+        with self.assertRaisesRegex(ValueError, "does not match release profile"):
+            authorize(requested_tag="v0.2.1")
 
     def test_off_main_or_stale_main_source_fails_closed(self) -> None:
         for main_sha in (OTHER_SHA, "c" * 40):
             with self.subTest(main_sha=main_sha):
                 with self.assertRaisesRegex(ValueError, "exact current protected-main HEAD"):
-                    release_authorization.authorize_release(
-                        SOURCE_SHA,
-                        main_sha,
-                        main_rules(),
-                        check_runs(),
-                        statuses(),
-                    )
+                    authorize(main_sha=main_sha)
+
+    def test_existing_tag_must_resolve_to_exact_current_main(self) -> None:
+        with self.assertRaisesRegex(ValueError, "existing release tag resolves"):
+            authorize(tag_sha=OTHER_SHA)
 
     def test_missing_or_failed_required_security_check_fails_closed(self) -> None:
         payloads = (
@@ -103,13 +126,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         for payload in payloads:
             with self.subTest(payload=payload):
                 with self.assertRaisesRegex(ValueError, "security:scan"):
-                    release_authorization.authorize_release(
-                        SOURCE_SHA,
-                        SOURCE_SHA,
-                        main_rules(),
-                        payload,
-                        statuses(),
-                    )
+                    authorize(runs=payload)
 
     def test_all_active_required_checks_must_pass(self) -> None:
         rules = main_rules(
@@ -119,77 +136,45 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(ValueError, "second-required-check"):
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                rules,
-                check_runs(),
-                statuses(),
-            )
+            authorize(rules=rules)
 
     def test_required_check_must_belong_to_ruleset_integration(self) -> None:
         with self.assertRaisesRegex(ValueError, "security:scan"):
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                main_rules(),
-                check_runs(app_id=99999),
-                statuses(),
-            )
+            authorize(runs=check_runs(app_id=99999))
 
     def test_required_check_must_be_for_exact_release_sha(self) -> None:
         with self.assertRaisesRegex(ValueError, "security:scan"):
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                main_rules(),
-                check_runs(source_sha=OTHER_SHA),
-                statuses(),
-            )
+            authorize(runs=check_runs(source_sha=OTHER_SHA))
 
     def test_unbound_required_context_may_be_satisfied_by_commit_status(self) -> None:
         rules = main_rules(checks=[{"context": "external-status", "integration_id": None}])
         self.assertEqual(
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                rules,
-                check_runs(include_required=False),
-                statuses(context="external-status", state="success"),
+            authorize(
+                rules=rules,
+                runs=check_runs(include_required=False),
+                status_payload=statuses(context="external-status", state="success"),
             ),
-            SOURCE_SHA,
+            REQUESTED_TAG,
         )
 
     def test_failed_classic_status_fails_closed(self) -> None:
         rules = main_rules(checks=[{"context": "external-status", "integration_id": None}])
         with self.assertRaisesRegex(ValueError, "external-status"):
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                rules,
-                check_runs(include_required=False),
-                statuses(context="external-status", state="failure"),
+            authorize(
+                rules=rules,
+                runs=check_runs(include_required=False),
+                status_payload=statuses(context="external-status", state="failure"),
             )
 
     def test_no_active_required_status_checks_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "no required status checks"):
-            release_authorization.authorize_release(
-                SOURCE_SHA,
-                SOURCE_SHA,
-                [{"type": "deletion"}],
-                check_runs(),
-                statuses(),
-            )
+            authorize(rules=[{"type": "deletion"}])
 
-    def test_full_commit_sha_is_required(self) -> None:
+    def test_full_commit_sha_is_required_for_source_main_and_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "full 40-character"):
-            release_authorization.authorize_release(
-                "abcdef0",
-                "abcdef0",
-                main_rules(),
-                check_runs(source_sha="abcdef0"),
-                statuses(),
-            )
+            authorize(source_sha="abcdef0", main_sha="abcdef0", tag_sha="abcdef0")
+        with self.assertRaisesRegex(ValueError, "tag SHA"):
+            authorize(tag_sha="abcdef0")
 
 
 if __name__ == "__main__":
