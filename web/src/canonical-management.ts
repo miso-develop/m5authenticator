@@ -1,6 +1,9 @@
 import {
+  canonicalFactoryResetAttemptParams,
   deviceSupportsVaultFormat,
   encryptedVaultParams,
+  parseCanonicalFactoryResetBegin,
+  parseCanonicalFactoryResetStatus,
   parseCanonicalHelloData,
   parseCanonicalTimeStatus,
   type CanonicalHelloData,
@@ -50,6 +53,28 @@ import { encodeBase64UrlCanonical } from "./security/session-protocol-v2";
 import type { CanonicalV2Transport } from "./serial";
 
 export { CANONICAL_BROWSER_STATE_CHANGED_EVENT };
+
+const DEFAULT_FACTORY_RESET_POLL_INTERVAL_MS = 150;
+
+export class FactoryResetCancelledError extends Error {
+  public constructor(message = "Factory Reset canceled. Device and browser canonical state were not cleared.") {
+    super(message);
+    this.name = "FactoryResetCancelledError";
+  }
+}
+
+export class FactoryResetExpiredError extends Error {
+  public constructor() {
+    super("Factory Reset confirmation expired. Device and browser canonical state were not cleared.");
+    this.name = "FactoryResetExpiredError";
+  }
+}
+
+export interface FactoryResetOptions {
+  onAwaitingConfirmation?: () => void;
+  signal?: AbortSignal;
+  pollIntervalMs?: number;
+}
 
 export interface CanonicalAccountView {
   id: string;
@@ -607,34 +632,77 @@ export class CanonicalDeviceManagement {
     });
   }
 
-  public async factoryReset(): Promise<void> {
+  public async factoryReset(options: FactoryResetOptions = {}): Promise<void> {
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_FACTORY_RESET_POLL_INTERVAL_MS;
+    if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 0 || pollIntervalMs > 1_000) {
+      throw new Error("Invalid Factory Reset polling interval");
+    }
+
     await withCanonicalBrowserStateLock(async () => {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
+      if (this.hello.factoryResetPresenceRequired !== true) {
+        throw new Error(
+          "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.",
+        );
+      }
+      if (options.signal?.aborted) throw new FactoryResetCancelledError();
+
       const state = this.state!;
-      await this.resetIntents.stage({
-        deviceId: this.hello.deviceId,
-        affectedVaults: [{ vaultId: state.vault.vaultId.slice(), generation: state.vault.generation }],
-      });
-      const legacyPending: BrowserPendingTransaction = {
-        kind: "factory-reset",
-        expectedGeneration: state.vault.generation,
-        candidate: state,
-      };
+      const deviceId = this.hello.deviceId;
+      const begin = parseCanonicalFactoryResetBegin(
+        await this.transport.requestCanonicalV2("factory_reset.begin"),
+      );
+      const attemptParams = canonicalFactoryResetAttemptParams(begin.attemptId);
+      const deadline = Date.now() + begin.expiresInMs;
+      let commitSent = false;
+      options.onAwaitingConfirmation?.();
+
       try {
-        await this.journal.stage(legacyPending);
+        while (Date.now() < deadline) {
+          if (options.signal?.aborted) throw new FactoryResetCancelledError();
+          const status = parseCanonicalFactoryResetStatus(
+            await this.transport.requestCanonicalV2("factory_reset.status", attemptParams),
+          );
+          if (status === "confirmed") {
+            if (Date.now() >= deadline) throw new FactoryResetExpiredError();
+            if (options.signal?.aborted) throw new FactoryResetCancelledError();
+
+            await this.resetIntents.stage({
+              deviceId,
+              affectedVaults: [{ vaultId: state.vault.vaultId.slice(), generation: state.vault.generation }],
+            });
+            const pendingReset: BrowserPendingTransaction = {
+              kind: "factory-reset",
+              expectedGeneration: state.vault.generation,
+              candidate: state,
+            };
+            try {
+              await this.journal.stage(pendingReset);
+            } catch (error) {
+              await this.resetIntents.delete(deviceId);
+              throw error;
+            }
+
+            let operationError: unknown = null;
+            commitSent = true;
+            try {
+              await this.transport.requestCanonicalV2("factory_reset.commit", attemptParams);
+            } catch (error) {
+              operationError = error;
+            }
+            await this.resolveFactoryReset(deviceId, operationError);
+            return;
+          }
+          if (pollIntervalMs > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+          }
+        }
+        throw new FactoryResetExpiredError();
       } catch (error) {
-        await this.resetIntents.delete(this.hello.deviceId);
+        if (!commitSent) await this.bestEffortCancelFactoryReset(attemptParams);
         throw error;
       }
-
-      let operationError: unknown = null;
-      try {
-        await this.transport.requestCanonicalV2("factory_reset");
-      } catch (error) {
-        operationError = error;
-      }
-      await this.resolveFactoryReset(this.hello.deviceId, operationError);
     });
   }
 
@@ -653,6 +721,15 @@ export class CanonicalDeviceManagement {
     this.ownership = "none";
     this.unlockRequired = false;
     await this.transport.close();
+  }
+
+  private async bestEffortCancelFactoryReset(attemptParams: Record<string, unknown>): Promise<void> {
+    try {
+      await this.transport.requestCanonicalV2("factory_reset.cancel", attemptParams);
+    } catch {
+      // Cancellation is best effort. Device timeout/disconnect/session teardown
+      // independently invalidates the pending authorization fail-closed.
+    }
   }
 
   private async refreshHelloAndBrowserState(): Promise<void> {
@@ -839,7 +916,11 @@ export class CanonicalDeviceManagement {
       notifyCanonicalBrowserStateChanged();
       return;
     }
-    if (operationError) throw operationError;
+    if (operationError) {
+      throw new Error(
+        "Factory Reset did not complete. The original Device/browser binding remains active; no browser canonical state was cleared.",
+      );
+    }
     throw new Error("Device did not enter UNPROVISIONED after Factory Reset");
   }
 

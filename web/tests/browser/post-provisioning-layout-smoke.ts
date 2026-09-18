@@ -2,6 +2,7 @@ import "../../src/style.css";
 import "../../src/post-provisioning-layout.css";
 import { CanonicalDeviceManagement, type CanonicalDeviceSnapshot } from "../../src/canonical-management";
 import { SerialSession } from "../../src/serial";
+import { sourceTextOf } from "../../src/ui-localization";
 import { installWebBuildInfo } from "../../src/web-build-info";
 
 const GEOMETRY_EPSILON_PX = 0.5;
@@ -49,15 +50,40 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   const originalConnect = SerialSession.connect;
   const originalInitialize = CanonicalDeviceManagement.prototype.initialize;
   const originalRefresh = CanonicalDeviceManagement.prototype.refresh;
+  const originalFactoryReset = CanonicalDeviceManagement.prototype.factoryReset;
+  const originalConfirm = window.confirm;
 
   SerialSession.connect = async () => ({
-    session: {} as SerialSession,
+    session: {
+      isClosed: () => false,
+      close: async () => undefined,
+    } as unknown as SerialSession,
     hello: currentSnapshot.hello,
   });
   CanonicalDeviceManagement.prototype.initialize = async function (): Promise<void> {};
   CanonicalDeviceManagement.prototype.refresh = async function (): Promise<CanonicalDeviceSnapshot> {
     return currentSnapshot;
   };
+  CanonicalDeviceManagement.prototype.factoryReset = async function (
+    options: Parameters<CanonicalDeviceManagement["factoryReset"]>[0] = {},
+  ): Promise<void> {
+    options.onAwaitingConfirmation?.();
+    await new Promise<void>((_resolve, reject) => {
+      const signal = options.signal;
+      if (!signal) {
+        reject(new Error("Factory Reset UI smoke requires an AbortSignal"));
+        return;
+      }
+      if (signal.aborted) {
+        reject(new Error("Factory Reset canceled. Device and browser canonical state were not cleared."));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        reject(new Error("Factory Reset canceled. Device and browser canonical state were not cleared."));
+      }, { once: true });
+    });
+  };
+  window.confirm = () => true;
 
   try {
     await import("../../src/main");
@@ -69,6 +95,11 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     const fields = required<HTMLElement>(document, "#initial-passphrase-fields");
     const passphrase = required<HTMLInputElement>(document, "#initial-recovery-passphrase");
     const passphraseConfirm = required<HTMLInputElement>(document, "#initial-recovery-passphrase-confirm");
+    const resetConfirmation = required<HTMLInputElement>(document, "#reset-confirmation");
+    const factoryReset = required<HTMLButtonElement>(document, "#factory-reset");
+    const cancelFactoryReset = required<HTMLButtonElement>(document, "#cancel-factory-reset");
+    const factoryResetHint = required<HTMLElement>(document, "#factory-reset-hint");
+    const deviceNotice = required<HTMLElement>(document, "#device-notice");
     const shell = required<HTMLElement>(document, "#app > .shell");
     const panels = shell.querySelectorAll<HTMLElement>(":scope > section.panel");
     assert(panels.length >= 2, "Production Provisioning route must render multiple major panels");
@@ -86,7 +117,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     assert(!passphrase.disabled && !passphraseConfirm.disabled, "Initial provisioning must enable Recovery Passphrase inputs");
     assert(getComputedStyle(fields).display !== "none", "Initial provisioning must show Recovery Passphrase inputs");
 
-    currentSnapshot = createSnapshot(true);
+    currentSnapshot = createSnapshot(true, false);
     refresh.click();
     await waitUntil(
       () => deviceStatus.textContent?.includes("unlocked") === true && passphrase.disabled,
@@ -95,6 +126,29 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     flushLayout();
     assert(passphrase.disabled && passphraseConfirm.disabled, "Provisioned management UI must make initial Recovery Passphrase inputs inactive");
     assert(getComputedStyle(fields).display === "none", "Provisioned management UI must hide the non-actionable initial Recovery Passphrase block");
+    assert(resetConfirmation.disabled && factoryReset.disabled, "Legacy/no-capability firmware must keep normal Factory Reset unavailable");
+    assert(factoryResetHint.textContent?.includes("requires updated firmware") === true, "Legacy/no-capability firmware must show update-required Factory Reset guidance");
+
+    currentSnapshot = createSnapshot(true, true);
+    refresh.click();
+    await waitUntil(
+      () => !resetConfirmation.disabled && factoryResetHint.textContent?.includes("fresh confirmation on M5StickS3") === true,
+      "Capable production UI did not enable secure Factory Reset controls",
+    );
+    resetConfirmation.value = "RESET";
+    resetConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
+    assert(!factoryReset.disabled, "Typed RESET gate must arm Factory Reset only on capable firmware");
+    factoryReset.click();
+    await waitUntil(
+      () => !cancelFactoryReset.hidden && sourceTextOf(deviceNotice).includes("press A on M5StickS3"),
+      "Production Factory Reset UI did not enter fresh Device-confirmation pending state",
+    );
+    assert(factoryReset.disabled, "Factory Reset must not be re-armed while Device confirmation is pending");
+    cancelFactoryReset.click();
+    await waitUntil(
+      () => cancelFactoryReset.hidden && sourceTextOf(deviceNotice).includes("Device and browser canonical state were not cleared"),
+      "Production Factory Reset UI did not reach the explicit canceled state",
+    );
 
     const firstStyle = getComputedStyle(panels[0]!);
     const secondStyle = getComputedStyle(panels[1]!);
@@ -109,6 +163,8 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     SerialSession.connect = originalConnect;
     CanonicalDeviceManagement.prototype.initialize = originalInitialize;
     CanonicalDeviceManagement.prototype.refresh = originalRefresh;
+    CanonicalDeviceManagement.prototype.factoryReset = originalFactoryReset;
+    window.confirm = originalConfirm;
     app.remove();
   }
 }
@@ -184,7 +240,10 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
   }
 }
 
-function createSnapshot(provisioned: boolean): CanonicalDeviceSnapshot {
+function createSnapshot(
+  provisioned: boolean,
+  factoryResetPresenceRequired = false,
+): CanonicalDeviceSnapshot {
   return {
     hello: {
       device: "M5StickS3",
@@ -198,6 +257,7 @@ function createSnapshot(provisioned: boolean): CanonicalDeviceSnapshot {
       state: provisioned ? "unlocked" : "unprovisioned",
       storageReady: true,
       recoveryResetRequired: false,
+      factoryResetPresenceRequired,
       vaultPresent: provisioned,
       vaultId: provisioned ? new Uint8Array(16) : null,
       generation: provisioned ? 1n : 0n,

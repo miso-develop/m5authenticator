@@ -211,20 +211,36 @@ class CleanDevice implements CanonicalV2Transport {
 class ResettingDevice implements CanonicalV2Transport {
   connected = true;
   resetCommitted = false;
+  commitCalls = 0;
+  private readonly attemptId = bytes(16, 0xd1);
 
   constructor(private readonly state: BrowserCanonicalState) {}
 
-  async requestCanonicalV2(op: CanonicalWireOperation): Promise<Record<string, unknown>> {
+  async requestCanonicalV2(
+    op: CanonicalWireOperation,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
     if (!this.connected) throw new Error("synthetic transport disconnected");
     if (op === "hello") {
       return this.resetCommitted ? cleanHello(deviceId) : provisionedHello({ state: browserBinding(this.state), targetDeviceId: deviceId });
     }
     if (op === "time.status") return readyTime();
-    if (op === "factory_reset") {
+    if (op === "factory_reset.begin") {
+      return { attempt_id: encodeBase64UrlCanonical(this.attemptId), expires_in_ms: 30_000 };
+    }
+    if (op === "factory_reset.status") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      return { state: "confirmed" };
+    }
+    if (op === "factory_reset.cancel") return {};
+    if (op === "factory_reset.commit") {
+      expect(params.attempt_id).toBe(encodeBase64UrlCanonical(this.attemptId));
+      this.commitCalls += 1;
       this.resetCommitted = true;
       this.connected = false;
       throw new Error("synthetic reset response lost");
     }
+    if (op === "factory_reset") throw new Error("legacy Factory Reset must never be used");
     throw new Error(`unexpected canonical operation ${op}`);
   }
 
@@ -285,6 +301,7 @@ function provisionedHello(input: {
     state: "unlocked",
     storage_ready: true,
     recovery_reset_required: false,
+    factory_reset_presence_required: true,
     vault_present: true,
     vault_id: encodeBase64UrlCanonical(input.state.vault.vaultId),
     generation: input.state.vault.generation.toString(10),
@@ -307,6 +324,7 @@ function cleanHello(targetDeviceId: string): Record<string, unknown> {
     state: "unprovisioned",
     storage_ready: false,
     recovery_reset_required: false,
+    factory_reset_presence_required: true,
     vault_present: false,
     vault_id: null,
     generation: "0",
@@ -344,6 +362,7 @@ function typedProvisionedHello(raw: Record<string, unknown>) {
     state: "unlocked" as const,
     storageReady: true,
     recoveryResetRequired: false,
+    factoryResetPresenceRequired: true,
     vaultPresent: true,
     vaultId: decodeBase64UrlCanonical(String(raw.vault_id), 16),
     generation: BigInt(String(raw.generation)),
@@ -366,6 +385,7 @@ function typedCleanHello(targetDeviceId: string) {
     state: "unprovisioned" as const,
     storageReady: false,
     recoveryResetRequired: false,
+    factoryResetPresenceRequired: true,
     vaultPresent: false,
     vaultId: null,
     generation: 0n,
@@ -523,7 +543,8 @@ describe("canonical browser transaction recovery", () => {
     );
     await manager.initialize();
 
-    await expect(manager.factoryReset()).rejects.toThrow(PendingBrowserTransactionError);
+    await expect(manager.factoryReset({ pollIntervalMs: 0 })).rejects.toThrow(PendingBrowserTransactionError);
+    expect(device.commitCalls).toBe(1);
     expect(journal.current()?.kind).toBe("factory-reset");
     expect(store.current()).not.toBeNull();
 

@@ -26,6 +26,33 @@ describe("localized Web navigation", () => {
     });
   });
 
+  it("localizes secure Factory Reset capability and terminal states", () => {
+    expect(displayUiText(
+      "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.",
+      "ja",
+    )).toContain("更新済みファームウェア");
+    expect(displayUiText(
+      "FACTORY RESET REQUEST — press A on M5StickS3 to confirm this destructive action.",
+      "ja",
+    )).toContain("Aボタン");
+    expect(displayUiText(
+      "Factory Reset canceled. Device and browser canonical state were not cleared.",
+      "ja",
+    )).toContain("消去されていません");
+    expect(displayUiText(
+      "Factory Reset confirmation expired. Device and browser canonical state were not cleared.",
+      "ja",
+    )).toContain("確認期限");
+    expect(displayUiText(
+      "Factory Reset outcome is not yet provable. The durable reset intent is retained; reconnect to reconcile before any further write.",
+      "ja",
+    )).toContain("reconciliation");
+    expect(displayUiText(
+      "Factory Reset completed. Device canonical state is unprovisioned; browser canonical state was cleared after read-only proof. External Recovery Packages were not changed.",
+      "ja",
+    )).toContain("外部Recovery Packageは変更されていません");
+  });
+
   it("normalizes legacy product branding in both languages", () => {
     expect(displayUiText("M5 Authenticator", "en")).toBe("M5Authenticator");
     expect(displayUiText("M5 Authenticator", "ja")).toBe("M5Authenticator");
