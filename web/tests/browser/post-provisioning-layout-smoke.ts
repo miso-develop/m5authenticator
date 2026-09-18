@@ -35,6 +35,7 @@ export async function runPostProvisioningLayoutSmoke(): Promise<void> {
     await verifyProductionProvisioningLifecycle();
     await verifyProductionFirmwareGeometry();
     await verifySharedRouteGeometryPolicy();
+    await verifyStickyHeaderPolicy();
     document.body.dataset.postProvisioningLayoutStatus = "pass";
   } catch (error) {
     document.body.dataset.postProvisioningLayoutError = error instanceof Error ? error.message : "Unknown layout smoke failure";
@@ -561,6 +562,27 @@ async function verifyProductionFirmwareGeometry(): Promise<void> {
     assert(status.querySelectorAll("button").length === 2, "Successful Firmware resolution must render First install and Update controls");
     assert(buildIdentity.textContent?.includes(FIRMWARE_SMOKE_BUILD_COMMIT) === true, "Successful Firmware resolution must display the pinned fixture build identity");
 
+    const flashChoices = Array.from(status.querySelectorAll<HTMLElement>(":scope > section.panel"));
+    assert(flashChoices.length === 2, "Firmware status must contain exactly First install and Update peer panels");
+    const statusStyle = getComputedStyle(status);
+    assert(
+      statusStyle.borderTopStyle === "none" || parseFloat(statusStyle.borderTopWidth) === 0,
+      "Firmware structural status container must not add a duplicate top divider",
+    );
+    const firstInstallStyle = getComputedStyle(flashChoices[0]!);
+    const updateStyle = getComputedStyle(flashChoices[1]!);
+    assert(
+      firstInstallStyle.borderTopStyle !== "none" && parseFloat(firstInstallStyle.borderTopWidth) >= 1,
+      "First install must have exactly one panel boundary supplied by its own section",
+    );
+    assert(
+      updateStyle.borderTopStyle !== "none" && parseFloat(updateStyle.borderTopWidth) >= 1,
+      "Update must retain exactly one panel boundary",
+    );
+    assert(parseFloat(firstInstallStyle.marginTop) === 0, "First install must not retain redundant nested-panel top spacing");
+    assert(parseFloat(updateStyle.marginTop) > 0, "Update must remain visually separated from First install");
+    assert(status.querySelector("hr") === null, "Firmware divider normalization must not introduce decorative hr elements");
+
     const afterShell = shell.getBoundingClientRect();
     const afterNav = nav.getBoundingClientRect();
     const afterBuildSection = buildSection.getBoundingClientRect();
@@ -598,6 +620,31 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
     const productionPanels = Array.from(provisioningShell.querySelectorAll<HTMLElement>(":scope > section.panel"));
     assert(productionPanels.length >= 7, "Production Provisioning route must keep all major peer sections on the shared panel contract");
     assert(provisioningShell.lastElementChild === productionBuildSection, "Production Web Build information section must remain the final Provisioning peer section");
+
+    const recoverySubsection = required<HTMLElement>(provisioningShell, '[data-security-subsection="recovery-package"]');
+    const passphraseSubsection = required<HTMLElement>(provisioningShell, '[data-security-subsection="change-passphrase"]');
+    for (const [name, subsection] of [
+      ["Recovery Package", recoverySubsection],
+      ["Change Recovery Passphrase", passphraseSubsection],
+    ] as const) {
+      const heading = subsection.querySelector(":scope > h3");
+      const expectedHeading = name === "Recovery Package"
+        ? "Recovery Package"
+        : provisioningDoc.documentElement.lang === "ja"
+          ? "Recovery Passphraseを変更"
+          : "Change Recovery Passphrase";
+      assert(heading?.textContent === expectedHeading, `${name} must retain its semantic localized h3 heading`);
+      const style = getComputedStyle(subsection);
+      assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `${name} must have one visible subsection divider`);
+      assert(parseFloat(style.marginTop) > 0 && parseFloat(style.paddingTop) > 0, `${name} divider must retain subsection spacing`);
+      assert(subsection.querySelector(":scope > hr") === null, `${name} must not duplicate the CSS divider with an hr`);
+      assert(getComputedStyle(heading!).marginTop === "0px", `${name} heading must start immediately after the shared divider spacing`);
+    }
+    assert(
+      getComputedStyle(recoverySubsection).borderTopColor === getComputedStyle(passphraseSubsection).borderTopColor,
+      "Recovery subsections must share the same neutral divider treatment",
+    );
+
     for (const [index, section] of productionPanels.entries()) {
       const style = getComputedStyle(section);
       assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `Production Provisioning peer section ${index + 1} must retain a visible top divider`);
@@ -611,6 +658,80 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
       assert(near(baseline.nav.left, current.nav.left) && near(baseline.nav.width, current.nav.width), `${routes[index]} top navigation must align with Provisioning on a non-overflowing desktop viewport`);
       assert(near(baseline.shell.left, current.shell.left) && near(baseline.shell.width, current.shell.width), `${routes[index]} content shell must align with Provisioning on a non-overflowing desktop viewport`);
     }
+  } finally {
+    for (const frame of frames) frame.remove();
+  }
+}
+
+async function verifyStickyHeaderPolicy(): Promise<void> {
+  const routes = ["index.html", "flash.html", "help.html"] as const;
+  const frames: HTMLIFrameElement[] = [];
+  try {
+    for (const route of routes) frames.push(await loadRouteFrame(route, 360));
+
+    for (let index = 0; index < frames.length; index += 1) {
+      const frame = frames[index]!;
+      const route = routes[index]!;
+      const doc = requiredFrameDocument(frame);
+      const win = requiredFrameWindow(frame);
+      const header = required<HTMLElement>(doc, "#site-header");
+      const nav = required<HTMLElement>(doc, ".site-nav-shell");
+      const product = required<HTMLElement>(doc, ".product-mark");
+      const tabs = required<HTMLElement>(doc, ".site-tabs");
+      const language = required<HTMLElement>(doc, ".language-switcher");
+      flushLayout(doc);
+
+      const headerStyle = getComputedStyle(header);
+      assert(headerStyle.position === "sticky", `${route} must use the shared sticky header contract`);
+      assert(headerStyle.top === "0px", `${route} sticky header must pin to viewport top`);
+      assert(Number.parseInt(headerStyle.zIndex, 10) > 0, `${route} sticky header needs positive stacking order`);
+      assert(headerStyle.backgroundColor !== "rgba(0, 0, 0, 0)", `${route} sticky header background must be opaque/readable`);
+      assert(header.contains(nav) && nav.contains(product) && nav.contains(tabs) && nav.contains(language), `${route} sticky header must retain product, tabs, and language switcher`);
+      assert(doc.documentElement.scrollHeight > win.innerHeight, `${route} sticky-header fixture must be vertically scrollable`);
+
+      const beforeNav = nav.getBoundingClientRect();
+      const beforeShell = required<HTMLElement>(doc, ".shell").getBoundingClientRect();
+      const beforeScrollWidth = doc.documentElement.scrollWidth;
+      win.scrollTo(0, Math.min(480, doc.documentElement.scrollHeight - win.innerHeight));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+      flushLayout(doc);
+
+      const afterHeader = header.getBoundingClientRect();
+      const afterNav = nav.getBoundingClientRect();
+      const afterShell = required<HTMLElement>(doc, ".shell").getBoundingClientRect();
+      assert(near(afterHeader.top, 0), `${route} sticky header did not remain at viewport top while scrolling`);
+      assert(near(beforeNav.left, afterNav.left) && near(beforeNav.width, afterNav.width), `${route} sticky navigation shifted horizontally while scrolling`);
+      assert(near(beforeShell.left, afterShell.left) && near(beforeShell.width, afterShell.width), `${route} content shell shifted horizontally while scrolling`);
+      assert(doc.documentElement.scrollWidth === beforeScrollWidth && doc.documentElement.scrollWidth <= win.innerWidth, `${route} sticky header introduced horizontal overflow or width jitter`);
+    }
+
+    const provisioningDoc = requiredFrameDocument(frames[0]!);
+    const headerZ = Number.parseInt(getComputedStyle(required<HTMLElement>(provisioningDoc, "#site-header")).zIndex, 10);
+    const presenceOverlay = required<HTMLElement>(provisioningDoc, ".presence-overlay");
+    const overlayZ = Number.parseInt(getComputedStyle(presenceOverlay).zIndex, 10);
+    assert(overlayZ > headerZ, "Security presence overlay must retain stacking priority over the sticky header");
+
+    const responsiveFrame = await loadRouteFrame("help.html", 360, 540);
+    frames.push(responsiveFrame);
+    const responsiveDoc = requiredFrameDocument(responsiveFrame);
+    const responsiveWin = requiredFrameWindow(responsiveFrame);
+    flushLayout(responsiveDoc);
+    const responsiveHeader = required<HTMLElement>(responsiveDoc, "#site-header");
+    const responsiveNav = required<HTMLElement>(responsiveDoc, ".site-nav-shell");
+    const responsiveTabs = required<HTMLElement>(responsiveDoc, ".site-tabs");
+    const responsiveLanguage = required<HTMLElement>(responsiveDoc, ".language-switcher");
+    const responsiveProduct = required<HTMLElement>(responsiveDoc, ".product-mark");
+    assert(getComputedStyle(responsiveTabs).gridRowStart === "2", "Responsive top-level tabs must retain the shared second-row layout");
+    for (const element of [responsiveProduct, responsiveTabs, responsiveLanguage]) {
+      const rect = element.getBoundingClientRect();
+      const headerRect = responsiveHeader.getBoundingClientRect();
+      assert(rect.left >= headerRect.left - GEOMETRY_EPSILON_PX && rect.right <= headerRect.right + GEOMETRY_EPSILON_PX, "Responsive header controls must remain horizontally visible");
+    }
+    assert(responsiveDoc.documentElement.scrollWidth <= responsiveWin.innerWidth, "Responsive sticky header must not create a horizontal scrollbar");
+    responsiveWin.scrollTo(0, 300);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+    assert(near(responsiveHeader.getBoundingClientRect().top, 0), "Responsive two-row header must remain sticky while scrolling");
+    assert(responsiveNav.getBoundingClientRect().width > 0, "Responsive navigation must remain rendered after scrolling");
   } finally {
     for (const frame of frames) frame.remove();
   }
@@ -669,9 +790,9 @@ function createSnapshot(
   };
 }
 
-async function loadRouteFrame(path: string, heightPx: number): Promise<HTMLIFrameElement> {
+async function loadRouteFrame(path: string, heightPx: number, widthPx = ROUTE_WIDTH_PX): Promise<HTMLIFrameElement> {
   const frame = document.createElement("iframe");
-  frame.width = String(ROUTE_WIDTH_PX);
+  frame.width = String(widthPx);
   frame.height = String(heightPx);
   frame.style.position = "fixed";
   frame.style.left = "-20000px";

@@ -37,31 +37,35 @@ section.innerHTML = `
   <dl id="browser-security-status" class="status" aria-live="polite"></dl>
   <p id="browser-security-notice" class="notice" aria-live="polite"></p>
 
-  <h3>Recovery Package</h3>
-  <p class="hint">Recovery Packages are encrypted but security-sensitive offline Passphrase-guessing targets. Do not upload them, attach them to Issues/PRs, or commit them to a repository.</p>
-  <div class="actions">
-    <button id="browser-recovery-export" type="button" disabled>Export Recovery Package</button>
-  </div>
-  <label class="file-label" for="browser-recovery-file">Import Recovery Package</label>
-  <input id="browser-recovery-file" type="file" accept="application/json,.json" />
-  <label for="browser-recovery-passphrase">Recovery Passphrase</label>
-  <input id="browser-recovery-passphrase" type="password" autocomplete="current-password" />
-  <div class="actions">
-    <button id="browser-recovery-import" type="button">Import for browser replacement</button>
-    <button id="browser-recovery-cancel" class="secondary" type="button">Clear recovery inputs</button>
+  <div class="security-subsection" data-security-subsection="recovery-package">
+    <h3>Recovery Package</h3>
+    <p class="hint">Recovery Packages are encrypted but security-sensitive offline Passphrase-guessing targets. Do not upload them, attach them to Issues/PRs, or commit them to a repository.</p>
+    <div class="actions">
+      <button id="browser-recovery-export" type="button" disabled>Export Recovery Package</button>
+    </div>
+    <label class="file-label" for="browser-recovery-file">Import Recovery Package</label>
+    <input id="browser-recovery-file" type="file" accept="application/json,.json" />
+    <label for="browser-recovery-passphrase">Recovery Passphrase</label>
+    <input id="browser-recovery-passphrase" type="password" autocomplete="current-password" />
+    <div class="actions">
+      <button id="browser-recovery-import" type="button">Import for browser replacement</button>
+      <button id="browser-recovery-cancel" class="secondary" type="button">Clear recovery inputs</button>
+    </div>
   </div>
 
-  <h3>Change Recovery Passphrase</h3>
-  <p class="hint">${RECOVERY_PASSPHRASE_CHANGE_NOTICE}</p>
-  <label for="browser-current-passphrase">Current Passphrase</label>
-  <input id="browser-current-passphrase" type="password" autocomplete="current-password" disabled />
-  <label for="browser-new-passphrase">New Passphrase</label>
-  <input id="browser-new-passphrase" type="password" autocomplete="new-password" disabled />
-  <label for="browser-confirm-passphrase">Confirm new Passphrase</label>
-  <input id="browser-confirm-passphrase" type="password" autocomplete="new-password" disabled />
-  <div class="actions">
-    <button id="browser-change-passphrase" type="button" disabled>Change Passphrase</button>
-    <button id="browser-passphrase-cancel" class="secondary" type="button">Clear Passphrase inputs</button>
+  <div class="security-subsection" data-security-subsection="change-passphrase">
+    <h3>Change Recovery Passphrase</h3>
+    <p class="hint">${RECOVERY_PASSPHRASE_CHANGE_NOTICE}</p>
+    <label for="browser-current-passphrase">Current Passphrase</label>
+    <input id="browser-current-passphrase" type="password" autocomplete="current-password" disabled />
+    <label for="browser-new-passphrase">New Passphrase</label>
+    <input id="browser-new-passphrase" type="password" autocomplete="new-password" disabled />
+    <label for="browser-confirm-passphrase">Confirm new Passphrase</label>
+    <input id="browser-confirm-passphrase" type="password" autocomplete="new-password" disabled />
+    <div class="actions">
+      <button id="browser-change-passphrase" type="button" disabled>Change Passphrase</button>
+      <button id="browser-passphrase-cancel" class="secondary" type="button">Clear Passphrase inputs</button>
+    </div>
   </div>
 `;
 
