@@ -40,7 +40,7 @@ describe("Help explanatory diagrams", () => {
     expect(english).toContain("Stores the encrypted canonical Vault");
     expect(english).toContain("Vault key only in RAM while unlocked");
     expect(english).toContain("Active Trusted Browser");
-    expect(english).toContain("separate encrypted offline recovery artifact");
+    expect(english).toContain("Separate encrypted offline recovery artifact");
     expect(english).toContain("not erased by Device Factory Reset");
     expect(english).toContain("Recovery Passphrase is also not stored on the Device");
     expect(english).toContain("does not export TOTP secrets");
