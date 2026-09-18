@@ -9,8 +9,50 @@ permissions:
   contents: read
 
 jobs:
+  authorize:
+    name: authorize-protected-main-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Checkout exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Require production release profile
+        run: python scripts/validate_release.py --require-production
+      - name: Verify tag matches firmware version
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="v$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('firmware/release-profile.json').read_text(encoding='utf-8'))['firmware_version'])
+          PY
+          )"
+          if [ "$GITHUB_REF_NAME" != "$EXPECTED" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match release profile $EXPECTED"
+            exit 1
+          fi
+      - name: Authorize exact protected-main source and required security check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"             > "$RUNNER_TEMP/check-runs.json"
+          python scripts/release_authorization.py             --source-sha "$GITHUB_SHA"             --main-sha "$MAIN_SHA"             --check-runs "$RUNNER_TEMP/check-runs.json"
+
   build:
     name: build-firmware-unprivileged
+    needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -134,9 +176,62 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  attest:
+    name: attest-verified-release-assets
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout authoritative repository source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Download independently verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: ${{ runner.temp }}/m5auth-release
+      - name: Reconfirm exact verified asset bytes before attestation
+        shell: bash
+        env:
+          EXPECTED_SHA256SUMS: ${{ needs.verify.outputs.checksums-sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/m5auth-release"
+          ACTUAL_SHA256SUMS="$(sha256sum SHA256SUMS | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA256SUMS" != "$EXPECTED_SHA256SUMS" ]; then
+            echo "verified SHA256SUMS identity changed before attestation"
+            exit 1
+          fi
+          sha256sum -c SHA256SUMS
+      - name: Generate M5Authenticator signed-provenance predicate
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python scripts/release_attestation.py             --package-dir "$RUNNER_TEMP/m5auth-release"             --source-commit "$GITHUB_SHA"             --repository "$GITHUB_REPOSITORY"             --workflow-ref "$WORKFLOW_REF"             --workflow-sha "$WORKFLOW_SHA"             --run-id "$GITHUB_RUN_ID"             --run-attempt "$GITHUB_RUN_ATTEMPT"             --output "$RUNNER_TEMP/m5auth-release-provenance.json"
+      - name: Attest standard GitHub build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/m5auth-release/*
+      - name: Attest M5Authenticator release provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/m5auth-release/*
+          predicate-type: https://miso-develop.github.io/m5authenticator/attestations/release-provenance/v1
+          predicate-path: ${{ runner.temp }}/m5auth-release-provenance.json
+
   publish:
     name: publish-verified-release
-    needs: verify
+    needs: [verify, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -145,7 +240,7 @@ jobs:
       - name: Download independently verified release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: m5auth-release-${{ github.sha }}
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: ${{ runner.temp }}/m5auth-release
       - name: Confirm publish bytes match verification output
         shell: bash
@@ -182,7 +277,7 @@ jobs:
   cleanup:
     name: cleanup-transient-release-artifacts
     if: always()
-    needs: [build, verify, publish]
+    needs: [build, verify, attest, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
