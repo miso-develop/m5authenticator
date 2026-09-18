@@ -75,24 +75,25 @@ int main() {
     assert(kConfirmationAction == 0x07ff);
     assert(kTitleText != 0x1c9f);
     assert(kTitleText != kConfirmationAction);
-    assert(kTitlePaddingTopPx == 1);
-    assert(kTitlePaddingBottomPx == 1);
+    assert(kTitlePaddingTopPx == 4);
+    assert(kTitlePaddingBottomPx == 4);
     assert(kTitlePaddingLeftPx == 1);
     assert(kHeaderSeparatorHeightPx == 1);
-    assert(kContentLeftPx == 1);
+    assert(kContentLeftPx == 4);
+    assert(kOtpBandHeightPx == 32);
 
     constexpr auto frame = frame_geometry(16);
-    static_assert(frame.title_band_height == 18);
-    static_assert(frame.separator_y == 18);
-    static_assert(frame.content_start_y == 19);
-    static_assert(frame.primary_line_y == 19);
-    static_assert(frame.secondary_line_y == 39);
-    static_assert(frame.tertiary_line_y == 59);
-    static_assert(frame.account_label_y == 79);
-    static_assert(frame.otp_y == 100);
-    static_assert(frame.help_first_y == 98);
-    static_assert(frame.help_second_y == 116);
-    static_assert(content_viewport_width(240) == 239);
+    static_assert(frame.title_band_height == 24);
+    static_assert(frame.separator_y == 24);
+    static_assert(frame.content_start_y == 25);
+    static_assert(frame.primary_line_y == 25);
+    static_assert(frame.secondary_line_y == 45);
+    static_assert(frame.tertiary_line_y == 65);
+    static_assert(frame.account_label_y == 82);
+    static_assert(frame.otp_y == 103);
+    static_assert(frame.help_first_y == 101);
+    static_assert(frame.help_second_y == 119);
+    static_assert(content_viewport_width(240) == 236);
 
     // #176's confirmation action remains distinct from status categories.
     assert(kConfirmationAction != 0x07e0);
