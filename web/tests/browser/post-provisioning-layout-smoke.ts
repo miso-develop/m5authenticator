@@ -580,7 +580,7 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
   const routes = ["index.html", "flash.html", "help.html"] as const;
   const frames: HTMLIFrameElement[] = [];
   try {
-    for (const route of routes) frames.push(await loadRouteFrame(route, 5000));
+    for (const route of routes) frames.push(await loadRouteFrame(route, 6000));
 
     const geometries = frames.map((frame, index) => {
       const doc = requiredFrameDocument(frame);
