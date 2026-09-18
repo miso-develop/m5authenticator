@@ -16,6 +16,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      statuses: read
     steps:
       - name: Checkout exact tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,7 +40,7 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match release profile $EXPECTED"
             exit 1
           fi
-      - name: Authorize exact protected-main source and required security check
+      - name: Authorize exact protected-main source and required security checks
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,8 +48,29 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
-          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"             > "$RUNNER_TEMP/check-runs.json"
-          python scripts/release_authorization.py             --source-sha "$GITHUB_SHA"             --main-sha "$MAIN_SHA"             --check-runs "$RUNNER_TEMP/check-runs.json"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" \
+            > "$RUNNER_TEMP/main-rules.json"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100" \
+            > "$RUNNER_TEMP/check-runs.json"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+            > "$RUNNER_TEMP/statuses.json"
+
+          python scripts/release_authorization.py \
+            --source-sha "$GITHUB_SHA" \
+            --main-sha "$MAIN_SHA" \
+            --main-rules "$RUNNER_TEMP/main-rules.json" \
+            --check-runs "$RUNNER_TEMP/check-runs.json" \
+            --statuses "$RUNNER_TEMP/statuses.json"
 
   build:
     name: build-firmware-unprivileged
