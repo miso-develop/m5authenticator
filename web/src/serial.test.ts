@@ -104,12 +104,26 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("SerialSession USB Serial/JTAG close boundary", () => {
-  it("deasserts RTS before DTR in separate operations before closing the port", async () => {
+describe("SerialSession USB Serial/JTAG control-line boundary", () => {
+  it("establishes the safe RTS-then-DTR state immediately after opening", async () => {
     const { port, closeEvents } = makeMockPort("", [helloResponse()]);
     installSerial(port);
 
     const { session } = await SerialSession.connect();
+
+    expect(port.setSignals).toHaveBeenNthCalledWith(1, { requestToSend: false });
+    expect(port.setSignals).toHaveBeenNthCalledWith(2, { dataTerminalReady: false });
+    expect(closeEvents).toEqual(["rts:false", "dtr:false"]);
+    await session.close();
+  });
+
+  it("re-establishes RTS before DTR in separate operations before closing the port", async () => {
+    const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    port.setSignals.mockClear();
+    closeEvents.length = 0;
     await session.close();
 
     expect(port.setSignals).toHaveBeenNthCalledWith(1, { requestToSend: false });
@@ -118,15 +132,17 @@ describe("SerialSession USB Serial/JTAG close boundary", () => {
     expect(port.close).toHaveBeenCalledOnce();
   });
 
-  it("does not deassert DTR when RTS deassertion cannot be established", async () => {
+  it("does not deassert DTR during close when RTS deassertion cannot be established", async () => {
     const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    port.setSignals.mockClear();
+    closeEvents.length = 0;
     port.setSignals.mockImplementationOnce(async () => {
       closeEvents.push("rts:failed");
       throw new Error("synthetic RTS failure");
     });
-    installSerial(port);
-
-    const { session } = await SerialSession.connect();
     await session.close();
 
     expect(port.setSignals).toHaveBeenCalledTimes(1);
@@ -137,6 +153,11 @@ describe("SerialSession USB Serial/JTAG close boundary", () => {
 
   it("still closes after DTR deassertion fails once RTS is safely deasserted", async () => {
     const { port, closeEvents } = makeMockPort("", [helloResponse()]);
+    installSerial(port);
+
+    const { session } = await SerialSession.connect();
+    port.setSignals.mockClear();
+    closeEvents.length = 0;
     port.setSignals.mockImplementationOnce(async (signals) => {
       closeEvents.push(`rts:${String(signals.requestToSend)}`);
     });
@@ -144,9 +165,6 @@ describe("SerialSession USB Serial/JTAG close boundary", () => {
       closeEvents.push("dtr:failed");
       throw new Error("synthetic DTR failure");
     });
-    installSerial(port);
-
-    const { session } = await SerialSession.connect();
     await session.close();
 
     expect(port.setSignals).toHaveBeenCalledTimes(2);
