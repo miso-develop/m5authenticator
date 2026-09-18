@@ -10,9 +10,6 @@ M5Authenticatorは、**M5StickS3**で使うスタンドアロンのTOTP認証器
 
 標準TOTP QR画像やGoogle Authenticatorの移行QR画像はブラウザ内でローカルに読み込み、M5StickS3へProvisioningできます。認証時はスマートフォンを操作せず、Device上でアカウントを選択して6桁のOTPを表示できます。
 
-> [!IMPORTANT]
-> このリポジトリは公開されています。実際の認証情報をコミット、貼り付け、アップロード、ログ出力、添付してはいけません。対象にはTOTPシークレットやQRエクスポート、パスワードやRecovery Passphrase、Recovery Package、private/session key、認証情報を含むログやdumpが含まれます。完全なポリシーは[SECURITY.md](SECURITY.md)を参照してください。
-
 ## 主な機能
 
 - RFC 6238 TOTP（SHA-1、6桁、30秒周期）
