@@ -1,5 +1,6 @@
 import "./style.css";
 import { getLanguage, onLanguageChange, type UiLanguage } from "./i18n";
+import { helpDiagramCopy, renderHelpDiagrams } from "./help-diagrams";
 
 interface HelpCopy {
   title: string;
@@ -121,16 +122,18 @@ function list(items: string[]): string {
 
 function render(): void {
   const root = queryHelpRoot();
-  const copy = helpCopy(getLanguage());
+  const language = getLanguage();
+  const copy = helpCopy(language);
+  const diagrams = renderHelpDiagrams(helpDiagramCopy(language));
   root.innerHTML = `
     <article class="shell help-shell">
       <p class="eyebrow">M5Authenticator</p>
       <h1>${escapeHtml(copy.title)}</h1>
       <p class="description">${escapeHtml(copy.intro)}</p>
-      <section class="panel"><h2>${escapeHtml(copy.quickStartTitle)}</h2>${list(copy.quickStart)}</section>
-      <section class="panel"><h2>${escapeHtml(copy.otpTitle)}</h2>${list(copy.otp)}</section>
+      <section class="panel"><h2>${escapeHtml(copy.quickStartTitle)}</h2>${list(copy.quickStart)}${diagrams.setup}</section>
+      <section class="panel"><h2>${escapeHtml(copy.otpTitle)}</h2>${list(copy.otp)}${diagrams.trust}</section>
       <section class="panel"><h2>${escapeHtml(copy.maintenanceTitle)}</h2>${list(copy.maintenance)}</section>
-      <section class="panel"><h2>${escapeHtml(copy.recoveryTitle)}</h2>${list(copy.recovery)}</section>
+      <section class="panel"><h2>${escapeHtml(copy.recoveryTitle)}</h2>${list(copy.recovery)}${diagrams.reset}</section>
       <section class="panel danger help-warning"><h2>${escapeHtml(copy.safetyTitle)}</h2>${list(copy.safety)}</section>
     </article>
   `;
