@@ -4,7 +4,7 @@ describe("Help trusted-time security guidance", () => {
   it("explains readiness versus authenticity and the bounded NTP mitigation in EN/JA", async () => {
     const { helpCopy } = await import("./help");
 
-    const english = [...helpCopy("en").quickStart, ...helpCopy("en").safety].join(" ");
+    const english = [...helpCopy("en").quickStart, ...helpCopy("en").otp, ...helpCopy("en").safety].join(" ");
     expect(english).toContain("READY means");
     expect(english).toContain("does not cryptographically authenticate");
     expect(english).toContain("hostile DNS");
@@ -18,7 +18,7 @@ describe("Help trusted-time security guidance", () => {
     expect(english).toContain("does not itself Lock a still-running Device");
     expect(english).toContain("true reboot or power loss still returns the Device to LOCKED");
 
-    const japanese = [...helpCopy("ja").quickStart, ...helpCopy("ja").safety].join(" ");
+    const japanese = [...helpCopy("ja").quickStart, ...helpCopy("ja").otp, ...helpCopy("ja").safety].join(" ");
     expect(japanese).toContain("暗号学的に認証済み");
     expect(japanese).toContain("悪意あるDNS");
     expect(japanese).toContain("5分を超える");
