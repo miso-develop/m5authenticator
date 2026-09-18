@@ -36,10 +36,16 @@ interface SerialPortOptions {
   baudRate: number;
 }
 
+interface SerialOutputSignals {
+  dataTerminalReady?: boolean;
+  requestToSend?: boolean;
+}
+
 interface SerialPortLike {
   readable: ReadableStream<Uint8Array> | null;
   writable: WritableStream<Uint8Array> | null;
   open(options: SerialPortOptions): Promise<void>;
+  setSignals?(signals: SerialOutputSignals): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -120,6 +126,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     }
 
     const session = new SerialSession(port, port.readable.getReader(), port.writable.getWriter());
+    await session.normalizeUsbSerialJtagControlLines();
     try {
       const data = await session.requestInitialHello();
       return { session, hello: parseCanonicalHelloData(data) };
@@ -174,6 +181,8 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     this.staleInitialHelloResponseId = undefined;
     this.staleInitialHelloResponsesRemaining = 0;
 
+    await this.normalizeUsbSerialJtagControlLines();
+
     try {
       await this.reader.cancel();
     } catch {
@@ -191,6 +200,28 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
       // The browser may already have released the writer.
     }
     await this.port.close();
+  }
+
+  private async normalizeUsbSerialJtagControlLines(): Promise<void> {
+    const setSignals = this.port.setSignals?.bind(this.port);
+    if (!setSignals) return;
+
+    // Keep ESP32-S3 USB Serial/JTAG in a safe host-control state throughout
+    // the open session and immediately before close. RTS=1,DTR=0 is a reset
+    // request. Web Serial applies DTR before RTS when both are supplied
+    // together, so never normalize both lines in one call. Deassert RTS first;
+    // only after that succeeds is it safe to deassert DTR.
+    try {
+      await setSignals({ requestToSend: false });
+    } catch {
+      return;
+    }
+
+    try {
+      await setSignals({ dataTerminalReady: false });
+    } catch {
+      // RTS is already deasserted. Port/resource teardown must still proceed.
+    }
   }
 
   private async requestInitialHello(): Promise<Record<string, unknown>> {
