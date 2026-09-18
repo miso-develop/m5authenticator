@@ -74,14 +74,15 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn('"M5 Authenticator"', startup)
         self.assertIn("M5.Display.setTextSize(2);", startup)
 
-    def test_issue_187_white_title_frame_and_content_inset_are_shared(self) -> None:
+    def test_issue_187_bright_blue_title_frame_and_content_inset_are_shared(self) -> None:
         ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         startup = RELEASE_DEVICE_CPP.read_text(encoding="utf-8")
         layout = UI_LAYOUT_HPP.read_text(encoding="utf-8")
         palette = UI_PALETTE_HPP.read_text(encoding="utf-8")
 
-        self.assertIn("kTitleBackground = 0xffff", palette)
-        self.assertIn("kTitleText = 0x0000", palette)
+        self.assertIn("kTitleBackground = 0x0000", palette)
+        self.assertIn("kTitleText = 0x451f", palette)
+        self.assertNotIn("kTitleText = 0x1c9f", palette)
         self.assertIn("kConfirmationAction = 0x07ff", palette)
         for contract in (
             "kTitlePaddingTopPx = 1",
@@ -98,7 +99,7 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.fontHeight()", startup)
         self.assertIn("ui_layout::frame_geometry(", startup)
 
-        # Full-width white band, black title, and explicit one-pixel separator.
+        # Black title frame, brighter-blue title, and explicit one-pixel spacing row.
         self.assertIn("geometry.title_band_height", ui)
         self.assertIn("ui_palette::kTitleBackground", ui)
         self.assertIn("ui_palette::kTitleText", ui)
