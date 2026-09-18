@@ -29,6 +29,36 @@ void TrustedClock::mark_synchronized(
     source_ = source;
 }
 
+bool TrustedClock::accept_ntp_sample(
+    std::uint64_t unix_seconds,
+    std::int64_t monotonic_us
+) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (synchronized_) {
+        const std::int64_t elapsed = elapsed_us(monotonic_us, base_monotonic_us_);
+        if (elapsed < 0) return false;
+
+        const std::uint64_t elapsed_seconds =
+            static_cast<std::uint64_t>(elapsed / 1'000'000);
+        if (base_unix_seconds_ >
+            std::numeric_limits<std::uint64_t>::max() - elapsed_seconds) {
+            return false;
+        }
+        const std::uint64_t projected = base_unix_seconds_ + elapsed_seconds;
+        const std::uint64_t delta = unix_seconds >= projected
+            ? unix_seconds - projected
+            : projected - unix_seconds;
+        if (delta > kMaxNtpJumpSeconds) return false;
+    }
+
+    synchronized_ = true;
+    base_unix_seconds_ = unix_seconds;
+    base_monotonic_us_ = monotonic_us;
+    source_ = Source::kNtp;
+    return true;
+}
+
 Snapshot TrustedClock::snapshot(std::int64_t monotonic_us) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Snapshot result;
@@ -104,6 +134,18 @@ const char* source_name(Source source) {
             return "ntp";
         case Source::kUsb:
             return "usb";
+    }
+    return "none";
+}
+
+const char* source_authenticity_name(Source source) {
+    switch (source) {
+        case Source::kNone:
+            return "none";
+        case Source::kNtp:
+            return "unauthenticated_network";
+        case Source::kUsb:
+            return "local_host_asserted";
     }
     return "none";
 }
