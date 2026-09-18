@@ -67,6 +67,14 @@ describe("localized Web navigation", () => {
     )).toContain("メタデータなし");
   });
 
+  it("localizes terminal success notices for shared Device actions", () => {
+    expect(displayUiText("Canonical status refreshed.", "ja")).toContain("更新しました");
+    expect(displayUiText("Canonical Vault update completed.", "ja")).toContain("更新が完了");
+    expect(displayUiText("Account renamed in the canonical Vault.", "ja")).toContain("変更しました");
+    expect(displayUiText("Account deleted from the canonical Vault.", "ja")).toContain("削除しました");
+    expect(displayUiText("Canonical account order updated.", "ja")).toContain("並び順");
+  });
+
   it("normalizes legacy product branding in both languages", () => {
     expect(displayUiText("M5 Authenticator", "en")).toBe("M5Authenticator");
     expect(displayUiText("M5 Authenticator", "ja")).toBe("M5Authenticator");
