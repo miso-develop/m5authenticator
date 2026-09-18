@@ -2,6 +2,8 @@
 
 **English** | [日本語](README.ja.md)
 
+![M5Authenticator overview](docs/assets/m5authenticator-overview.jpg)
+
 M5Authenticator is a standalone TOTP authenticator for **M5StickS3**. It stores TOTP credentials in an encrypted Vault on the Device, keeps the Vault Master Key (VMK) only in RAM while unlocked, and uses a local-only Web app for provisioning, account management, firmware updates, and recovery.
 
 Use the hosted Web app with the latest stable **Desktop Chrome** and Web Serial:
