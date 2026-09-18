@@ -665,6 +665,7 @@ export class CanonicalDeviceManagement {
             await this.transport.requestCanonicalV2("factory_reset.status", attemptParams),
           );
           if (status === "confirmed") {
+            if (Date.now() >= deadline) throw new FactoryResetExpiredError();
             if (options.signal?.aborted) throw new FactoryResetCancelledError();
 
             await this.resetIntents.stage({
@@ -915,7 +916,11 @@ export class CanonicalDeviceManagement {
       notifyCanonicalBrowserStateChanged();
       return;
     }
-    if (operationError) throw operationError;
+    if (operationError) {
+      throw new Error(
+        "Factory Reset did not complete. The original Device/browser binding remains active; no browser canonical state was cleared.",
+      );
+    }
     throw new Error("Device did not enter UNPROVISIONED after Factory Reset");
   }
 
