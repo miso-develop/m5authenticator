@@ -255,6 +255,159 @@ button:disabled, input:disabled, select:disabled {
 .help-list li { margin: 10px 0; line-height: 1.65; }
 .help-warning { padding-bottom: 4px; }
 
+.help-diagram {
+  max-width: 100%;
+  margin: 20px 0 4px;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid #d4d4d4;
+  border-radius: 14px;
+  background: #fafafa;
+}
+
+.help-diagram figcaption {
+  font-size: 1rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.help-diagram-description {
+  margin: 6px 0 14px;
+  color: #525252;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.help-flow-groups,
+.help-decision-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.help-flow-group,
+.help-trust-card,
+.help-decision-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.help-flow-group h3,
+.help-trust-card h3,
+.help-decision-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.help-flow-list {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: help-flow-step;
+}
+
+.help-flow-step {
+  position: relative;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d4d4d4;
+  border-left-width: 4px;
+  border-radius: 9px;
+  background: #ffffff;
+  counter-increment: help-flow-step;
+}
+
+.help-flow-step + .help-flow-step::before {
+  position: absolute;
+  top: -17px;
+  left: 50%;
+  width: 18px;
+  margin-left: -9px;
+  color: #737373;
+  content: "↓";
+  text-align: center;
+}
+
+.help-flow-step--browser { border-left-color: #2563eb; }
+.help-flow-step--device { border-left-color: #525252; }
+.help-flow-step--physical {
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+.help-diagram-domain {
+  display: inline-block;
+  margin-bottom: 5px;
+  padding: 2px 7px;
+  border: 1px solid #d4d4d4;
+  border-radius: 999px;
+  background: #f5f5f5;
+  font-size: 0.75rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.help-flow-copy {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.help-trust-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.help-trust-card--device { border-top: 3px solid #525252; }
+.help-trust-card--browser { border-top: 3px solid #2563eb; }
+.help-trust-card--recovery { border-top: 3px dashed #737373; }
+
+.help-diagram-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.help-diagram-list li {
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.help-boundary-notes {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid #737373;
+  background: #ffffff;
+}
+
+.help-boundary-notes p {
+  margin: 4px 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.help-decision-card--update { border-top: 3px solid #2563eb; }
+.help-decision-card--erase { border-top: 3px dashed #737373; }
+.help-decision-card--reset { border-top: 3px solid #b45309; }
+.help-decision-card--recovery {
+  border: 2px dashed #991b1b;
+}
+
+.help-decision-when {
+  margin: 0 0 10px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
 @media (max-width: 720px) {
   .site-nav-shell { grid-template-columns: minmax(0, 1fr) auto; }
   .site-tabs {
@@ -268,6 +421,16 @@ button:disabled, input:disabled, select:disabled {
 }
 
 @media (max-width: 560px) {
+  .help-flow-groups,
+  .help-trust-grid,
+  .help-decision-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .help-diagram {
+    padding: 12px;
+  }
+
   #site-header { padding: 12px 12px 0; }
   #app, #flash-app, #help-app { padding: 12px; }
   .shell { padding: 24px; }

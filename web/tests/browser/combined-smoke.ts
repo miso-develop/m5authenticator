@@ -1,6 +1,7 @@
 import { runArgon2CspSmoke, runProductionArgon2Smoke } from "./argon2-csp-smoke";
 import { runAutoLockContextSmoke } from "./auto-lock-context-smoke";
 import { runLocalizationReworkSmoke } from "./localization-rework-smoke";
+import { runHelpDiagramsSmoke } from "./help-diagrams-smoke";
 import { runPostProvisioningLayoutSmoke } from "./post-provisioning-layout-smoke";
 import { runDenseMigrationQrSmoke } from "./qr-dense-migration-smoke";
 
@@ -25,6 +26,12 @@ async function run(): Promise<void> {
   await runPostProvisioningLayoutSmoke();
   if (document.body.dataset.postProvisioningLayoutStatus !== "pass") {
     throw new Error("Post-provisioning layout DOM smoke did not complete successfully");
+  }
+
+  document.body.dataset.stage = "help-diagrams";
+  await runHelpDiagramsSmoke();
+  if (document.body.dataset.helpDiagramsStatus !== "pass") {
+    throw new Error("Help diagram production smoke did not complete successfully");
   }
 
   document.body.dataset.stage = "qr-decode";
