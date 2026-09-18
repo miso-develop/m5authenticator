@@ -51,7 +51,6 @@ describe("browser lifecycle transport boundary", () => {
     const abortPending = vi.fn();
     const clearTransientState = vi.fn();
     const disconnectTransport = vi.fn(async () => undefined);
-    const explicitClose = vi.fn(async () => undefined);
     const serialClose = vi.fn(async () => undefined);
 
     cleanupBrowserLifecycle({
@@ -66,7 +65,6 @@ describe("browser lifecycle transport boundary", () => {
     expect(clearTransientState).toHaveBeenCalledTimes(1);
     expect(disconnectTransport).toHaveBeenCalledTimes(1);
     expect(serialClose).not.toHaveBeenCalled();
-    expect(explicitClose).not.toHaveBeenCalled();
   });
 
   it("falls back to transport close when canonical management is not active", async () => {
