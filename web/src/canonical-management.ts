@@ -643,7 +643,7 @@ export class CanonicalDeviceManagement {
       this.requireActiveWriter();
       if (this.hello.factoryResetPresenceRequired !== true) {
         throw new Error(
-          "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; the legacy one-shot reset is not used.",
+          "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.",
         );
       }
       if (options.signal?.aborted) throw new FactoryResetCancelledError();
