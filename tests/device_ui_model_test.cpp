@@ -139,7 +139,7 @@ int main() {
     );
     const std::size_t erase_old_otp = render_region.find("geometry.otp_y");
     const std::size_t draw_new_validity = render_region.find("render_reveal_validity();");
-    const std::size_t draw_new_otp = render_region.find("draw_otp(revealed_code_);");
+    const std::size_t draw_new_otp = render_region.find("draw_otp(revealed_code_, geometry.otp_y);");
     assert(erase_old_otp != std::string::npos);
     assert(draw_new_validity != std::string::npos);
     assert(draw_new_otp != std::string::npos);
