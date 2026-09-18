@@ -184,12 +184,13 @@ class ResetDevice implements CanonicalV2Transport {
   ): Promise<Record<string, unknown>> {
     this.operations.push(op);
     if (op === "hello") {
-      const capability = Object.prototype.hasOwnProperty.call(this.options, "capability")
-        ? this.options.capability
-        : true;
-      return this.resetCommitted
-        ? cleanHello()
-        : provisionedHello(this.state, capability);
+      if (this.resetCommitted) return cleanHello();
+      if (!Object.prototype.hasOwnProperty.call(this.options, "capability")) {
+        return provisionedHello(this.state, true);
+      }
+      const hello = provisionedHello(this.state, this.options.capability);
+      if (this.options.capability === undefined) delete hello.factory_reset_presence_required;
+      return hello;
     }
     if (op === "time.status") return readyTime();
     if (op === "factory_reset.begin") {
