@@ -68,11 +68,13 @@ int main() {
     using m5auth::session::AttemptId;
     using m5auth::session::PresenceOperation;
 
-    // Issue #187: the title frame is metric-based and uses exact one-pixel
-    // top/bottom/left padding plus one black separator row.
-    assert(kTitleBackground == 0xffff);
-    assert(kTitleText == 0x0000);
+    // Issue #187: the title frame keeps its metric geometry while the
+    // reworked palette returns to black with a brighter blue title.
+    assert(kTitleBackground == 0x0000);
+    assert(kTitleText == 0x451f);
     assert(kConfirmationAction == 0x07ff);
+    assert(kTitleText != 0x1c9f);
+    assert(kTitleText != kConfirmationAction);
     assert(kTitlePaddingTopPx == 1);
     assert(kTitlePaddingBottomPx == 1);
     assert(kTitlePaddingLeftPx == 1);
