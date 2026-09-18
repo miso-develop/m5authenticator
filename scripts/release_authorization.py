@@ -83,16 +83,17 @@ def required_status_checks(main_rules_payload: object) -> list[tuple[str, int | 
     return required
 
 
-def _successful_check_run(
+def _check_run_state(
     source_sha: str,
     context: str,
     integration_id: int | None,
     check_runs_payload: dict[str, Any],
-) -> bool:
+) -> tuple[bool, bool]:
     runs = check_runs_payload.get("check_runs")
     if not isinstance(runs, list):
         raise ValueError("check-runs payload does not contain check_runs")
 
+    matching: list[dict[str, Any]] = []
     for run in runs:
         if not isinstance(run, dict) or run.get("name") != context:
             continue
@@ -102,21 +103,38 @@ def _successful_check_run(
         app_id = app.get("id") if isinstance(app, dict) else None
         if integration_id is not None and app_id != integration_id:
             continue
-        if run.get("status") == "completed" and run.get("conclusion") == "success":
-            return True
-    return False
+        matching.append(run)
+
+    if not matching:
+        return False, False
+
+    successful_conclusions = {"success", "neutral", "skipped"}
+    return True, all(
+        run.get("status") == "completed"
+        and run.get("conclusion") in successful_conclusions
+        for run in matching
+    )
 
 
-def _successful_commit_status(context: str, statuses_payload: dict[str, Any]) -> bool:
+def _commit_status_state(
+    context: str,
+    statuses_payload: dict[str, Any],
+) -> tuple[bool, bool]:
     statuses = statuses_payload.get("statuses")
     if not isinstance(statuses, list):
         raise ValueError("combined-status payload does not contain statuses")
-    return any(
-        isinstance(status, dict)
-        and status.get("context") == context
-        and status.get("state") == "success"
+
+    matching = [
+        status
         for status in statuses
-    )
+        if isinstance(status, dict) and status.get("context") == context
+    ]
+    if not matching:
+        return False, False
+
+    # The combined-status endpoint exposes the latest status for each context.
+    # Fail closed if a malformed payload contains duplicate same-context entries.
+    return True, all(status.get("state") == "success" for status in matching)
 
 
 def require_protected_main_checks(
@@ -129,16 +147,34 @@ def require_protected_main_checks(
     missing: list[str] = []
 
     for context, integration_id in required_status_checks(main_rules_payload):
-        satisfied = _successful_check_run(
+        check_present, check_success = _check_run_state(
             source,
             context,
             integration_id,
             check_runs_payload,
         )
-        # Integration-bound rules must come from that exact GitHub App.
-        # Unbound contexts may also be satisfied by a classic commit status.
-        if not satisfied and integration_id is None:
-            satisfied = _successful_commit_status(context, statuses_payload)
+
+        if integration_id is not None:
+            # Integration-bound rules can only be satisfied by a Check Run from
+            # the exact GitHub App selected by the protected-main Ruleset.
+            satisfied = check_present and check_success
+        else:
+            status_present, status_success = _commit_status_state(
+                context,
+                statuses_payload,
+            )
+            # GitHub treats Checks and classic commit statuses as distinct
+            # required mechanisms. If the same required name exists in both,
+            # both must pass; otherwise the single reported mechanism must pass.
+            if check_present and status_present:
+                satisfied = check_success and status_success
+            elif check_present:
+                satisfied = check_success
+            elif status_present:
+                satisfied = status_success
+            else:
+                satisfied = False
+
         if not satisfied:
             suffix = f" (integration {integration_id})" if integration_id is not None else ""
             missing.append(f"{context}{suffix}")
