@@ -61,14 +61,35 @@ jobs:
             exit 1
           fi
 
-          git fetch --force --no-tags origin             "refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG"
+          git fetch --force --no-tags origin \\
+            "refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG"
           TAG_SHA="$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")"
 
-          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100"             > "$RUNNER_TEMP/main-rules.json"
-          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100"             > "$RUNNER_TEMP/check-runs.json"
-          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status"             > "$RUNNER_TEMP/statuses.json"
+          gh api \\
+            -H "Accept: application/vnd.github+json" \\
+            -H "X-GitHub-Api-Version: 2026-03-10" \\
+            "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" \\
+            > "$RUNNER_TEMP/main-rules.json"
+          gh api \\
+            -H "Accept: application/vnd.github+json" \\
+            -H "X-GitHub-Api-Version: 2026-03-10" \\
+            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100" \\
+            > "$RUNNER_TEMP/check-runs.json"
+          gh api \\
+            -H "Accept: application/vnd.github+json" \\
+            -H "X-GitHub-Api-Version: 2026-03-10" \\
+            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \\
+            > "$RUNNER_TEMP/statuses.json"
 
-          AUTHORIZED_TAG="$(python scripts/release_authorization.py             --source-sha "$GITHUB_SHA"             --main-sha "$MAIN_SHA"             --requested-tag "$REQUESTED_TAG"             --firmware-version "$FIRMWARE_VERSION"             --tag-sha "$TAG_SHA"             --main-rules "$RUNNER_TEMP/main-rules.json"             --check-runs "$RUNNER_TEMP/check-runs.json"             --statuses "$RUNNER_TEMP/statuses.json")"
+          AUTHORIZED_TAG="$(python scripts/release_authorization.py \\
+            --source-sha "$GITHUB_SHA" \\
+            --main-sha "$MAIN_SHA" \\
+            --requested-tag "$REQUESTED_TAG" \\
+            --firmware-version "$FIRMWARE_VERSION" \\
+            --tag-sha "$TAG_SHA" \\
+            --main-rules "$RUNNER_TEMP/main-rules.json" \\
+            --check-runs "$RUNNER_TEMP/check-runs.json" \\
+            --statuses "$RUNNER_TEMP/statuses.json")"
 
           if [ "$AUTHORIZED_TAG" != "$REQUESTED_TAG" ]; then
             echo "Authorized release tag output mismatch"
@@ -108,9 +129,16 @@ jobs:
           set -euo pipefail
           ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
           BUILD_ROOT="$RUNNER_TEMP/m5auth-release-build"
-          python scripts/ci_esp_idf_isolated_build.py             --source-root "$GITHUB_WORKSPACE"             --work-root "$BUILD_ROOT"             --image-reference "$ESP_IDF_IMAGE"
+          python scripts/ci_esp_idf_isolated_build.py \\
+            --source-root "$GITHUB_WORKSPACE" \\
+            --work-root "$BUILD_ROOT" \\
+            --image-reference "$ESP_IDF_IMAGE"
           git diff --exit-code
-          python scripts/ci_firmware_handoff.py create-build             --build-dir "$BUILD_ROOT/firmware/build"             --isolated-firmware-dir "$BUILD_ROOT/firmware"             --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff"             --source-commit "$SOURCE_SHA"
+          python scripts/ci_firmware_handoff.py create-build \\
+            --build-dir "$BUILD_ROOT/firmware/build" \\
+            --isolated-firmware-dir "$BUILD_ROOT/firmware" \\
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \\
+            --source-commit "$SOURCE_SHA"
       - name: Upload bounded raw build handoff
         id: upload-build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -152,14 +180,25 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
-          python scripts/ci_firmware_handoff.py verify-build             --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff"             --source-commit "$SOURCE_SHA"             --expected-lock firmware/dependencies.lock
+          python scripts/ci_firmware_handoff.py verify-build \\
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \\
+            --source-commit "$SOURCE_SHA" \\
+            --expected-lock firmware/dependencies.lock
       - name: Verify final firmware security surface
         run: python scripts/verify_firmware_image.py "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin"
       - name: Package independently verified firmware
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
-          python scripts/package_firmware.py             --merged-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin"             --bootloader-binary "$RUNNER_TEMP/m5auth-build-handoff/bootloader.bin"             --partition-table-binary "$RUNNER_TEMP/m5auth-build-handoff/partition-table.bin"             --app-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator.bin"             --output-dir "$RUNNER_TEMP/m5auth-release"             --build-commit "$SOURCE_SHA"             --exact-release             --require-production
+          python scripts/package_firmware.py \\
+            --merged-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin" \\
+            --bootloader-binary "$RUNNER_TEMP/m5auth-build-handoff/bootloader.bin" \\
+            --partition-table-binary "$RUNNER_TEMP/m5auth-build-handoff/partition-table.bin" \\
+            --app-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator.bin" \\
+            --output-dir "$RUNNER_TEMP/m5auth-release" \\
+            --build-commit "$SOURCE_SHA" \\
+            --exact-release \\
+            --require-production
           git diff --exit-code
       - name: Verify final package provenance and checksums
         id: verify-package
@@ -168,7 +207,10 @@ jobs:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
           set -euo pipefail
-          CHECKSUMS_SHA256="$(python scripts/ci_firmware_handoff.py verify-release-package             --package-dir "$RUNNER_TEMP/m5auth-release"             --build-provenance "$RUNNER_TEMP/m5auth-build-handoff/build-provenance.json"             --source-commit "$SOURCE_SHA")"
+          CHECKSUMS_SHA256="$(python scripts/ci_firmware_handoff.py verify-release-package \\
+            --package-dir "$RUNNER_TEMP/m5auth-release" \\
+            --build-provenance "$RUNNER_TEMP/m5auth-build-handoff/build-provenance.json" \\
+            --source-commit "$SOURCE_SHA")"
           echo "checksums-sha256=$CHECKSUMS_SHA256" >> "$GITHUB_OUTPUT"
       - name: Upload bounded verified release handoff
         id: upload-release
@@ -222,7 +264,15 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
-          python scripts/release_attestation.py             --package-dir "$RUNNER_TEMP/m5auth-release"             --source-commit "$SOURCE_SHA"             --repository "$GITHUB_REPOSITORY"             --workflow-ref "$WORKFLOW_REF"             --workflow-sha "$WORKFLOW_SHA"             --run-id "$GITHUB_RUN_ID"             --run-attempt "$GITHUB_RUN_ATTEMPT"             --output "$RUNNER_TEMP/m5auth-release-provenance.json"
+          python scripts/release_attestation.py \\
+            --package-dir "$RUNNER_TEMP/m5auth-release" \\
+            --source-commit "$SOURCE_SHA" \\
+            --repository "$GITHUB_REPOSITORY" \\
+            --workflow-ref "$WORKFLOW_REF" \\
+            --workflow-sha "$WORKFLOW_SHA" \\
+            --run-id "$GITHUB_RUN_ID" \\
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \\
+            --output "$RUNNER_TEMP/m5auth-release-provenance.json"
       - name: Attest standard GitHub build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
@@ -268,7 +318,20 @@ jobs:
           REQUESTED_TAG: ${{ needs.authorize.outputs.requested-tag }}
         run: |
           set -euo pipefail
-          gh release create "$REQUESTED_TAG"             --repo "$GITHUB_REPOSITORY"             "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3.bin             "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin             "$RUNNER_TEMP"/m5auth-release/factory-manifest.json             "$RUNNER_TEMP"/m5auth-release/update-manifest.json             "$RUNNER_TEMP"/m5auth-release/factory-manifest-*.json             "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json             "$RUNNER_TEMP"/m5auth-release/firmware-target.json             "$RUNNER_TEMP"/m5auth-release/release-metadata.json             "$RUNNER_TEMP"/m5auth-release/SHA256SUMS             --verify-tag             --title "M5Authenticator $REQUESTED_TAG"             --generate-notes
+          gh release create "$REQUESTED_TAG" \\
+            --repo "$GITHUB_REPOSITORY" \\
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3.bin \\
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \\
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest.json \\
+            "$RUNNER_TEMP"/m5auth-release/update-manifest.json \\
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest-*.json \\
+            "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json \\
+            "$RUNNER_TEMP"/m5auth-release/firmware-target.json \\
+            "$RUNNER_TEMP"/m5auth-release/release-metadata.json \\
+            "$RUNNER_TEMP"/m5auth-release/SHA256SUMS \\
+            --verify-tag \\
+            --title "M5Authenticator $REQUESTED_TAG" \\
+            --generate-notes
 
   cleanup:
     name: cleanup-transient-release-artifacts
