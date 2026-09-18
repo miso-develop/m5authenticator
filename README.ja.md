@@ -68,6 +68,7 @@ Provisionerの詳細動作、アカウント管理、Recovery、Firmware操作�
 
 ### 利用 / Web Provisioner
 
+- [Hosted Help / Usage](https://miso-develop.github.io/m5authenticator/help.html) — Deploy済みWebアプリのユーザー向け利用ガイド
 - [Web Provisioner](docs/WEB_PROVISIONER.md) — Provisioning、アカウント管理、Browser state、Trusted Browser、Recovery
 - [Device UI](docs/DEVICE_UI.md) — アカウント選択、Device確認、時刻状態、OTP表示
 - [Time](docs/TIME.md) — 時刻同期とOTP readiness rule
