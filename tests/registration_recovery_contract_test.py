@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -165,6 +166,13 @@ class RegistrationRecoveryContractTests(unittest.TestCase):
         self.assertIn("install_recovered_vault", body)
         self.assertIn("default:", body)
         self.assertIn("vmk_sink_.cancel_pending();", body)
+
+    def test_canonical_factory_reset_behavior_uses_production_handler(self) -> None:
+        subprocess.run(
+            ["python", "-m", "unittest", "tests/factory_reset_protocol_behavior_test.py"],
+            cwd=ROOT,
+            check=True,
+        )
 
     def test_header_exposes_no_unconfirmed_device_id_reset_api(self) -> None:
         text = REGISTRATION_HPP.read_text(encoding="utf-8")

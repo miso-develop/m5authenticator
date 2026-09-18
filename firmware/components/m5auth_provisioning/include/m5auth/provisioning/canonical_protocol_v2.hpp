@@ -9,6 +9,7 @@
 
 #include "m5auth/core/metadata.hpp"
 #include "m5auth/provisioning/canonical_v2_state.hpp"
+#include "m5auth/provisioning/factory_reset_authorization.hpp"
 #include "m5auth/provisioning/recovery_reset.hpp"
 #include "m5auth/provisioning/session_protocol_v2.hpp"
 #include "m5auth/registration/registration.hpp"
@@ -28,7 +29,7 @@ public:
         time::TimeService& time_service,
         StagedSessionV2Handler& session_handler,
         CanonicalVmkSink& vmk_sink,
-        session::protocol_v2::PresenceBinding& recovery_presence,
+        session::protocol_v2::PresenceBinding& reset_presence,
         std::recursive_mutex& runtime_access_mutex,
         std::function<void()> security_boundary_clear = {}
     );
@@ -42,6 +43,7 @@ public:
     void housekeeping(std::uint64_t now_ms);
 
 private:
+    void cancel_healthy_factory_reset();
     void cancel_recovery_reset();
     void notify_security_boundary();
     vault_runtime::Status lock_security_boundary();
@@ -57,10 +59,11 @@ private:
     time::TimeService& time_service_;
     StagedSessionV2Handler& session_handler_;
     CanonicalVmkSink& vmk_sink_;
-    session::protocol_v2::PresenceBinding& recovery_presence_;
+    session::protocol_v2::PresenceBinding& reset_presence_;
     std::recursive_mutex& runtime_access_mutex_;
     std::function<void()> security_boundary_clear_;
 
+    FactoryResetAuthorization healthy_factory_reset_{};
     session::AttemptId recovery_reset_attempt_id_{};
     std::uint64_t recovery_reset_deadline_ms_{0};
     bool recovery_reset_active_{false};

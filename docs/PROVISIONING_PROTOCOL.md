@@ -34,6 +34,7 @@ Returns only non-secret compatibility/status metadata, including:
 - Device Vault generation
 - active registration id/epoch and BRK public-key identity/fingerprint where required
 - trusted-time state/source/age/resync metadata
+- `factory_reset_presence_required: true` capability on firmware that enforces fresh healthy-reset presence
 
 Unsupported versions fail closed for security-sensitive operations.
 
@@ -135,6 +136,7 @@ Fresh Device physical confirmation is mandatory for:
 - untrusted/new-Browser recovery of an existing Device
 - Trusted Browser replacement
 - VMK rotation/re-key
+- healthy Factory Reset while `UNLOCKED`
 
 Ordinary same-VMK Vault generation update while already `UNLOCKED` does not require a new physical confirmation for every mutation.
 
@@ -183,9 +185,29 @@ An already-established current-boot trusted anchor may survive explicit Lock; re
 
 ## Factory Reset
 
-`factory.reset` remains an explicit destructive Web/USB operation with strong user confirmation.
+Healthy Factory Reset is a Device-enforced fresh-presence transaction. `UNLOCKED` state, host-side confirmation, an earlier unlock gesture, or an unbound legacy request is never sufficient authorization to erase state. Hardened firmware advertises `factory_reset_presence_required: true` in `hello`; absence of that capability must be treated as unsupported secure reset rather than as permission to fall back to the legacy one-shot path.
 
-It must:
+The healthy Protocol-v2 flow is:
+
+```text
+factory_reset.begin
+  -> Device creates fresh unpredictable attempt_id, 30-second deadline
+  -> Device starts a new Factory Reset presence gate after neutral-input qualification
+factory_reset.status {attempt_id}
+  -> awaiting_confirmation | confirmed
+factory_reset.commit {attempt_id}
+  -> consumes the matching confirmed presence exactly once
+  -> revalidates healthy UNLOCKED ownership state
+  -> erases Device state transactionally/fail-closed
+```
+
+`factory_reset.cancel {attempt_id}` explicitly invalidates the matching pending attempt without persistent erase. Timeout, superseding reset attempt, transport disconnect/session teardown, explicit Lock, malformed/faulted transport security boundary, or any other security-boundary failure also invalidates the pending authorization. A stale, queued, prior, mismatched, canceled, expired, or already-consumed attempt cannot authorize a later commit.
+
+The legacy one-shot `factory_reset` operation is retained only as a fail-closed compatibility surface: on a healthy `UNLOCKED` Device it returns `presence_required` and performs no erase; in other normal states it returns `invalid_state`. A destructive commit therefore always carries the current `attempt_id`. Normal healthy reset remains unavailable while `LOCKED`.
+
+The existing `factory_reset.recovery_begin` / `factory_reset.recovery_status` / `factory_reset.recovery_complete` flow remains a separate recovery-only path for partial/corrupt ownership states and retains its existing fresh presence requirements.
+
+An authorized healthy or recovery reset must:
 
 - wipe VMK and pending session keys
 - erase Device Encrypted Vault and registration/user state
