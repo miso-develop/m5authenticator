@@ -137,16 +137,76 @@ describe("canonical Protocol v2 management", () => {
     expect(() => parseCanonicalFactoryResetStatus({ state: "expired" })).toThrow(/invalid Factory Reset status/);
   });
 
+  it("parses the stable trusted-time source-authenticity combinations", () => {
+    const cases = [
+      ["none", "none"],
+      ["ntp", "unauthenticated_network"],
+      ["usb", "local_host_asserted"],
+    ] as const;
+
+    for (const [source, source_authenticity] of cases) {
+      expect(parseCanonicalTimeStatus({
+        readiness: source === "none" ? "not_synced" : "ready",
+        source,
+        source_authenticity,
+        last_sync_unix_seconds: source === "none" ? "0" : "1789156800",
+        age_seconds: 3,
+        resync_due: false,
+      }).sourceAuthenticity).toBe(source_authenticity);
+    }
+  });
+
+  it("keeps missing or future trusted-time authenticity metadata compatible without inventing trust", () => {
+    expect(parseCanonicalTimeStatus({
+      readiness: "ready",
+      source: "ntp",
+      last_sync_unix_seconds: "1789156800",
+      age_seconds: 3,
+      resync_due: false,
+    }).sourceAuthenticity).toBe("unknown");
+
+    expect(parseCanonicalTimeStatus({
+      readiness: "ready",
+      source: "ntp",
+      source_authenticity: "future_network_attestation",
+      last_sync_unix_seconds: "1789156800",
+      age_seconds: 3,
+      resync_due: false,
+    }).sourceAuthenticity).toBe("unknown");
+  });
+
+  it("rejects malformed or contradictory trusted-time authenticity metadata", () => {
+    expect(() => parseCanonicalTimeStatus({
+      readiness: "ready",
+      source: "ntp",
+      source_authenticity: "local_host_asserted",
+      last_sync_unix_seconds: "1789156800",
+      age_seconds: 3,
+      resync_due: false,
+    })).toThrow(/invalid trusted-time status/);
+
+    expect(() => parseCanonicalTimeStatus({
+      readiness: "ready",
+      source: "ntp",
+      source_authenticity: 7,
+      last_sync_unix_seconds: "1789156800",
+      age_seconds: 3,
+      resync_due: false,
+    })).toThrow(/source authenticity/);
+  });
+
   it("parses trusted-time framing and serializes both supported encrypted Vault formats", () => {
     expect(parseCanonicalTimeStatus({
       readiness: "ready",
       source: "usb",
+      source_authenticity: "local_host_asserted",
       last_sync_unix_seconds: "1789156800",
       age_seconds: 3,
       resync_due: false,
     })).toEqual({
       readiness: "ready",
       source: "usb",
+      sourceAuthenticity: "local_host_asserted",
       lastSyncUnixSeconds: 1789156800n,
       ageSeconds: 3,
       resyncDue: false,
