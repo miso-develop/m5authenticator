@@ -27,13 +27,14 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "Return to Provisioner and connect the M5StickS3 with Desktop Chrome. Import a standard TOTP QR image or a Google Authenticator export image. QR images and imported secrets are processed locally.",
       "For initial provisioning, choose and confirm a long unique Recovery Passphrase. M5Authenticator blocks obviously weak, repetitive, sequential, and common choices, but does not estimate or guarantee Passphrase entropy. Apply the imported accounts, then confirm the dedicated request on the M5StickS3 when prompted.",
       "After provisioning or reboot, use Unlock and confirm the UNLOCK REQUEST on the M5StickS3. A valid Trusted Browser registration does not bypass this physical confirmation.",
+      "After an authorized connect to an already-UNLOCKED Device, or after a successful Trusted Browser Unlock, Provisioner may automatically sync PC time only when Time readiness is NOT SYNCED or STALE. A READY anchor is not overwritten automatically. PC time remains local-host asserted and is not cryptographically authenticated.",
       "Before using OTP codes, make sure Time readiness is READY. READY means the Device has a fresh enough current-boot time anchor for OTP generation; it does not cryptographically authenticate the time source. Provisioner labels ordinary NTP as Network time (unauthenticated) and PC sync as local-host asserted.",
     ],
     otpTitle: "Accounts and OTP use",
     otp: [
       "Manage account display names, order, and deletion from Provisioner only while the Device is UNLOCKED and this browser is the active Trusted Browser.",
       "On the M5StickS3, select the required account and reveal its OTP only when needed. Treat displayed OTP codes as short-lived authentication credentials.",
-      "Use Lock & Disconnect when you are finished. Locking discards the RAM-only Vault key; reconnecting or rebooting requires a fresh Unlock confirmation.",
+      "Closing or reloading the Web page, navigating away, or losing Web Serial/USB data transport does not itself Lock a still-running Device. Use Lock & Disconnect when you intentionally want to discard the RAM-only Vault key. A true reboot or power loss still returns the Device to LOCKED.",
     ],
     maintenanceTitle: "Firmware updates",
     maintenance: [
@@ -65,13 +66,14 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "「プロビジョニング」に戻り、Desktop ChromeからM5StickS3へ接続します。標準TOTP QR画像またはGoogle Authenticatorのエクスポート画像をインポートします。QR画像と秘密情報はローカルで処理されます。",
       "初回プロビジョニングでは長く一意なRecovery Passphraseを設定して確認入力します。M5Authenticatorは明らかに弱い、反復的、連続的、一般的なPassphraseを拒否しますが、Passphraseのentropyを測定または保証するものではありません。インポートしたアカウントを適用し、要求されたらM5StickS3上の専用確認画面で物理確認してください。",
       "プロビジョニング後または再起動後は「ロック解除」を実行し、M5StickS3上のUNLOCK REQUESTを確認します。有効なTrusted Browser登録があっても、この物理確認は省略されません。",
+      "すでにUNLOCKEDのDeviceへ認可済みTrusted Browserで接続した場合、またはTrusted Browserのロック解除に成功した後、「時刻の利用可否」がNOT SYNCEDまたはSTALEのときだけProvisionerがPC時刻を自動同期する場合があります。READYのanchorは自動上書きしません。PC時刻はローカルホスト申告であり、暗号学的に認証された時刻ではありません。",
       "OTPを使用する前に「時刻の利用可否」がREADYであることを確認してください。READYは現在のbootでOTP生成に十分新しい時刻anchorがあるという運用状態であり、時刻ソースが暗号学的に認証済みという意味ではありません。Provisionerでは通常のNTPを「ネットワーク時刻（未認証）」、PC同期をローカルホスト申告として区別して表示します。",
     ],
     otpTitle: "アカウント管理とOTP利用",
     otp: [
       "アカウントの表示名、並び順、削除は、DeviceがUNLOCKEDでこのブラウザが有効なTrusted Browserである間だけ「プロビジョニング」から変更します。",
       "M5StickS3で必要なアカウントを選択し、必要なときだけOTPを表示してください。表示されたOTPは短時間だけ有効な認証情報として扱ってください。",
-      "利用終了時は「ロックして切断」を使用します。LOCKするとRAM-only Vault keyが破棄されるため、再接続または再起動後は再度ロック解除の物理確認が必要です。",
+      "Webページを閉じる、再読み込みする、別ページへ移動する、またはWeb Serial / USBデータ接続が失われるだけでは、同じruntimeで動作し続けているDeviceは自動的にはLOCKされません。RAM-only Vault keyを意図的に破棄したい場合は「ロックして切断」を使用してください。実際の再起動または電源断ではDeviceはLOCKEDへ戻ります。",
     ],
     maintenanceTitle: "ファームウェア更新",
     maintenance: [

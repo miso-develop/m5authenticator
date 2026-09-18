@@ -1,5 +1,7 @@
 import "./style.css";
 import { createAutoLockSettingsController } from "./auto-lock-settings";
+import { synchronizePcTimeIfEligible } from "./automatic-pc-time";
+import { cleanupBrowserLifecycle } from "./browser-lifecycle";
 import {
   CANONICAL_BROWSER_STATE_CHANGED_EVENT,
   CanonicalDeviceManagement,
@@ -212,6 +214,12 @@ connectButton.addEventListener("click", async () => {
       : "Unprovisioned canonical Protocol 2 Device connected.";
     await management.initialize();
     await refreshDevice();
+    const automaticTimeHandled = await maybeSynchronizePcTimeAutomatically(
+      "Trusted Browser active; Device is UNLOCKED.",
+    );
+    if (automaticTimeHandled) {
+      return;
+    }
     if (snapshot?.browserOwnership === "conflict") {
       deviceNotice.textContent = "This browser is not the active Device writer. Use the explicit recovery/reconciliation path.";
     } else if (snapshot?.unlockRequired) {
@@ -235,9 +243,16 @@ connectButton.addEventListener("click", async () => {
 unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST — confirm on M5StickS3…", "Unlock request completed; Device status refreshed.", async () => {
   await requireManagement().requestUnlock();
   await refreshDevice();
-  deviceNotice.textContent = snapshot?.hello.state === "unlocked"
-    ? "Trusted Browser active; Device is UNLOCKED."
-    : "Unlock was not confirmed. Registration remains valid; retry when ready.";
+  if (snapshot?.hello.state === "unlocked") {
+    const automaticTimeHandled = await maybeSynchronizePcTimeAutomatically(
+      "Trusted Browser active; Device is UNLOCKED.",
+    );
+    if (!automaticTimeHandled) {
+      deviceNotice.textContent = "Trusted Browser active; Device is UNLOCKED.";
+    }
+    return;
+  }
+  deviceNotice.textContent = "Unlock was not confirmed. Registration remains valid; retry when ready.";
 }));
 
 restoreRecoveryButton.addEventListener("click", () => {
@@ -388,16 +403,18 @@ window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
 });
 
 window.addEventListener("pagehide", () => {
-  factoryResetAbortController?.abort();
-  importSession.clear();
-  wifiPassword.value = "";
-  rekeyPassphrase.value = "";
-  clearInitialPassphrase();
-  if (management) {
-    void management.disconnectTransport();
-  } else if (serialSession) {
-    void serialSession.close();
-  }
+  cleanupBrowserLifecycle({
+    abortPending: () => factoryResetAbortController?.abort(),
+    clearTransientState: () => {
+      importSession.clear();
+      qrFileInput.value = "";
+      wifiPassword.value = "";
+      rekeyPassphrase.value = "";
+      clearInitialPassphrase();
+    },
+    management,
+    serialSession,
+  });
 });
 
 async function refreshDevice(): Promise<void> {
@@ -409,6 +426,47 @@ async function refreshDevice(): Promise<void> {
   }
   snapshot = await requireManagement().refresh();
   renderDevice();
+}
+
+async function maybeSynchronizePcTimeAutomatically(primarySuccessMessage: string): Promise<boolean> {
+  const outcome = await synchronizePcTimeIfEligible(
+    management,
+    snapshot,
+    recoveryReset !== null,
+  );
+  if (outcome.kind === "skipped") return false;
+
+  if (outcome.kind === "synchronized") {
+    try {
+      await refreshDevice();
+      deviceNotice.textContent = `${primarySuccessMessage} PC time synchronized automatically from this local host (not cryptographically authenticated).`;
+    } catch {
+      if (serialSession?.isClosed()) {
+        await disconnectDevice(false);
+        deviceNotice.textContent = "Device connection/unlock succeeded and PC time was synchronized automatically, but the transport closed before status could be refreshed. Reconnect to continue.";
+      } else {
+        deviceNotice.textContent = "Device connection/unlock succeeded and PC time was synchronized automatically, but current time status could not be refreshed.";
+      }
+    }
+    return true;
+  }
+
+  try {
+    await refreshDevice();
+  } catch {
+    if (serialSession?.isClosed()) {
+      await disconnectDevice(false);
+    }
+  }
+
+  if (snapshot?.browserOwnership === "active" && snapshot.hello.state === "unlocked") {
+    deviceNotice.textContent = "Device is UNLOCKED, but automatic PC time sync failed. Use Sync PC time to retry.";
+  } else if (management) {
+    deviceNotice.textContent = "Device connection/unlock succeeded, but automatic PC time sync failed and current Device state is no longer writable. Unlock again before retrying PC time sync.";
+  } else {
+    deviceNotice.textContent = "Device connection/unlock succeeded, but automatic PC time sync failed and the transport is no longer available. Reconnect to retry.";
+  }
+  return true;
 }
 
 async function disconnectDevice(lockDevice = true): Promise<void> {

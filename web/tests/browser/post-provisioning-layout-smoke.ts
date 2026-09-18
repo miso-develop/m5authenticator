@@ -53,8 +53,20 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   const originalRefresh = CanonicalDeviceManagement.prototype.refresh;
   const originalImportAccounts = CanonicalDeviceManagement.prototype.importAccounts;
   const originalFactoryReset = CanonicalDeviceManagement.prototype.factoryReset;
+  const originalRequestUnlock = CanonicalDeviceManagement.prototype.requestUnlock;
+  const originalSyncTime = CanonicalDeviceManagement.prototype.syncTime;
+  const originalClose = CanonicalDeviceManagement.prototype.close;
+  const originalDisconnectTransport = CanonicalDeviceManagement.prototype.disconnectTransport;
   const originalHasCompleteAccounts = ImportSession.prototype.hasCompleteAccounts;
   const originalConfirm = window.confirm;
+
+  let syncTimeCalls = 0;
+  let requestUnlockCalls = 0;
+  let explicitCloseCalls = 0;
+  let transportDisconnectCalls = 0;
+  let syncFailure: Error | null = null;
+  let unlockFailure: Error | null = null;
+  let unlockGate: Promise<void> | null = null;
 
   SerialSession.connect = async () => ({
     session: {
@@ -74,6 +86,39 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   ): Promise<number> {
     currentSnapshot = createSnapshot(true, false);
     return 1;
+  };
+  CanonicalDeviceManagement.prototype.requestUnlock = async function (): Promise<void> {
+    requestUnlockCalls += 1;
+    if (unlockGate) await unlockGate;
+    if (unlockFailure) throw unlockFailure;
+    currentSnapshot = {
+      ...currentSnapshot,
+      hello: { ...currentSnapshot.hello, state: "unlocked" },
+      browserOwnership: "active",
+      unlockRequired: false,
+    };
+  };
+  CanonicalDeviceManagement.prototype.syncTime = async function () {
+    syncTimeCalls += 1;
+    if (syncFailure) throw syncFailure;
+    currentSnapshot = {
+      ...currentSnapshot,
+      time: {
+        readiness: "ready",
+        source: "usb",
+        sourceAuthenticity: "local_host_asserted",
+        lastSyncUnixSeconds: 1n,
+        ageSeconds: 0,
+        resyncDue: false,
+      },
+    };
+    return currentSnapshot.time;
+  };
+  CanonicalDeviceManagement.prototype.close = async function (): Promise<void> {
+    explicitCloseCalls += 1;
+  };
+  CanonicalDeviceManagement.prototype.disconnectTransport = async function (): Promise<void> {
+    transportDisconnectCalls += 1;
   };
   ImportSession.prototype.hasCompleteAccounts = function (): boolean {
     return true;
@@ -103,12 +148,17 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await import("../../src/main");
 
     const connect = required<HTMLButtonElement>(document, "#connect");
+    const unlock = required<HTMLButtonElement>(document, "#unlock-device");
+    const disconnect = required<HTMLButtonElement>(document, "#disconnect");
     const refresh = required<HTMLButtonElement>(document, "#refresh-device");
+    const syncTime = required<HTMLButtonElement>(document, "#sync-time");
     const connectionState = required<HTMLElement>(document, "#connection-state");
     const deviceStatus = required<HTMLElement>(document, "#device-status");
     const fields = required<HTMLElement>(document, "#initial-passphrase-fields");
     const passphrase = required<HTMLInputElement>(document, "#initial-recovery-passphrase");
     const passphraseConfirm = required<HTMLInputElement>(document, "#initial-recovery-passphrase-confirm");
+    const wifiPassword = required<HTMLInputElement>(document, "#wifi-password");
+    const rekeyPassphrase = required<HTMLInputElement>(document, "#rekey-recovery-passphrase");
     const provision = required<HTMLButtonElement>(document, "#provision-import");
     const resetConfirmation = required<HTMLInputElement>(document, "#reset-confirmation");
     const factoryReset = required<HTMLButtonElement>(document, "#factory-reset");
@@ -271,12 +321,196 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     const regularDivider = getComputedStyle(majorSections[0]!).borderTopColor;
     const dangerDivider = getComputedStyle(required<HTMLElement>(shell, "section.danger")).borderTopColor;
     assert(dangerDivider !== regularDivider, "Factory Reset must retain its danger-tinted divider semantics");
+
+    // Explicit user disconnect remains the Device Lock path.
+    const closeBeforeExplicitDisconnect = explicitCloseCalls;
+    disconnect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Disconnected",
+      "Explicit Lock & Disconnect did not tear down the production connection",
+    );
+    assert(explicitCloseCalls === closeBeforeExplicitDisconnect + 1, "Explicit Lock & Disconnect must invoke canonical close exactly once");
+
+    // Connect to an already-UNLOCKED active Device with no usable anchor.
+    currentSnapshot = createSnapshot(true, false, { readiness: "not_synced" });
+    syncTimeCalls = 0;
+    syncFailure = null;
+    connect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Connected" &&
+        syncTimeCalls === 1 &&
+        sourceTextOf(deviceStatus).includes("PC/local-host asserted time (not cryptographically authenticated)") &&
+        sourceTextOf(deviceNotice).includes("PC time synchronized automatically"),
+      "Connect-to-UNLOCKED not_synced path did not auto-sync PC time exactly once",
+    );
+    assert(syncTimeCalls === 1, "Connect-to-UNLOCKED not_synced must send one automatic time sync");
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after not_synced auto-sync did not complete");
+
+    // STALE is also eligible.
+    currentSnapshot = createSnapshot(true, false, { readiness: "stale" });
+    syncTimeCalls = 0;
+    connect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Connected" && syncTimeCalls === 1 &&
+        sourceTextOf(deviceNotice).includes("PC time synchronized automatically"),
+      "Connect-to-UNLOCKED stale path did not auto-sync PC time",
+    );
+    assert(syncTimeCalls === 1, "Connect-to-UNLOCKED stale must send one automatic time sync");
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after stale auto-sync did not complete");
+
+    // A READY anchor, including unauthenticated NTP, must never be overwritten automatically.
+    currentSnapshot = {
+      ...createSnapshot(true, false, { readiness: "ready" }),
+      time: {
+        ...createSnapshot(true, false, { readiness: "ready" }).time,
+        source: "ntp",
+        sourceAuthenticity: "unauthenticated_network",
+      },
+    };
+    syncTimeCalls = 0;
+    connect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Connected" &&
+        sourceTextOf(deviceNotice).includes("Trusted Browser active; Device is UNLOCKED.") &&
+        sourceTextOf(deviceStatus).includes("Network time (unauthenticated)"),
+      "READY NTP connect path did not preserve the existing anchor",
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+    assert(syncTimeCalls === 0, "READY anchor must not be replaced by automatic PC time sync");
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after READY preservation did not complete");
+
+    // LOCKED Connect must not sync. Unlock must not sync until physical-presence completion resolves.
+    currentSnapshot = createSnapshot(true, false, { state: "locked", readiness: "not_synced" });
+    syncTimeCalls = 0;
+    requestUnlockCalls = 0;
+    connect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Connected" && !unlock.disabled &&
+        sourceTextOf(deviceNotice).includes("Device remains LOCKED"),
+      "LOCKED production connection did not expose the explicit Unlock path",
+    );
+    assert(syncTimeCalls === 0, "LOCKED Connect must not send automatic time sync");
+
+    let releaseUnlock!: () => void;
+    unlockGate = new Promise<void>((resolve) => { releaseUnlock = resolve; });
+    unlock.click();
+    await waitUntil(
+      () => requestUnlockCalls === 1 && sourceTextOf(deviceNotice).includes("UNLOCK REQUEST"),
+      "Unlock smoke did not enter the physical-presence pending state",
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+    assert(syncTimeCalls === 0, "Automatic time sync must not run before Unlock physical confirmation completes");
+    releaseUnlock();
+    unlockGate = null;
+    await waitUntil(
+      () => syncTimeCalls === 1 &&
+        deviceStatus.textContent?.includes("unlocked") === true &&
+        sourceTextOf(deviceNotice).includes("PC time synchronized automatically"),
+      "Successful Unlock + fresh not_synced status did not auto-sync PC time",
+    );
+    assert(syncTimeCalls === 1, "Successful Unlock + not_synced must issue one automatic time sync");
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after Unlock auto-sync did not complete");
+
+    // Successful Unlock from STALE also syncs once.
+    currentSnapshot = createSnapshot(true, false, { state: "locked", readiness: "stale" });
+    syncTimeCalls = 0;
+    requestUnlockCalls = 0;
+    connect.click();
+    await waitUntil(() => connectionState.textContent === "Connected" && !unlock.disabled, "STALE locked connection did not expose Unlock");
+    unlock.click();
+    await waitUntil(
+      () => requestUnlockCalls === 1 && syncTimeCalls === 1 &&
+        sourceTextOf(deviceNotice).includes("PC time synchronized automatically"),
+      "Successful Unlock + stale status did not auto-sync PC time",
+    );
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after STALE Unlock auto-sync did not complete");
+
+    // Successful Unlock with an already-READY anchor does not mutate it.
+    currentSnapshot = createSnapshot(true, false, { state: "locked", readiness: "ready" });
+    syncTimeCalls = 0;
+    requestUnlockCalls = 0;
+    connect.click();
+    await waitUntil(() => connectionState.textContent === "Connected" && !unlock.disabled, "READY locked connection did not expose Unlock");
+    unlock.click();
+    await waitUntil(
+      () => requestUnlockCalls === 1 && deviceStatus.textContent?.includes("unlocked") === true &&
+        sourceTextOf(deviceNotice).includes("Trusted Browser active; Device is UNLOCKED."),
+      "Successful Unlock + READY did not settle without automatic mutation",
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+    assert(syncTimeCalls === 0, "Successful Unlock + READY must not auto-sync");
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after READY Unlock did not complete");
+
+    // Failed/cancelled Unlock never triggers automatic sync.
+    currentSnapshot = createSnapshot(true, false, { state: "locked", readiness: "not_synced" });
+    syncTimeCalls = 0;
+    requestUnlockCalls = 0;
+    unlockFailure = new Error("Synthetic Unlock canceled.");
+    connect.click();
+    await waitUntil(() => connectionState.textContent === "Connected" && !unlock.disabled, "Failed-Unlock fixture did not connect");
+    unlock.click();
+    await waitUntil(
+      () => requestUnlockCalls === 1 && sourceTextOf(deviceNotice).includes("Synthetic Unlock canceled."),
+      "Failed Unlock did not preserve the actual error",
+    );
+    assert(syncTimeCalls === 0, "Failed/cancelled Unlock must not auto-sync PC time");
+    unlockFailure = null;
+    disconnect.click();
+    await waitUntil(() => connectionState.textContent === "Disconnected", "Disconnect after failed Unlock did not complete");
+
+    // Automatic sync failure is one-shot, non-destructive, and leaves manual retry available.
+    currentSnapshot = createSnapshot(true, false, { readiness: "not_synced" });
+    syncTimeCalls = 0;
+    syncFailure = new Error("Synthetic automatic PC time failure.");
+    const closeBeforeSyncFailure = explicitCloseCalls;
+    const transportDisconnectBeforeSyncFailure = transportDisconnectCalls;
+    connect.click();
+    await waitUntil(
+      () => connectionState.textContent === "Connected" &&
+        sourceTextOf(deviceNotice).includes("automatic PC time sync failed"),
+      "Automatic PC time sync failure warning was not shown",
+    );
+    assert(syncTimeCalls === 1, "Automatic PC time failure must not enter a retry loop");
+    assert(deviceStatus.textContent?.includes("unlocked") === true, "Automatic sync failure must not turn the successful connection into LOCKED state");
+    assert(!syncTime.disabled, "Manual Sync PC time must remain available after a recoverable automatic-sync failure");
+    assert(explicitCloseCalls === closeBeforeSyncFailure, "Automatic sync failure must not issue explicit Device Lock");
+    assert(transportDisconnectCalls === transportDisconnectBeforeSyncFailure, "Healthy transport must not be disconnected solely because automatic sync failed");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
+    assert(syncTimeCalls === 1, "Automatic PC time failure must remain one-shot");
+    syncFailure = null;
+
+    // pagehide is transport lifecycle only and still clears transient form state.
+    wifiPassword.value = "synthetic-transient-wifi-password";
+    rekeyPassphrase.value = "synthetic-transient-recovery-passphrase";
+    passphrase.value = "synthetic-transient-initial-passphrase";
+    passphraseConfirm.value = "synthetic-transient-initial-passphrase";
+    const closeBeforePagehide = explicitCloseCalls;
+    const transportDisconnectBeforePagehide = transportDisconnectCalls;
+    window.dispatchEvent(new Event("pagehide"));
+    await waitUntil(
+      () => transportDisconnectCalls === transportDisconnectBeforePagehide + 1,
+      "pagehide did not use transport-only canonical disconnect",
+    );
+    assert(explicitCloseCalls === closeBeforePagehide, "pagehide must not invoke explicit Device Lock");
+    assert(wifiPassword.value === "", "pagehide must clear transient Wi-Fi password state");
+    assert(rekeyPassphrase.value === "", "pagehide must clear transient re-key Passphrase state");
+    assert(passphrase.value === "" && passphraseConfirm.value === "", "pagehide must clear transient initial Recovery Passphrase state");
   } finally {
     SerialSession.connect = originalConnect;
     CanonicalDeviceManagement.prototype.initialize = originalInitialize;
     CanonicalDeviceManagement.prototype.refresh = originalRefresh;
     CanonicalDeviceManagement.prototype.importAccounts = originalImportAccounts;
     CanonicalDeviceManagement.prototype.factoryReset = originalFactoryReset;
+    CanonicalDeviceManagement.prototype.requestUnlock = originalRequestUnlock;
+    CanonicalDeviceManagement.prototype.syncTime = originalSyncTime;
+    CanonicalDeviceManagement.prototype.close = originalClose;
+    CanonicalDeviceManagement.prototype.disconnectTransport = originalDisconnectTransport;
     ImportSession.prototype.hasCompleteAccounts = originalHasCompleteAccounts;
     window.confirm = originalConfirm;
     app.remove();
@@ -346,7 +580,7 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
   const routes = ["index.html", "flash.html", "help.html"] as const;
   const frames: HTMLIFrameElement[] = [];
   try {
-    for (const route of routes) frames.push(await loadRouteFrame(route, 5000));
+    for (const route of routes) frames.push(await loadRouteFrame(route, 6000));
 
     const geometries = frames.map((frame, index) => {
       const doc = requiredFrameDocument(frame);
@@ -385,7 +619,16 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
 function createSnapshot(
   provisioned: boolean,
   factoryResetPresenceRequired = false,
+  overrides: {
+    state?: CanonicalDeviceSnapshot["hello"]["state"];
+    ownership?: CanonicalDeviceSnapshot["browserOwnership"];
+    readiness?: CanonicalDeviceSnapshot["time"]["readiness"];
+  } = {},
 ): CanonicalDeviceSnapshot {
+  const state = overrides.state ?? (provisioned ? "unlocked" : "unprovisioned");
+  const ownership = overrides.ownership ?? (provisioned ? "active" : "none");
+  const readiness = overrides.readiness ?? (provisioned ? "ready" : "not_synced");
+  const ready = readiness === "ready";
   return {
     hello: {
       device: "M5StickS3",
@@ -396,7 +639,7 @@ function createSnapshot(
       vaultFormat: 2,
       supportedVaultFormats: [1, 2],
       buildCommit: "abcdef0123456789abcdef0123456789abcdef01",
-      state: provisioned ? "unlocked" : "unprovisioned",
+      state,
       storageReady: true,
       recoveryResetRequired: false,
       factoryResetPresenceRequired,
@@ -409,20 +652,20 @@ function createSnapshot(
       brkPublicKey: provisioned ? new Uint8Array(65) : null,
     },
     time: {
-      readiness: provisioned ? "ready" : "not_synced",
-      source: provisioned ? "usb" : "none",
-      sourceAuthenticity: provisioned ? "local_host_asserted" : "none",
-      lastSyncUnixSeconds: provisioned ? 1n : 0n,
+      readiness,
+      source: ready ? "usb" : "none",
+      sourceAuthenticity: ready ? "local_host_asserted" : "none",
+      lastSyncUnixSeconds: ready ? 1n : 0n,
       ageSeconds: 0,
-      resyncDue: false,
+      resyncDue: readiness === "stale",
     },
-    browserOwnership: provisioned ? "active" : "none",
-    unlockRequired: false,
+    browserOwnership: ownership,
+    unlockRequired: state === "locked" && ownership === "active",
     recoveryProvisioningAvailable: false,
     recoveryProvisioningCandidates: 0,
     accounts: [],
     wifi: { configured: false, ssid: "" },
-    autoLock: { known: provisioned, days: null, format2Writable: provisioned },
+    autoLock: { known: state === "unlocked" && ownership === "active", days: null, format2Writable: provisioned },
   };
 }
 

@@ -165,6 +165,8 @@ Canonical V1 uses **Protocol 2 / Storage Schema 2 / Vault Format 1**. Unsupporte
 
 Opening Web Serial by itself does not Lock an already-unlocked Device.
 
+Browser/page/transport lifetime is not a Device Lock boundary. Closing or reloading the page, navigating away, browser teardown, Web Serial close, or loss of the USB data transport releases browser-side transport resources best-effort but does not send `device.lock`. If the same physical Device runtime continues (for example on battery), it may remain `UNLOCKED`. A true reboot or power loss still destroys the RAM-only VMK and returns the provisioned Device to `LOCKED`. Use **Lock & Disconnect** when the user intentionally wants the Web app to request `device.lock` before closing transport.
+
 ## Canonical Vault management
 
 Only the active Trusted Browser is the normal canonical writer for an existing Vault/Device pair.
@@ -217,6 +219,15 @@ Trusted-time mutation still follows Decision #49:
 - credential-backed NTP is available only while unlocked because Wi-Fi credentials are in the Vault
 - an existing current-boot accepted anchor may survive explicit Lock; reboot/power loss clears it
 
+The official Web app may opportunistically invoke the existing guarded `time.sync` path at two event boundaries only:
+
+1. after Connect has initialized canonical management and a fresh status proves the active Trusted Browser owns an already-`UNLOCKED` Device;
+2. after a normal Trusted Browser Unlock has completed physical confirmation and a fresh post-Unlock status again proves active ownership plus `UNLOCKED`.
+
+Automatic sync is attempted only when fresh readiness is `not_synced` or `stale`. A `READY` anchor is never overwritten automatically, regardless of whether its source is NTP or USB. The host Unix timestamp is sampled at the guarded mutation boundary, and `CanonicalDeviceManagement.syncTime()` revalidates active ownership, exact binding, and `UNLOCKED` immediately before the Device mutation.
+
+Automatic PC-time sync is best-effort usability behavior. Failure does not roll back a successful Connect/Unlock, does not send `device.lock`, does not disconnect a healthy transport, and does not enter an automatic retry loop. The UI warns the user and keeps the manual **Sync PC time** action available when the current canonical state remains writable.
+
 `READY` is operational readiness only: it means a fresh enough current-boot anchor exists for OTP generation, not that the source is cryptographically authenticated. Ordinary SNTP remains vulnerable to hostile DNS/gateway/Wi-Fi/UDP/NTP-path manipulation. Once an anchor exists in the same boot, NTP samples more than 5 minutes from monotonic-projected time are rejected without refreshing freshness; that mitigation does not authenticate or protect the first NTP sync and does not prevent gradual manipulation.
 
 Time is not an authentication factor. OTP reveal still requires both `UNLOCKED` and time `READY`.
@@ -249,7 +260,9 @@ First install is the explicitly destructive path. See `docs/DISTRIBUTION.md`.
 
 ## Browser lifetime and zeroization limits
 
-On lifecycle termination, the app clears transient QR/import state, Passphrase/credential form values, unwrapped VMK/KEK references, decrypted Vault buffers, and open Device sessions on a best-effort basis.
+On lifecycle termination, the app clears transient QR/import state, Passphrase/credential form values, unwrapped VMK/KEK references, decrypted Vault buffers, and browser-side/open transport session state on a best-effort basis.
+
+This browser cleanup is deliberately **transport-only** with respect to the Device. It does not imply `device.lock`; Device secret lifetime remains governed by explicit Lock & Disconnect, configured automatic Lock, reboot/power loss, and previously approved Device-side fatal/security boundaries.
 
 JavaScript/Web memory has no universal guaranteed zeroization primitive for all values. The design minimizes plaintext lifetime, prefers byte-oriented mutable buffers, avoids unnecessary copies, and relies on encrypted-at-rest persistence rather than claiming perfect browser-RAM scrubbing.
 

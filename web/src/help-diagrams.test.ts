@@ -28,11 +28,17 @@ describe("Help explanatory diagrams", () => {
     expect(english).toContain("Confirm the dedicated provisioning request");
     expect(english).toContain("fresh UNLOCK REQUEST");
     expect(english).toContain("Every later Unlock still requires fresh physical confirmation");
+    expect(english).toContain("actual reboot or power loss");
+    expect(english).toContain("page reload or transport reconnect alone may preserve UNLOCKED");
+    expect(english).toContain("reconnect without creating an implicit Lock");
 
     const japanese = renderHelpDiagrams(helpDiagramCopy("ja")).setup;
     expect(japanese).toContain("Device · 物理確認");
     expect(japanese).toContain("専用Provisioning要求を物理確認");
     expect(japanese).toContain("新しいUNLOCK REQUESTを物理確認");
+    expect(japanese).toContain("実際の再起動または電源断");
+    expect(japanese).toContain("ページ再読み込みやtransport再接続だけならUNLOCKEDを維持");
+    expect(japanese).toContain("暗黙のLOCKを行わず再接続");
   });
 
   it("states the trust/storage and Factory Reset boundaries without Device secret export", () => {
