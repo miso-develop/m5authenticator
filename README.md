@@ -1,76 +1,94 @@
-# M5 Authenticator
+# M5Authenticator
 
 **English** | [日本語](README.ja.md)
 
-A compact TOTP authenticator project for M5Stack devices, starting with **M5StickS3**.
+M5Authenticator is a standalone TOTP authenticator for **M5StickS3**. It stores TOTP credentials in an encrypted Vault on the Device, keeps the Vault Master Key (VMK) only in RAM while unlocked, and uses a local-only Web app for provisioning, account management, firmware updates, and recovery.
+
+Use the hosted Web app with the latest stable **Desktop Chrome** and Web Serial:
+
+**[Open M5Authenticator Web](https://miso-develop.github.io/m5authenticator/)**
+
+You can import standard TOTP QR images and Google Authenticator migration QR images locally in the browser, provision the Device, select an account on M5StickS3, and reveal a six-digit OTP without using a smartphone at authentication time.
 
 > [!IMPORTANT]
-> This is a public repository. **Never commit, paste, upload, log, or attach real authentication secrets or credentials.** This includes TOTP secrets, `otpauth://` URIs, Google Authenticator migration payloads/QR images, access tokens, API keys, private keys, passwords, Wi-Fi credentials, Vault/browser/session keys, user Recovery Packages, device dumps containing secrets, and equivalent sensitive material.
+> This is a public repository. Never commit, paste, upload, log, or attach real authentication material. This includes TOTP secrets or QR exports, passwords or Recovery Passphrases, Recovery Packages, private/session keys, and credential-bearing logs or dumps. See [SECURITY.md](SECURITY.md) for the complete policy.
 
-## Project status
+## Key features
 
-The V1 implementation and security closeout are complete. The canonical production architecture is **Protocol 2 / Storage Schema 2 / Vault Format 1** with the `encrypted-vault-ram-only-vmk` security profile, and production release eligibility is enabled behind the fail-closed release/profile checks.
+- RFC 6238 TOTP using SHA-1, 6 digits, and a 30-second period
+- up to 32 TOTP accounts
+- account selection directly on M5StickS3
+- short OTP reveal on the Device
+- local import of standard TOTP QR images and Google Authenticator migration QR images
+- encrypted Device Vault for credential persistence
+- RAM-only VMK while the Device is unlocked
+- Trusted Browser quick unlock without Passphrase re-entry, while still requiring fresh physical confirmation on the Device
+- NTP and PC time synchronization with readiness gating before OTP display
+- firmware first install and state-preserving update from the Web interface
+- encrypted Recovery Package export/import for browser recovery
+- no M5Authenticator-specific eFuse provisioning requirement
 
-The GitHub Pages path now builds and deploys validated production firmware for the Web Flasher. Formal GitHub Releases remain version-tag driven and use the same secret-free CI-built merged firmware image.
+## How it works and security model
 
-The initial target is M5StickS3 with:
+M5Authenticator separates persistent encrypted state from the key needed to use it:
 
-- TOTP (SHA-1, 6 digits, 30-second period)
-- up to 32 accounts
-- device-side account selection and 10-second OTP reveal
-- USB/Web Serial provisioning and management
-- import from standard TOTP QR screenshots and Google Authenticator migration QR screenshots
-- client-side-only provisioning through a GitHub Pages web UI
-- one application-level AES-GCM Encrypted Vault generation stored on Device Flash
-- a random Vault Master Key (VMK) kept only in Device RAM while unlocked
-- one active Trusted Browser for quick unlock without Passphrase re-entry, with explicit physical confirmation on the Device
-- encrypted Recovery Package import/export for browser recovery; browser quick-unlock private keys are not included
-- no M5Authenticator-specific eFuse burn or irreversible project-specific security provisioning
-- NTP and USB trusted-time synchronization only after Device unlock
+- Device Flash stores the **encrypted Vault**, not plaintext TOTP secrets.
+- The **Vault Master Key (VMK)** is held only in RAM while the Device is unlocked. Lock, reboot, or power loss discards it.
+- A **Trusted Browser** can make normal unlocks more convenient, but it does not bypass fresh physical confirmation on M5StickS3 for an unlock attempt.
+- **Recovery Packages** are encrypted, but they remain security-sensitive offline artifacts because possession enables offline Passphrase guessing.
+- A Device Factory Reset does not erase or cryptographically revoke Recovery Packages that were previously exported elsewhere.
+- Ordinary network time from NTP is operationally useful but is **not cryptographically authenticated**.
+- The project does not claim a hardware root of trust or strong resistance to a compromised trusted browser/OS, malicious firmware, RAM probing while unlocked, or sophisticated physical attacks.
 
-After reboot or power loss, the Device starts locked because the VMK is not stored in Flash. A registered Trusted Browser can restore the normal session without asking for the Passphrase again, but the Device still requires a fresh user-presence confirmation for that unlock attempt.
+For the authoritative security contract, see [SECURITY.md](SECURITY.md) and [docs/SECRET_VAULT.md](docs/SECRET_VAULT.md).
 
-The original service enrollment/source Authenticator remains the authoritative source for replacing or re-enrolling credentials. The Web Provisioner's encrypted Vault is canonical only within M5Authenticator for browser/device synchronization.
+## Getting started
 
-For the durable V1 overview, start with [`docs/V1_REQUIREMENTS.md`](docs/V1_REQUIREMENTS.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Security-sensitive key, persistence, unlock, recovery, and Trusted Browser semantics are consolidated in [`docs/SECRET_VAULT.md`](docs/SECRET_VAULT.md). Project-wide constraints remain in `PROJECT.md`, and mandatory handling/threat-model policy remains in `SECURITY.md`.
+1. Open the [hosted M5Authenticator Web app](https://miso-develop.github.io/m5authenticator/) in the latest stable Desktop Chrome.
+2. Use **First install / erase** only for a new Device or when you intentionally want a clean Device. For an already provisioned Device, use the supported **Update** path to preserve supported user state.
+3. Connect the M5StickS3 through Web Serial.
+4. Import standard TOTP or Google Authenticator migration QR data locally in the browser.
+5. Provision the selected accounts and confirm the operation on the Device.
+6. When the Device is locked, unlock it through the Web app and approve the fresh physical confirmation on M5StickS3.
+7. Confirm that time status is ready before relying on displayed OTP values.
 
-## V1 documentation
+Detailed Provisioner behavior, account management, recovery, and firmware flows are documented in [docs/WEB_PROVISIONER.md](docs/WEB_PROVISIONER.md) and [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
-- `docs/V1_REQUIREMENTS.md` — cross-feature V1 requirements index, state/behavior tables, version boundary, and Decision lineage.
-- `docs/ARCHITECTURE.md` — firmware/Web/Vault/protocol responsibility boundaries and end-to-end V1 flows.
-- `docs/SECRET_VAULT.md` — Encrypted Vault, RAM-only VMK, Passphrase/Recovery Package, Trusted Browser, Lock/Unlock, and user-presence architecture.
-- `docs/DEVICE_UI.md` — StickS3 account selection, unlock user presence, trusted-time display, and 10-second OTP reveal behavior.
-- `docs/WEB_PROVISIONER.md` — local-only Web Serial management, encrypted browser state, Trusted Browser ownership/recovery, and account/device management.
-- `docs/TIME.md` — trusted-time synchronization and TOTP readiness rules.
-- `docs/STORAGE.md` — encrypted Vault persistence, metadata privacy, and versioning boundaries.
-- `docs/PROVISIONING_PROTOCOL.md` — canonical Protocol 2 NDJSON provisioning/unlock protocol.
-- `docs/DISTRIBUTION.md` — Web Flasher, GitHub Releases, M5Burner, and state-preserving update contract.
-- `docs/DEVELOPMENT.md` — pinned toolchains and reproducible build/test commands.
-- `docs/REPOSITORY_SECURITY.md` — repository-level secret-protection controls.
+## Supported environment
 
-## Development foundation
+Current production support is intentionally narrow:
 
-The canonical firmware build is ESP-IDF / CMake for M5StickS3. The Web App is Vanilla TypeScript + Vite + Vitest. See `docs/DEVELOPMENT.md` for exact pinned versions and commands.
+- **Device:** M5StickS3
+- **Browser:** latest stable Desktop Chrome
+- **Device communication:** Web Serial
 
-## Development process
+Other M5Stack targets should not be assumed to be supported unless they are explicitly documented as production targets.
 
-This repository follows Loop Engineering using GitHub `[Map]` → `[Decision]` → `[Spec]` → `[Task]` work items. See `AGENTS.md` and `agent/WORK-TRACKING.md`.
+## Usage and recovery documentation
 
-## Security
+### Usage / Web Provisioner
 
-Security of authentication material is the highest-priority invariant of this project. Real secrets and user-generated encrypted credential backups must never enter Git history, Issues/PRs, CI logs, test fixtures, screenshots, artifacts, or external web requests.
+- [Web Provisioner](docs/WEB_PROVISIONER.md) — provisioning, account management, browser state, Trusted Browser flows, and recovery
+- [Device UI](docs/DEVICE_UI.md) — account selection, Device confirmation, time status, and OTP display behavior
+- [Time](docs/TIME.md) — synchronization and OTP readiness rules
+- [Distribution](docs/DISTRIBUTION.md) — Web Flasher, first install, state-preserving update, and release packaging
 
-The V1 design protects powered-off/rebooted Device storage by ensuring that the VMK needed to decrypt the credential Vault is not persisted on the Device. It does not claim a hardware root of trust or strong resistance to a compromised trusted browser/OS, malicious firmware/fake Device, RAM probing while unlocked, hardware-backed rollback attacks, or sophisticated physical attacks.
+### Security / Recovery
 
-If a real secret is exposed, treat it as compromised and rotate/re-enroll it at the authoritative source service. Deleting a Git commit/comment is not sufficient remediation. An old exported Recovery Package is not cryptographically revoked merely by changing the current Passphrase; see `SECURITY.md` and `docs/SECRET_VAULT.md`.
+- [Security Policy](SECURITY.md) — secret-handling requirements and threat-model boundary
+- [Secret Vault Architecture](docs/SECRET_VAULT.md) — encrypted Vault, VMK, Passphrase, Trusted Browser, Lock/Unlock, and Recovery Package semantics
+- [Storage](docs/STORAGE.md) — encrypted persistence and versioning boundaries
 
-### Repository security check
+### Architecture / Protocol
 
-Before pushing security-sensitive changes, run:
+- [Architecture](docs/ARCHITECTURE.md) — Device/Web/Vault responsibility boundaries and end-to-end flows
+- [Provisioning Protocol](docs/PROVISIONING_PROTOCOL.md) — Web Serial provisioning and unlock protocol
+- [V1 Requirements](docs/V1_REQUIREMENTS.md) — durable cross-feature requirements reference
 
-```text
-python3 -m unittest discover -s tests -p "test_security_scan.py"
-python3 scripts/security_scan.py
-```
+## Development and contributing
 
-The repository operation `security:scan` is enforced in GitHub Actions for pull requests and `main`. See `docs/REPOSITORY_SECURITY.md` for the two-layer secret protection baseline and allowlist policy.
+The firmware is built with ESP-IDF/CMake and the Web app uses TypeScript/Vite. Developer setup, pinned toolchains, and reproducible commands are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+Repository contribution and work-tracking rules are documented in [AGENTS.md](AGENTS.md) and [agent/WORK-TRACKING.md](agent/WORK-TRACKING.md). These development-process documents are separate from the product usage and security contracts above.
+
+Before submitting repository changes, keep all examples and test material synthetic and follow [SECURITY.md](SECURITY.md).
