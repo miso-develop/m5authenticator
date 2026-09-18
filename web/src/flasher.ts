@@ -22,7 +22,7 @@ app.innerHTML = `
     <p class="description">
       Flash the CI-built M5StickS3 firmware directly from this site. Firmware images are same-origin static files; authenticator credentials are never part of a firmware package.
     </p>
-    <section id="flash-status" class="flash-stack"></section>
+    <div id="flash-status" class="flash-stack"></div>
   </section>
 `;
 
