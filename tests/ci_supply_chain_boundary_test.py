@@ -246,6 +246,7 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
 
         self.assertIn("contents: read", authorize)
         self.assertIn("checks: read", authorize)
+        self.assertIn("statuses: read", authorize)
         self.assertNotIn("contents: write", authorize)
         self.assertIn("needs: authorize", build)
         self.assertIn("contents: read", build)
@@ -275,10 +276,15 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
 
         self.assertIn("git fetch --no-tags origin main", authorize)
         self.assertIn("git rev-parse refs/remotes/origin/main", authorize)
+        self.assertIn("/rules/branches/main?per_page=100", authorize)
         self.assertIn("/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100", authorize)
+        self.assertIn("/commits/$GITHUB_SHA/status", authorize)
         self.assertIn("scripts/release_authorization.py", authorize)
         self.assertIn('--source-sha "$GITHUB_SHA"', authorize)
         self.assertIn('--main-sha "$MAIN_SHA"', authorize)
+        self.assertIn('--main-rules "$RUNNER_TEMP/main-rules.json"', authorize)
+        self.assertIn('--check-runs "$RUNNER_TEMP/check-runs.json"', authorize)
+        self.assertIn('--statuses "$RUNNER_TEMP/statuses.json"', authorize)
         self.assertIn("scripts/validate_release.py --require-production", authorize)
         self.assertIn("Verify tag matches firmware version", authorize)
         self.assertNotIn("--verify-tag", authorize)
