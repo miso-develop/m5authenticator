@@ -2,6 +2,7 @@ import "../../src/style.css";
 import "../../src/post-provisioning-layout.css";
 import { CanonicalDeviceManagement, type CanonicalDeviceSnapshot } from "../../src/canonical-management";
 import { SerialSession } from "../../src/serial";
+import { ImportSession } from "../../src/import/session";
 import { sourceTextOf } from "../../src/ui-localization";
 import { installWebBuildInfo } from "../../src/web-build-info";
 
@@ -50,7 +51,9 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   const originalConnect = SerialSession.connect;
   const originalInitialize = CanonicalDeviceManagement.prototype.initialize;
   const originalRefresh = CanonicalDeviceManagement.prototype.refresh;
+  const originalImportAccounts = CanonicalDeviceManagement.prototype.importAccounts;
   const originalFactoryReset = CanonicalDeviceManagement.prototype.factoryReset;
+  const originalHasCompleteAccounts = ImportSession.prototype.hasCompleteAccounts;
   const originalConfirm = window.confirm;
 
   SerialSession.connect = async () => ({
@@ -61,8 +64,19 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     hello: currentSnapshot.hello,
   });
   CanonicalDeviceManagement.prototype.initialize = async function (): Promise<void> {};
-  CanonicalDeviceManagement.prototype.refresh = async function (): Promise<CanonicalDeviceSnapshot> {
+  const refreshFromSnapshot = async function (): Promise<CanonicalDeviceSnapshot> {
     return currentSnapshot;
+  };
+  CanonicalDeviceManagement.prototype.refresh = refreshFromSnapshot;
+  CanonicalDeviceManagement.prototype.importAccounts = async function (
+    _importSession: ImportSession,
+    _recoveryPassphrase?: string,
+  ): Promise<number> {
+    currentSnapshot = createSnapshot(true, false);
+    return 1;
+  };
+  ImportSession.prototype.hasCompleteAccounts = function (): boolean {
+    return true;
   };
   CanonicalDeviceManagement.prototype.factoryReset = async function (
     options: Parameters<CanonicalDeviceManagement["factoryReset"]>[0] = {},
@@ -95,6 +109,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     const fields = required<HTMLElement>(document, "#initial-passphrase-fields");
     const passphrase = required<HTMLInputElement>(document, "#initial-recovery-passphrase");
     const passphraseConfirm = required<HTMLInputElement>(document, "#initial-recovery-passphrase-confirm");
+    const provision = required<HTMLButtonElement>(document, "#provision-import");
     const resetConfirmation = required<HTMLInputElement>(document, "#reset-confirmation");
     const factoryReset = required<HTMLButtonElement>(document, "#factory-reset");
     const cancelFactoryReset = required<HTMLButtonElement>(document, "#cancel-factory-reset");
@@ -116,12 +131,24 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     flushLayout();
     assert(!passphrase.disabled && !passphraseConfirm.disabled, "Initial provisioning must enable Recovery Passphrase inputs");
     assert(getComputedStyle(fields).display !== "none", "Initial provisioning must show Recovery Passphrase inputs");
+    assert(!provision.disabled, "Synthetic complete import must enable initial provisioning");
+
+    passphrase.value = "synthetic-recovery-passphrase";
+    passphraseConfirm.value = "synthetic-recovery-passphrase";
+    provision.click();
+    await waitUntil(
+      () => deviceStatus.textContent?.includes("unlocked") === true &&
+        deviceNotice.textContent === "Canonical Vault update completed.",
+      "Successful initial provisioning must replace the busy notice with a stable terminal success message",
+    );
 
     currentSnapshot = createSnapshot(true, false);
     refresh.click();
     await waitUntil(
-      () => deviceStatus.textContent?.includes("unlocked") === true && passphrase.disabled,
-      "Production Provisioning route did not reach the provisioned snapshot state",
+      () => deviceStatus.textContent?.includes("unlocked") === true &&
+        passphrase.disabled &&
+        deviceNotice.textContent === "Canonical status refreshed.",
+      "Production Provisioning route did not reach the provisioned snapshot state with a terminal refresh notice",
     );
     flushLayout();
     assert(passphrase.disabled && passphraseConfirm.disabled, "Provisioned management UI must make initial Recovery Passphrase inputs inactive");
@@ -162,11 +189,23 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
       "Production status must not invent authenticity when Device metadata is unavailable",
     );
 
+    CanonicalDeviceManagement.prototype.refresh = async function (): Promise<CanonicalDeviceSnapshot> {
+      throw new Error("Synthetic refresh failure.");
+    };
+    refresh.click();
+    await waitUntil(
+      () => deviceNotice.textContent === "Synthetic refresh failure.",
+      "Failed Device action must keep the actual error instead of applying terminal success text",
+    );
+    CanonicalDeviceManagement.prototype.refresh = refreshFromSnapshot;
+
     currentSnapshot = createSnapshot(true, true);
     refresh.click();
     await waitUntil(
-      () => !resetConfirmation.disabled && factoryResetHint.textContent?.includes("fresh confirmation on M5StickS3") === true,
-      "Capable production UI did not enable secure Factory Reset controls",
+      () => !resetConfirmation.disabled &&
+        factoryResetHint.textContent?.includes("fresh confirmation on M5StickS3") === true &&
+        deviceNotice.textContent === "Canonical status refreshed.",
+      "Capable production UI did not enable secure Factory Reset controls with a stable terminal refresh notice",
     );
     resetConfirmation.value = "RESET";
     resetConfirmation.dispatchEvent(new Event("input", { bubbles: true }));
@@ -196,7 +235,9 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     SerialSession.connect = originalConnect;
     CanonicalDeviceManagement.prototype.initialize = originalInitialize;
     CanonicalDeviceManagement.prototype.refresh = originalRefresh;
+    CanonicalDeviceManagement.prototype.importAccounts = originalImportAccounts;
     CanonicalDeviceManagement.prototype.factoryReset = originalFactoryReset;
+    ImportSession.prototype.hasCompleteAccounts = originalHasCompleteAccounts;
     window.confirm = originalConfirm;
     app.remove();
   }
