@@ -261,7 +261,7 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         self.assertIn("artifact-metadata: write", attest)
         self.assertNotIn("contents: write", attest)
         self.assertNotIn("docker run", attest)
-        self.assertIn("needs: [verify, attest]", publish)
+        self.assertIn("needs: [authorize, verify, attest]", publish)
         self.assertIn("contents: write", publish)
         self.assertNotIn("id-token: write", publish)
         self.assertNotIn("attestations: write", publish)
@@ -270,24 +270,53 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         self.assertIn("actions: write", cleanup)
         self.assertNotIn("contents: write", cleanup)
 
-    def test_release_authorization_is_exact_main_and_exact_sha_security_check(self) -> None:
+    def test_authorized_release_uses_default_branch_dispatch_and_retires_legacy_identity(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        header = text[: text.index("jobs:")]
+
+        self.assertEqual(RELEASE_WORKFLOW.name, "release-authorized.yml")
+        self.assertFalse(LEGACY_RELEASE_WORKFLOW.exists())
+        self.assertIn("repository_dispatch:", header)
+        self.assertIn("publish_semver_release", header)
+        self.assertNotIn("push:", header)
+        self.assertNotIn("tags:", header)
+        self.assertNotIn("workflow_dispatch:", header)
+
+    def test_release_authorization_is_exact_main_exact_tag_and_exact_sha_security_check(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         authorize = job_block(text, "authorize")
 
+        self.assertIn("github.event.client_payload.tag", authorize)
         self.assertIn("git fetch --no-tags origin main", authorize)
         self.assertIn("git rev-parse refs/remotes/origin/main", authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG', authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG^{commit}', authorize)
         self.assertIn("/rules/branches/main?per_page=100", authorize)
         self.assertIn("/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100", authorize)
         self.assertIn("/commits/$GITHUB_SHA/status", authorize)
         self.assertIn("scripts/release_authorization.py", authorize)
         self.assertIn('--source-sha "$GITHUB_SHA"', authorize)
         self.assertIn('--main-sha "$MAIN_SHA"', authorize)
+        self.assertIn('--requested-tag "$REQUESTED_TAG"', authorize)
+        self.assertIn('--firmware-version "$FIRMWARE_VERSION"', authorize)
+        self.assertIn('--tag-sha "$TAG_SHA"', authorize)
         self.assertIn('--main-rules "$RUNNER_TEMP/main-rules.json"', authorize)
         self.assertIn('--check-runs "$RUNNER_TEMP/check-runs.json"', authorize)
         self.assertIn('--statuses "$RUNNER_TEMP/statuses.json"', authorize)
         self.assertIn("scripts/validate_release.py --require-production", authorize)
-        self.assertIn("Verify tag matches firmware version", authorize)
         self.assertNotIn("--verify-tag", authorize)
+
+    def test_preexisting_tag_sequence_is_explicit_and_publisher_never_moves_tag(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        authorize = job_block(text, "authorize")
+        publish = job_block(text, "publish")
+
+        self.assertIn('git fetch --force --no-tags origin', authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG', authorize)
+        self.assertIn("REQUESTED_TAG: ${{ needs.authorize.outputs.requested-tag }}", publish)
+        self.assertIn('gh release create "$REQUESTED_TAG"', publish)
+        self.assertNotIn("git tag", publish)
+        self.assertNotIn("git push", publish)
 
     def test_release_attests_same_verified_artifact_before_publish(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -295,7 +324,7 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         publish = job_block(text, "publish")
 
         action_ref = f"actions/attest@{ATTEST_ACTION_SHA}"
-        self.assertIn("needs: verify", attest)
+        self.assertIn("needs: [authorize, verify]", attest)
         self.assertEqual(attest.count(action_ref), 2)
         self.assertIn("scripts/release_attestation.py", attest)
         self.assertIn(
