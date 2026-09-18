@@ -1,6 +1,7 @@
 import {
   decodeBase64UrlCanonical,
   encodeBase64UrlCanonical,
+  SESSION_ATTEMPT_ID_BYTES,
   SESSION_P256_PUBLIC_KEY_BYTES,
   SESSION_REGISTRATION_ID_BYTES,
   SESSION_VAULT_ID_BYTES,
@@ -26,6 +27,10 @@ export type CanonicalWireOperation =
   | "time.sync"
   | "device.lock"
   | "factory_reset"
+  | "factory_reset.begin"
+  | "factory_reset.status"
+  | "factory_reset.cancel"
+  | "factory_reset.commit"
   | "factory_reset.recovery_begin"
   | "factory_reset.recovery_status"
   | "factory_reset.recovery_complete";
@@ -55,6 +60,10 @@ export interface CanonicalHelloData {
   // optional on the structural interface so synthetic test transports created
   // before recovery-reset support do not weaken production wire validation.
   recoveryResetRequired?: boolean;
+  // Presence-gated healthy Factory Reset is an additive Protocol-v2 capability.
+  // Production parsing always returns an explicit boolean; synthetic/legacy typed
+  // transports may omit it and are therefore treated as unsupported.
+  factoryResetPresenceRequired?: boolean;
   vaultPresent: boolean;
   vaultId: Uint8Array | null;
   generation: bigint;
@@ -63,6 +72,13 @@ export interface CanonicalHelloData {
   registrationEpoch: number;
   brkPublicKey: Uint8Array | null;
 }
+
+export interface CanonicalFactoryResetBegin {
+  attemptId: Uint8Array;
+  expiresInMs: number;
+}
+
+export type CanonicalFactoryResetStatus = "awaiting_confirmation" | "confirmed";
 
 export interface CanonicalTimeStatus {
   readiness: "not_synced" | "ready" | "stale";
@@ -148,6 +164,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     !isRuntimeState(data.state) ||
     typeof data.storage_ready !== "boolean" ||
     (data.recovery_reset_required !== undefined && typeof data.recovery_reset_required !== "boolean") ||
+    (data.factory_reset_presence_required !== undefined && typeof data.factory_reset_presence_required !== "boolean") ||
     typeof data.vault_present !== "boolean" ||
     typeof data.registration_present !== "boolean" ||
     typeof data.registration_epoch !== "number" ||
@@ -156,6 +173,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     throw new Error("Device returned incompatible canonical metadata");
   }
   const recoveryResetRequired = data.recovery_reset_required === true;
+  const factoryResetPresenceRequired = data.factory_reset_presence_required === true;
   const supportedVaultFormats = parseSupportedVaultFormats(data.supported_vault_formats);
 
   const generation = parseU64Decimal(data.generation, "generation");
@@ -195,6 +213,7 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     state: data.state,
     storageReady: data.storage_ready,
     recoveryResetRequired,
+    factoryResetPresenceRequired,
     vaultPresent: data.vault_present,
     vaultId,
     generation,
@@ -203,6 +222,35 @@ export function parseCanonicalHelloData(data: Record<string, unknown>): Canonica
     registrationEpoch: data.registration_epoch,
     brkPublicKey,
   };
+}
+
+const MAX_FACTORY_RESET_TTL_MS = 30_000;
+
+export function parseCanonicalFactoryResetBegin(data: Record<string, unknown>): CanonicalFactoryResetBegin {
+  if (
+    typeof data.attempt_id !== "string" ||
+    typeof data.expires_in_ms !== "number" ||
+    !Number.isSafeInteger(data.expires_in_ms) ||
+    data.expires_in_ms <= 0 ||
+    data.expires_in_ms > MAX_FACTORY_RESET_TTL_MS
+  ) {
+    throw new Error("Device returned invalid Factory Reset begin state");
+  }
+  const attemptId = decodeBase64UrlCanonical(data.attempt_id, SESSION_ATTEMPT_ID_BYTES);
+  if (attemptId.length !== SESSION_ATTEMPT_ID_BYTES) {
+    throw new Error("Device returned invalid Factory Reset attempt id");
+  }
+  return { attemptId, expiresInMs: data.expires_in_ms };
+}
+
+export function parseCanonicalFactoryResetStatus(data: Record<string, unknown>): CanonicalFactoryResetStatus {
+  if (data.state === "awaiting_confirmation" || data.state === "confirmed") return data.state;
+  throw new Error("Device returned invalid Factory Reset status");
+}
+
+export function canonicalFactoryResetAttemptParams(attemptId: Uint8Array): Record<string, unknown> {
+  if (attemptId.length !== SESSION_ATTEMPT_ID_BYTES) throw new Error("Invalid Factory Reset attempt id");
+  return { attempt_id: encodeBase64UrlCanonical(attemptId) };
 }
 
 export function parseCanonicalTimeStatus(data: Record<string, unknown>): CanonicalTimeStatus {
