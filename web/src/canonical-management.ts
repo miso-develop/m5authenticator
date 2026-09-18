@@ -622,12 +622,18 @@ export class CanonicalDeviceManagement {
     });
   }
 
-  public async syncTime(unixSeconds = Math.floor(Date.now() / 1000)): Promise<CanonicalTimeStatus> {
-    if (!Number.isSafeInteger(unixSeconds) || unixSeconds < 0) throw new Error("Invalid local time");
+  public async syncTime(unixSeconds?: number): Promise<CanonicalTimeStatus> {
+    if (unixSeconds !== undefined && (!Number.isSafeInteger(unixSeconds) || unixSeconds < 0)) {
+      throw new Error("Invalid local time");
+    }
     return withCanonicalBrowserStateLock(async () => {
       await this.refreshHelloAndBrowserState();
       this.requireActiveWriter();
-      await this.transport.requestCanonicalV2("time.sync", { unix_seconds: String(unixSeconds) });
+      const sampledUnixSeconds = unixSeconds ?? Math.floor(Date.now() / 1000);
+      if (!Number.isSafeInteger(sampledUnixSeconds) || sampledUnixSeconds < 0) {
+        throw new Error("Invalid local time");
+      }
+      await this.transport.requestCanonicalV2("time.sync", { unix_seconds: String(sampledUnixSeconds) });
       return parseCanonicalTimeStatus(await this.transport.requestCanonicalV2("time.status"));
     });
   }
