@@ -75,6 +75,11 @@ describe("localized Web navigation", () => {
     expect(displayUiText("Canonical account order updated.", "ja")).toContain("並び順");
   });
 
+  it("localizes the build-information section heading", () => {
+    expect(displayUiText("Build information", "en")).toBe("Build information");
+    expect(displayUiText("Build information", "ja")).toBe("ビルド情報");
+  });
+
   it("normalizes legacy product branding in both languages", () => {
     expect(displayUiText("M5 Authenticator", "en")).toBe("M5Authenticator");
     expect(displayUiText("M5 Authenticator", "ja")).toBe("M5Authenticator");

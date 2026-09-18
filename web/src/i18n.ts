@@ -9,6 +9,7 @@ const ja: Record<string, string> = {
   "Provisioner": "プロビジョニング",
   "Firmware Flash": "ファームウェア",
   "Help": "使い方",
+  "Build information": "ビルド情報",
   "Language": "言語",
   "English": "English",
   "Japanese": "日本語",

@@ -5,12 +5,20 @@ import {
   formatCompactBuildIdentity,
   formatFullBuildCommit,
 } from "./build-identity";
-import { getLanguage, onLanguageChange } from "./i18n";
+import { getLanguage, onLanguageChange, translateUiText } from "./i18n";
 
 export function installWebBuildInfo(
   shell: HTMLElement | null = document.querySelector<HTMLElement>("#app > .shell"),
 ): void {
-  if (!shell || shell.querySelector("#web-build-identity")) return;
+  if (!shell || shell.querySelector("#web-build-info-section")) return;
+
+  const section = document.createElement("section");
+  section.id = "web-build-info-section";
+  section.className = "panel build-info-section";
+  section.setAttribute("aria-labelledby", "web-build-info-heading");
+
+  const heading = document.createElement("h2");
+  heading.id = "web-build-info-heading";
 
   const block = document.createElement("dl");
   block.id = "web-build-identity";
@@ -29,7 +37,9 @@ export function installWebBuildInfo(
 
   const identity = currentWebBuildIdentity();
   const render = () => {
-    const labels = buildIdentityLabels("web", getLanguage());
+    const language = getLanguage();
+    const labels = buildIdentityLabels("web", language);
+    heading.textContent = translateUiText("Build information", language);
     identityLabel.textContent = labels.identity;
     commitLabel.textContent = labels.commit;
     identityValue.textContent = formatCompactBuildIdentity(identity);
@@ -38,7 +48,8 @@ export function installWebBuildInfo(
   render();
   onLanguageChange(render);
 
-  shell.append(block);
+  section.append(heading, block);
+  shell.append(section);
 }
 
 if (document.readyState === "loading") {

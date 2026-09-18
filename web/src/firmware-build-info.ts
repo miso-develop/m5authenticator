@@ -5,7 +5,7 @@ import {
   formatFullBuildCommit,
   type BuildIdentity,
 } from "./build-identity";
-import { getLanguage, onLanguageChange } from "./i18n";
+import { getLanguage, onLanguageChange, translateUiText } from "./i18n";
 
 export type FirmwareBuildInfoState =
   | { readonly status: "loading" }
@@ -13,8 +13,16 @@ export type FirmwareBuildInfoState =
   | { readonly status: "unavailable" };
 
 export function installFirmwareBuildInfo(shell: HTMLElement): (state: FirmwareBuildInfoState) => void {
-  const existing = shell.querySelector<HTMLElement>("#firmware-build-identity");
+  const existing = shell.querySelector<HTMLElement>("#firmware-build-info-section");
   if (existing) existing.remove();
+
+  const section = document.createElement("section");
+  section.id = "firmware-build-info-section";
+  section.className = "panel build-info-section";
+  section.setAttribute("aria-labelledby", "firmware-build-info-heading");
+
+  const heading = document.createElement("h2");
+  heading.id = "firmware-build-info-heading";
 
   const block = document.createElement("dl");
   block.id = "firmware-build-identity";
@@ -37,7 +45,9 @@ export function installFirmwareBuildInfo(shell: HTMLElement): (state: FirmwareBu
   let current: FirmwareBuildInfoState = { status: "loading" };
 
   const render = () => {
-    const labels = buildIdentityLabels("firmware", getLanguage());
+    const language = getLanguage();
+    const labels = buildIdentityLabels("firmware", language);
+    heading.textContent = translateUiText("Build information", language);
     identityLabel.textContent = labels.identity;
     commitLabel.textContent = labels.commit;
 
@@ -56,7 +66,8 @@ export function installFirmwareBuildInfo(shell: HTMLElement): (state: FirmwareBu
     commitValue.textContent = formatFullBuildCommit(current.identity);
   };
 
-  shell.append(block);
+  section.append(heading, block);
+  shell.append(section);
 
   render();
   onLanguageChange(render);
