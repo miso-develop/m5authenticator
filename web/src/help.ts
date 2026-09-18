@@ -122,6 +122,7 @@ function list(items: string[]): string {
 }
 
 function render(): void {
+  const root = queryHelpRoot();
   const copy = helpCopy(getLanguage());
   root.innerHTML = `
     <article class="shell help-shell">
@@ -137,5 +138,7 @@ function render(): void {
   `;
 }
 
-render();
-onLanguageChange(render);
+if (typeof document !== "undefined") {
+  render();
+  onLanguageChange(render);
+}
