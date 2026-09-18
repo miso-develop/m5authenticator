@@ -16,7 +16,7 @@ import esp_idf_build_image
 BUILD_WORKFLOWS = (
     ROOT / ".github" / "workflows" / "foundation.yml",
     ROOT / ".github" / "workflows" / "pages.yml",
-    ROOT / ".github" / "workflows" / "release.yml",
+    ROOT / ".github" / "workflows" / "release-authorized.yml",
     ROOT / ".github" / "workflows" / "issue117-screen-snapshot.yml",
 )
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
