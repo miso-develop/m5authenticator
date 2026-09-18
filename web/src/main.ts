@@ -556,7 +556,8 @@ function renderDevice(): void {
   appendStatus("Unlock", snapshot.unlockRequired ? "Fresh Device confirmation required" : "Not required");
   appendStatus("Generation", hello.generation.toString(10));
   appendStatus("Recovery candidates", String(snapshot.recoveryProvisioningCandidates));
-  appendStatus("Time", `${snapshot.time.readiness} (${snapshot.time.source})`);
+  appendStatus("Time readiness", timeReadinessLabel(snapshot.time));
+  appendStatus("Time source", timeSourceLabel(snapshot.time));
   appendStatus("Accounts", String(snapshot.accounts.length));
 
   renderStoredAccounts(snapshot.accounts);
@@ -575,6 +576,28 @@ function renderDevice(): void {
     wifiSsid.value = snapshot.wifi.ssid;
   }
   updateControls();
+}
+
+function timeReadinessLabel(time: CanonicalDeviceSnapshot["time"]): string {
+  if (time.readiness === "ready") return "READY — operational readiness only";
+  if (time.readiness === "stale") return "STALE";
+  return "NOT SYNCED";
+}
+
+function timeSourceLabel(time: CanonicalDeviceSnapshot["time"]): string {
+  if (time.source === "ntp") {
+    return time.sourceAuthenticity === "unauthenticated_network"
+      ? "Network time (unauthenticated)"
+      : "NTP time (authenticity metadata unavailable)";
+  }
+  if (time.source === "usb") {
+    return time.sourceAuthenticity === "local_host_asserted"
+      ? "PC/local-host asserted time (not cryptographically authenticated)"
+      : "PC/local-host time (authenticity metadata unavailable)";
+  }
+  return time.sourceAuthenticity === "none"
+    ? "No accepted time source"
+    : "No accepted time source (authenticity metadata unavailable)";
 }
 
 function renderStoredAccounts(accounts: CanonicalDeviceSnapshot["accounts"]): void {
