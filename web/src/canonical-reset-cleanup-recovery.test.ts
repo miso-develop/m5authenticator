@@ -175,6 +175,7 @@ class ResetDevice implements CanonicalV2Transport {
       capability?: unknown;
       expiresInMs?: number;
       status?: "awaiting_confirmation" | "confirmed";
+      commitOutcome?: "success" | "ambiguous-unchanged";
     } = {},
   ) {}
 
@@ -213,6 +214,9 @@ class ResetDevice implements CanonicalV2Transport {
       this.commitCalls += 1;
       if ((this.options.status ?? "confirmed") !== "confirmed") {
         throw new Error("commit before confirmation");
+      }
+      if (this.options.commitOutcome === "ambiguous-unchanged") {
+        throw new Error("synthetic reset response lost before erase");
       }
       this.resetCommitted = true;
       return {};
@@ -472,6 +476,35 @@ describe("presence-gated healthy Factory Reset", () => {
       expect(device.operations).not.toContain("factory_reset");
       expect(device.commitCalls).toBe(1);
       expect(store.current()).toBeNull();
+      expect(journal.current()).toBeNull();
+      expect(resetIntents.current()).toBeNull();
+    } finally {
+      vmk.fill(0);
+    }
+  });
+
+  it("does not retry an ambiguous commit when read-only reconciliation proves the original binding remains", async () => {
+    const { state, vmk } = await fixture();
+    try {
+      const store = new MemoryStore(state);
+      const journal = new MemoryJournal();
+      const resetIntents = new MemoryResetIntents();
+      const device = new ResetDevice(state, { commitOutcome: "ambiguous-unchanged" });
+      const manager = new CanonicalDeviceManagement(
+        device,
+        typedProvisionedHello(state),
+        store.asIndexedDb(),
+        journal.asIndexedDb(),
+        resetIntents.asIndexedDb(),
+      );
+      await manager.initialize();
+
+      await expect(manager.factoryReset({ pollIntervalMs: 0 }))
+        .rejects.toThrow(/did not complete.*original Device\/browser binding remains active/i);
+
+      expect(device.commitCalls).toBe(1);
+      expect(device.resetCommitted).toBe(false);
+      expect(store.current()?.vault.generation).toBe(state.vault.generation);
       expect(journal.current()).toBeNull();
       expect(resetIntents.current()).toBeNull();
     } finally {
