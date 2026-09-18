@@ -78,6 +78,12 @@ If Wi-Fi is unavailable, synchronization fails, or an NTP jump is rejected, Devi
 
 Protocol v2 `time.sync` accepts a bounded integer Unix timestamp only while unlocked. Success updates the wall clock and current boot's monotonic anchor with source `usb`. The NTP 300-second jump rule does not apply to this explicit local-host recovery/control path.
 
+The official Web app may invoke this existing guarded path automatically only after either:
+- Connect has freshly proven an active Trusted Browser already owns an `UNLOCKED` Device; or
+- normal Trusted Browser Unlock has completed physical confirmation and a fresh post-Unlock status again proves active ownership plus `UNLOCKED`.
+
+Automatic PC sync is eligible only for `not_synced` or `stale`. It does not replace an existing `READY` anchor, and it does not run while LOCKED, during presence confirmation, in Recovery Factory Reset mode, or for non-active/conflicting browser ownership. The Web samples host Unix time at the guarded mutation boundary and the canonical management layer re-checks exact binding and `UNLOCKED` before the Device write. Failure is best-effort: no implicit Lock, no healthy-transport disconnect solely for the time failure, and no unbounded automatic retry.
+
 `time.status` exposes only non-secret fields. Its additive `source_authenticity` metadata is stable for V1.x: `ntp` reports `unauthenticated_network`, `usb` reports `local_host_asserted`, and no source reports `none`. `local_host_asserted` is not a claim of cryptographic authentication.
 
 ## Periodic resynchronization
