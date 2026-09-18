@@ -8,6 +8,7 @@
 
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
 #include "m5auth/device/sticks3/totp_validity.hpp"
+#include "m5auth/device/sticks3/ui_palette.hpp"
 #include "m5auth/device/sticks3/ui_model.hpp"
 
 namespace {
@@ -61,8 +62,21 @@ int main() {
     using m5auth::device::sticks3::label_scroll::update_offset;
     using m5auth::device::sticks3::totp_validity::from_unix_seconds;
     using m5auth::device::sticks3::totp_validity::same_period;
+    using namespace m5auth::device::sticks3::ui_palette;
     using m5auth::session::AttemptId;
     using m5auth::session::PresenceOperation;
+
+    // Issue #176: visual accents are stable presentation categories and remain
+    // distinct from the existing semantic status colors.
+    assert(kProductTitle == 0x1c9f);
+    assert(kConfirmationAction == 0x07ff);
+    assert(kProductTitle != kConfirmationAction);
+    assert(kProductTitle != 0x07e0);
+    assert(kProductTitle != 0xffe0);
+    assert(kProductTitle != 0xf800);
+    assert(kConfirmationAction != 0x07e0);
+    assert(kConfirmationAction != 0xffe0);
+    assert(kConfirmationAction != 0xf800);
 
     assert(account_display_label(account(1, 0, "Issuer", "account", "User")) == "User");
     assert(account_display_label(account(1, 0, "Issuer", "account")) == "Issuer");

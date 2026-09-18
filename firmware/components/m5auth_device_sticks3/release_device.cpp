@@ -1,4 +1,5 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
+#include "m5auth/device/sticks3/ui_palette.hpp"
 
 #include "M5Unified.h"
 
@@ -20,10 +21,11 @@ void initialize() {
     M5.Display.setRotation(1);
     M5.Display.clear();
     M5.Display.setTextSize(2);
-    M5.Display.setTextColor(0xffff, 0x0000);
+    M5.Display.setTextColor(ui_palette::kProductTitle, 0x0000);
     M5.Display.setTextWrap(false);
     M5.Display.setCursor(0, 0);
     M5.Display.println("M5Authenticator");
+    M5.Display.setTextColor(0xffff, 0x0000);
     M5.Display.println("Starting...");
 }
 

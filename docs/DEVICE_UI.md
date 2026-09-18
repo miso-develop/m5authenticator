@@ -23,6 +23,16 @@ Issuer, account label, user-defined display name, TOTP profile metadata, Wi-Fi S
 
 While `LOCKED`, the Device must not display or enumerate those plaintext fields from Flash. Status screens may show only approved non-secret fields such as firmware/protocol/storage/Vault versions, generation, registration status, and trusted-time status.
 
+## Visual hierarchy
+
+The shared `M5Authenticator` product heading uses a readable blue accent on the black StickS3 background, including the startup screen and normal runtime screens.
+
+During a pending fresh user-presence attempt, the explicit `Press A to confirm` action uses a bright cyan action accent so it is more visually prominent than explanatory text and remains distinct from the existing green/amber/red State/Time semantics. Color is supplemental only: the product title, operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
+
+These accents do not change presence binding, stale-input rejection, timeout/cancel behavior, Protocol v2, or any secret-handling behavior.
+
+The production StickS3 initialization continues to disable unused internal speaker/microphone initialization and explicitly ends the speaker path. This visual hierarchy change does not alter audio/PMIC/USB-power behavior.
+
 ## User-presence request
 
 Fresh physical confirmation is required for:
