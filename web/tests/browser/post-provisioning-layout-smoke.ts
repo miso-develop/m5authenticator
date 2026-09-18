@@ -230,7 +230,42 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
 
     installWebBuildInfo(shell);
     flushLayout();
-    assert(shell.lastElementChild?.id === "web-build-identity", "Web build provenance must follow primary Provisioning content");
+
+    const buildSection = required<HTMLElement>(shell, "#web-build-info-section");
+    const buildHeading = required<HTMLElement>(buildSection, "#web-build-info-heading");
+    const buildIdentity = required<HTMLElement>(buildSection, "#web-build-identity");
+    assert(buildSection.tagName === "SECTION", "Web build provenance must use a semantic section");
+    assert(buildSection.getAttribute("aria-labelledby") === buildHeading.id, "Web build section heading must label its section");
+    assert(sourceTextOf(buildHeading) === "Build information", "Web build section must expose the localized Build information heading source");
+    assert(buildSection.contains(buildIdentity), "Web build identity rows must remain inside the Build information section");
+    assert(shell.lastElementChild === buildSection, "Web Build information section must follow primary Provisioning content");
+
+    const majorSections = Array.from(shell.querySelectorAll<HTMLElement>(":scope > section.panel"));
+    assert(majorSections.length === 7, "Provisioning must render six operational sections plus the Build information section");
+    const expectedHeadings = [
+      "Device",
+      "Import accounts",
+      "Canonical accounts",
+      "Wi-Fi for NTP",
+      "Rotate Vault Master Key",
+      "Factory Reset",
+      "Build information",
+    ];
+    majorSections.forEach((section, index) => {
+      const heading = section.querySelector("h2");
+      assert(heading !== null, `Provisioning section ${index + 1} must have a section heading`);
+      assert(sourceTextOf(heading) === expectedHeadings[index], `Provisioning section ${index + 1} heading order changed`);
+      const style = getComputedStyle(section);
+      assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `Provisioning section ${index + 1} must have one visible top divider`);
+      assert(section.querySelector(":scope > hr") === null, `Provisioning section ${index + 1} must not add a duplicate hr divider`);
+      if (index > 0) {
+        assert(parseFloat(style.marginTop) >= 32, `Provisioning section ${index + 1} requires at least 32px separation`);
+        assert(parseFloat(style.paddingTop) >= 32, `Provisioning section ${index + 1} requires at least 32px boundary padding`);
+      }
+    });
+    const regularDivider = getComputedStyle(majorSections[0]!).borderTopColor;
+    const dangerDivider = getComputedStyle(required<HTMLElement>(shell, "section.danger")).borderTopColor;
+    assert(dangerDivider !== regularDivider, "Factory Reset must retain its danger-tinted divider semantics");
   } finally {
     SerialSession.connect = originalConnect;
     CanonicalDeviceManagement.prototype.initialize = originalInitialize;
@@ -258,13 +293,20 @@ async function verifyProductionFirmwareGeometry(): Promise<void> {
     const nav = required<HTMLElement>(doc, ".site-nav-shell");
     const shell = required<HTMLElement>(doc, "#flash-app > .shell");
     const status = required<HTMLElement>(doc, "#flash-status");
+    const buildSection = required<HTMLElement>(doc, "#firmware-build-info-section");
+    const buildHeading = required<HTMLElement>(doc, "#firmware-build-info-heading");
     const buildIdentity = required<HTMLElement>(doc, "#firmware-build-identity");
     flushLayout(doc);
 
     assert(status.textContent?.includes("Loading and validating pinned firmware target") === true, "Production Firmware route must be measured while actual target resolution is pending");
-    assert(shell.lastElementChild === buildIdentity, "Firmware build provenance must follow primary Flash/Update content");
+    assert(buildSection.tagName === "SECTION", "Firmware build provenance must use a semantic section");
+    assert(buildSection.getAttribute("aria-labelledby") === buildHeading.id, "Firmware Build information heading must label its section");
+    assert(sourceTextOf(buildHeading) === "Build information", "Firmware build section must expose the localized Build information heading source");
+    assert(buildSection.contains(buildIdentity), "Firmware build identity rows must remain inside the Build information section");
+    assert(shell.lastElementChild === buildSection, "Firmware Build information section must follow primary Flash/Update content");
     const beforeShell = shell.getBoundingClientRect();
     const beforeNav = nav.getBoundingClientRect();
+    const beforeBuildSection = buildSection.getBoundingClientRect();
 
     frameWindow.__m5authFirmwareLayoutSmoke!.resume();
     await waitUntil(
@@ -279,9 +321,14 @@ async function verifyProductionFirmwareGeometry(): Promise<void> {
 
     const afterShell = shell.getBoundingClientRect();
     const afterNav = nav.getBoundingClientRect();
+    const afterBuildSection = buildSection.getBoundingClientRect();
     assert(getComputedStyle(doc.documentElement).scrollbarGutter.includes("stable"), "Firmware route must use the shared stable scrollbar policy");
     assert(near(beforeShell.left, afterShell.left) && near(beforeShell.width, afterShell.width), "Production Firmware shell geometry shifted after successful asynchronous target resolution");
     assert(near(beforeNav.left, afterNav.left) && near(beforeNav.width, afterNav.width), "Production Firmware top navigation geometry shifted after successful asynchronous target resolution");
+    assert(
+      near(beforeBuildSection.left, afterBuildSection.left) && near(beforeBuildSection.width, afterBuildSection.width),
+      "Firmware Build information section shifted horizontally after asynchronous metadata resolution",
+    );
   } finally {
     frame.remove();
   }
