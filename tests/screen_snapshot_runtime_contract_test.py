@@ -135,11 +135,11 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         palette = UI_PALETTE_HPP.read_text(encoding="utf-8")
 
         for contract in (
-            "kTitlePaddingTopPx = 1",
-            "kTitlePaddingBottomPx = 1",
+            "kTitlePaddingTopPx = 4",
+            "kTitlePaddingBottomPx = 4",
             "kTitlePaddingLeftPx = 1",
             "kHeaderSeparatorHeightPx = 1",
-            "kContentLeftPx = 1",
+            "kContentLeftPx = 4",
         ):
             self.assertIn(contract, layout)
         self.assertIn("kTitleBackground = 0x0000", palette)
