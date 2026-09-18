@@ -1,6 +1,6 @@
 # Trusted Time and TOTP
 
-M5Authenticator V1 treats time readiness as an independent gate for TOTP reveal. Decision #49 defines the security boundary for trusted-time mutation.
+M5Authenticator V1 treats time readiness as an independent gate for TOTP reveal. Decision #49 defines the mutation boundary, and Decision #159 defines network-time authenticity semantics. `READY` is an operational readiness state; it does **not** mean the source was cryptographically authenticated.
 
 OTP reveal requires both:
 
@@ -14,9 +14,9 @@ trusted-time state = READY
 
 | State | OTP reveal | Meaning |
 | --- | --- | --- |
-| `not_synced` | blocked | no trusted NTP or USB sync has succeeded during the current boot |
-| `ready` | allowed only while Device is also `UNLOCKED` | trusted sync exists and is not more than 24 hours old |
-| `stale` | blocked | the last trusted sync is more than 24 hours old, or monotonic integrity failed |
+| `not_synced` | blocked | no accepted NTP or USB anchor exists during the current boot |
+| `ready` | allowed only while Device is also `UNLOCKED` | an accepted current-boot anchor exists and is not more than 24 hours old |
+| `stale` | blocked | the last accepted anchor is more than 24 hours old, or monotonic integrity failed |
 
 The trusted anchor is runtime-only. Current trusted Unix time is derived from the successful sync timestamp plus the monotonic timer, so stale decisions do not depend on later arbitrary wall-clock changes.
 
@@ -60,21 +60,31 @@ Wi-Fi/NTP is only a time source and is not an authentication factor.
 
 ## NTP synchronization
 
+Ordinary SNTP remains the V1.x operational network-time source. It is **unauthenticated network time**: DNS, gateway, Wi-Fi, UDP, or NTP-path manipulation can influence the sample, and `READY` must not be interpreted as cryptographic source authenticity.
+
 When `UNLOCKED` and a Wi-Fi credential exists, firmware may attempt NTP after unlock and at the periodic resynchronization interval. Retry/backoff remains bounded.
 
-If Wi-Fi is unavailable or synchronization fails, Device remains `not_synced` or later becomes `stale` as applicable. USB time synchronization remains available after unlock.
+The first accepted NTP sample in a boot may establish the operational anchor after the existing Unix-range and state gates. Once any current-boot anchor exists, each later NTP sample is compared with the anchor's monotonic-projected Unix time:
+
+- absolute difference **<= 300 seconds**: accept and refresh anchor/source/freshness;
+- absolute difference **> 300 seconds**: reject as an implausible jump;
+- rejection does not modify the accepted anchor, `last_sync`, or the 24-hour freshness deadline;
+- repeated rejected samples therefore cannot extend `READY`;
+- the prior accepted anchor remains usable only until the existing 24-hour stale boundary.
+
+If Wi-Fi is unavailable, synchronization fails, or an NTP jump is rejected, Device remains `not_synced` or later becomes `stale` as applicable. USB time synchronization remains available after unlock.
 
 ## USB trusted time
 
-Protocol v2 `time.sync` accepts a bounded integer Unix timestamp only while unlocked. Success updates the wall clock and current boot's trusted monotonic anchor with source `usb`.
+Protocol v2 `time.sync` accepts a bounded integer Unix timestamp only while unlocked. Success updates the wall clock and current boot's monotonic anchor with source `usb`. The NTP 300-second jump rule does not apply to this explicit local-host recovery/control path.
 
-`time.status`/`hello` expose only non-secret fields such as state, source, last-sync metadata, age, and resync-due state.
+`time.status` exposes only non-secret fields. Its additive `source_authenticity` metadata is stable for V1.x: `ntp` reports `unauthenticated_network`, `usb` reports `local_host_asserted`, and no source reports `none`. `local_host_asserted` is not a claim of cryptographic authentication.
 
 ## Periodic resynchronization
 
 Resynchronization becomes due after approximately 6 hours. While `UNLOCKED`, a background task may perform a bounded NTP attempt through the transient Wi-Fi access path.
 
-Failure does not immediately revoke READY. After more than 24 hours without a successful trusted sync, state becomes `stale` and TOTP reveal is blocked. A later successful USB/NTP sync while unlocked establishes a new anchor.
+Failure or rejected NTP resynchronization does not immediately revoke READY. After more than 24 hours without an accepted sync, state becomes `stale` and TOTP reveal is blocked. A later acceptable NTP resync or successful USB sync while unlocked establishes a fresh anchor.
 
 While `LOCKED`, background work must not open Wi-Fi credentials or mutate the trusted anchor. Existing non-secret current-boot anchor metadata may continue aging for later reuse after unlock.
 
