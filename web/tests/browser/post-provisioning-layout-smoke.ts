@@ -2,6 +2,7 @@ import "../../src/style.css";
 import "../../src/post-provisioning-layout.css";
 import { CanonicalDeviceManagement, type CanonicalDeviceSnapshot } from "../../src/canonical-management";
 import { SerialSession } from "../../src/serial";
+import { sourceTextOf } from "../../src/ui-localization";
 import { installWebBuildInfo } from "../../src/web-build-info";
 
 const GEOMETRY_EPSILON_PX = 0.5;
@@ -136,13 +137,13 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     assert(!factoryReset.disabled, "Typed RESET gate must arm Factory Reset only on capable firmware");
     factoryReset.click();
     await waitUntil(
-      () => !cancelFactoryReset.hidden && deviceNotice.textContent?.includes("press A on M5StickS3") === true,
+      () => !cancelFactoryReset.hidden && sourceTextOf(deviceNotice).includes("press A on M5StickS3"),
       "Production Factory Reset UI did not enter fresh Device-confirmation pending state",
     );
     assert(factoryReset.disabled, "Factory Reset must not be re-armed while Device confirmation is pending");
     cancelFactoryReset.click();
     await waitUntil(
-      () => cancelFactoryReset.hidden && deviceNotice.textContent?.includes("Device and browser canonical state were not cleared") === true,
+      () => cancelFactoryReset.hidden && sourceTextOf(deviceNotice).includes("Device and browser canonical state were not cleared"),
       "Production Factory Reset UI did not reach the explicit canceled state",
     );
 
