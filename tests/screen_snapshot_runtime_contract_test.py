@@ -9,6 +9,8 @@ APP_MAIN = ROOT / "firmware/main/app_main.cpp"
 TRANSPORT_CPP = ROOT / "firmware/main/usb_protocol_transport.cpp"
 DEVICE_HEADER = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/canonical_device.hpp"
 DEVICE_CPP = ROOT / "firmware/components/m5auth_device_sticks3/canonical_device.cpp"
+UI_LAYOUT_HPP = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/ui_layout.hpp"
+UI_PALETTE_HPP = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/ui_palette.hpp"
 
 
 def extract_braced_block(source: str, signature: str) -> str:
@@ -126,6 +128,45 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("rendered_snapshot_ready_", scroll_branch)
         self.assertIn("std::lock_guard<std::mutex> view(view_mutex_);", security_clear)
         self.assertIn("render();", security_clear)
+
+    def test_issue_187_render_frame_contract_is_pinned_without_snapshot_secret_expansion(self) -> None:
+        ui = DEVICE_CPP.read_text(encoding="utf-8")
+        layout = UI_LAYOUT_HPP.read_text(encoding="utf-8")
+        palette = UI_PALETTE_HPP.read_text(encoding="utf-8")
+
+        for contract in (
+            "kTitlePaddingTopPx = 4",
+            "kTitlePaddingBottomPx = 4",
+            "kTitlePaddingLeftPx = 1",
+            "kHeaderSeparatorHeightPx = 1",
+            "kContentLeftPx = 4",
+        ):
+            self.assertIn(contract, layout)
+        self.assertIn("kTitleBackground = 0x0000", palette)
+        self.assertIn("kTitleText = 0x451f", palette)
+
+        render = extract_braced_block(ui, "void CanonicalUiController::render()")
+        self.assertIn("const auto geometry = display_geometry();", render)
+        self.assertIn("draw_title_band(geometry);", render)
+        self.assertIn("geometry.primary_line_y", render)
+        self.assertIn("geometry.secondary_line_y", render)
+        self.assertIn("geometry.tertiary_line_y", render)
+        self.assertIn("geometry.help_first_y", render)
+        self.assertIn("geometry.help_second_y", render)
+
+        # The sanitized snapshot schema remains semantic-only; pixel/layout data
+        # does not create a new diagnostic or secret-bearing surface.
+        header = DEVICE_HEADER.read_text(encoding="utf-8")
+        snapshot = extract_braced_block(header, "struct ScreenSnapshot")
+        for forbidden in (
+            "title_band",
+            "padding",
+            "pixel",
+            "color",
+            "label",
+            "otp",
+        ):
+            self.assertNotIn(forbidden, snapshot.lower())
 
     def test_ui_task_failure_or_not_started_leaves_snapshot_not_ready(self) -> None:
         header = DEVICE_HEADER.read_text(encoding="utf-8")

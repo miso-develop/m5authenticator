@@ -1,6 +1,7 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
 #include "m5auth/device/sticks3/totp_validity.hpp"
+#include "m5auth/device/sticks3/ui_layout.hpp"
 #include "m5auth/device/sticks3/ui_palette.hpp"
 
 #include <algorithm>
@@ -33,18 +34,6 @@ constexpr std::uint16_t kColorWhite = 0xffff;
 constexpr std::uint16_t kColorGood = 0x07e0;
 constexpr std::uint16_t kColorAttention = 0xffe0;
 constexpr std::uint16_t kColorError = 0xf800;
-
-constexpr int kHeaderY = 0;
-constexpr int kPrimaryLineY = 20;
-constexpr int kSecondaryLineY = 40;
-constexpr int kTertiaryLineY = 60;
-constexpr int kStatusBandHeight = 18;
-constexpr int kAccountLabelY = 80;
-constexpr int kAccountLabelHeight = 18;
-constexpr int kOtpY = 101;
-constexpr int kOtpBandHeight = 34;
-constexpr int kHelpFirstY = 99;
-constexpr int kHelpSecondY = 117;
 
 std::uint64_t monotonic_ms() {
     const std::int64_t microseconds = esp_timer_get_time();
@@ -99,20 +88,54 @@ void prepare_readable_display() {
     M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setTextColor(kColorWhite, kColorBlack);
     M5.Display.setTextWrap(false);
-    M5.Display.setCursor(0, 0);
+    M5.Display.setCursor(ui_layout::kContentLeftPx, 0);
+}
+
+ui_layout::FrameGeometry display_geometry() {
+    M5.Display.setTextSize(kReadableTextSize);
+    return ui_layout::frame_geometry(static_cast<int>(M5.Display.fontHeight()));
+}
+
+void draw_title_band(const ui_layout::FrameGeometry& geometry) {
+    const auto width = static_cast<std::int32_t>(M5.Display.width());
+    M5.Display.fillRect(
+        0,
+        0,
+        width,
+        geometry.title_band_height,
+        ui_palette::kTitleBackground
+    );
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(
+        ui_palette::kTitleText,
+        ui_palette::kTitleBackground
+    );
+    M5.Display.setCursor(
+        ui_layout::kTitlePaddingLeftPx,
+        ui_layout::kTitlePaddingTopPx
+    );
+    M5.Display.print("M5Authenticator");
+    M5.Display.fillRect(
+        0,
+        geometry.separator_y,
+        width,
+        ui_layout::kHeaderSeparatorHeightPx,
+        kColorBlack
+    );
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
 }
 
 void draw_line(const char* text, int y) {
     M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setTextColor(kColorWhite, kColorBlack);
-    M5.Display.setCursor(0, y);
+    M5.Display.setCursor(ui_layout::kContentLeftPx, y);
     M5.Display.print(text);
 }
 
 void draw_accent_line(const char* text, int y, std::uint16_t color) {
     M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setTextColor(color, kColorBlack);
-    M5.Display.setCursor(0, y);
+    M5.Display.setCursor(ui_layout::kContentLeftPx, y);
     M5.Display.print(text);
     M5.Display.setTextColor(kColorWhite, kColorBlack);
 }
@@ -125,9 +148,10 @@ void draw_semantic_line(
 ) {
     M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setTextColor(kColorWhite, kColorBlack);
-    M5.Display.setCursor(0, y);
+    M5.Display.setCursor(ui_layout::kContentLeftPx, y);
     M5.Display.print(prefix);
-    const int value_x = M5.Display.textWidth(prefix);
+    const int value_x =
+        ui_layout::kContentLeftPx + M5.Display.textWidth(prefix);
     M5.Display.setTextColor(value_color, kColorBlack);
     M5.Display.setCursor(value_x, y);
     M5.Display.print(value);
@@ -142,8 +166,12 @@ M5Canvas* account_label_canvas() {
         initialized = true;
         canvas.setColorDepth(8);
         available = canvas.createSprite(
-            static_cast<std::int32_t>(M5.Display.width()),
-            kAccountLabelHeight
+            static_cast<std::int32_t>(
+                ui_layout::content_viewport_width(
+                    static_cast<int>(M5.Display.width())
+                )
+            ),
+            ui_layout::kAccountLabelHeightPx
         ) != nullptr;
         if (available) {
             canvas.setTextSize(kReadableTextSize);
@@ -155,7 +183,7 @@ M5Canvas* account_label_canvas() {
     return available ? &canvas : nullptr;
 }
 
-void draw_otp(std::uint32_t revealed_code) {
+void draw_otp(std::uint32_t revealed_code, int otp_y) {
     char otp[7]{};
     std::snprintf(
         otp,
@@ -174,7 +202,7 @@ void draw_otp(std::uint32_t revealed_code) {
     int x = std::max(0, (display_width - total_width) / 2);
 
     for (std::size_t index = 0; index < 6; ++index) {
-        M5.Display.setCursor(x, kOtpY);
+        M5.Display.setCursor(x, otp_y);
         M5.Display.print(otp[index]);
         x += digit_width;
         if (index < 5) {
@@ -338,7 +366,9 @@ bool CanonicalUiController::update_label_scroll(std::uint64_t now_ms) {
     const int label_width = M5.Display.textWidth(label.c_str());
     wipe_text(&label);
 
-    const int viewport_width = static_cast<int>(M5.Display.width());
+    const int viewport_width = ui_layout::content_viewport_width(
+        static_cast<int>(M5.Display.width())
+    );
     if (label_width <= viewport_width) {
         return label_scroll::update_offset(false, 0, &label_scroll_offset_px_);
     }
@@ -577,6 +607,8 @@ void CanonicalUiController::render_account_label() {
         return;
     }
 
+    M5.Display.setTextSize(kReadableTextSize);
+    const auto geometry = display_geometry();
     std::string label = display_label(credentials_[selected_index_]);
     if (M5Canvas* canvas = account_label_canvas(); canvas != nullptr) {
         canvas->clear(0x0000);
@@ -585,40 +617,51 @@ void CanonicalUiController::render_account_label() {
         canvas->setTextWrap(false);
         canvas->setCursor(-label_scroll_offset_px_, 0);
         canvas->print(label.c_str());
-        canvas->pushSprite(&M5.Display, 0, kAccountLabelY);
+        canvas->pushSprite(
+            &M5.Display,
+            ui_layout::kContentLeftPx,
+            geometry.account_label_y
+        );
         // The sprite is only a transient drawing surface. Clear its pixels after
         // the blit so it does not become another persistent credential-label copy.
         canvas->clear(0x0000);
     } else {
-        // Allocation failure still avoids the Human-Gate defect: update only the
-        // label band rather than clearing/redrawing the whole 240x135 display.
+        // Allocation failure still avoids a whole-screen redraw. Keep the
+        // left-aligned fallback anchored at the shared 1 px content inset.
         M5.Display.fillRect(
             0,
-            kAccountLabelY,
+            geometry.account_label_y,
             static_cast<std::int32_t>(M5.Display.width()),
-            kAccountLabelHeight,
+            ui_layout::kAccountLabelHeightPx,
             kColorBlack
         );
         M5.Display.setTextSize(kReadableTextSize);
         M5.Display.setTextColor(kColorWhite, kColorBlack);
         M5.Display.setTextWrap(false);
-        M5.Display.setCursor(-label_scroll_offset_px_, kAccountLabelY);
+        M5.Display.setCursor(
+            ui_layout::kContentLeftPx - label_scroll_offset_px_,
+            geometry.account_label_y
+        );
         M5.Display.print(label.c_str());
     }
     wipe_text(&label);
 }
 
 void CanonicalUiController::render_reveal_validity() {
+    const auto geometry = display_geometry();
     M5.Display.fillRect(
         0,
-        kTertiaryLineY,
+        geometry.tertiary_line_y,
         static_cast<std::int32_t>(M5.Display.width()),
-        kStatusBandHeight,
+        ui_layout::kStatusBandHeightPx,
         kColorBlack
     );
     M5.Display.setTextSize(kReadableTextSize);
     M5.Display.setTextColor(kColorWhite, kColorBlack);
-    M5.Display.setCursor(0, kTertiaryLineY);
+    M5.Display.setCursor(
+        ui_layout::kContentLeftPx,
+        geometry.tertiary_line_y
+    );
     M5.Display.printf(
         "Valid: %us",
         static_cast<unsigned>(validity_seconds_remaining_)
@@ -630,15 +673,16 @@ void CanonicalUiController::render_reveal_region() {
     // Erase the old OTP first so the new-period validity can never be shown next
     // to old-period OTP pixels. The temporary blank OTP band is fail-safe and
     // bounded; no whole-screen clear/redraw is introduced.
+    const auto geometry = display_geometry();
     M5.Display.fillRect(
         0,
-        kOtpY,
+        geometry.otp_y,
         static_cast<std::int32_t>(M5.Display.width()),
-        kOtpBandHeight,
+        ui_layout::kOtpBandHeightPx,
         kColorBlack
     );
     render_reveal_validity();
-    draw_otp(revealed_code_);
+    draw_otp(revealed_code_, geometry.otp_y);
 }
 
 void CanonicalUiController::render() {
@@ -670,47 +714,48 @@ void CanonicalUiController::render() {
 
     M5.Display.clear();
     prepare_readable_display();
-    draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);
+    const auto geometry = display_geometry();
+    draw_title_band(geometry);
 
     if (presence.active) {
-        draw_line("UNLOCK REQUEST", kPrimaryLineY);
-        draw_line(session::presence_operation_text(presence.operation), kSecondaryLineY);
-        int status_y = kTertiaryLineY;
+        draw_line("UNLOCK REQUEST", geometry.primary_line_y);
+        draw_line(session::presence_operation_text(presence.operation), geometry.secondary_line_y);
+        int status_y = geometry.tertiary_line_y;
         if (presence.operation == session::PresenceOperation::kFactoryReset) {
             draw_line("ERASE DEVICE DATA", status_y);
-            status_y += 20;
+            status_y += ui_layout::kLineAdvancePx;
         }
         if (presence.confirmed) {
             draw_line("Confirmed", status_y);
-            draw_line("Waiting for browser", status_y + 20);
+            draw_line("Waiting for browser", status_y + ui_layout::kLineAdvancePx);
         } else {
             draw_accent_line(
                 "Press A to confirm",
                 status_y,
                 ui_palette::kConfirmationAction
             );
-            draw_line("Expires in 30 sec", status_y + 20);
+            draw_line("Expires in 30 sec", status_y + ui_layout::kLineAdvancePx);
         }
     } else {
         draw_semantic_line(
             "State: ",
             runtime_state_text(runtime_state_),
             runtime_state_color(runtime_state_),
-            kPrimaryLineY
+            geometry.primary_line_y
         );
         draw_semantic_line(
             "Time: ",
             readiness_text(time_status.readiness),
             readiness_color(time_status.readiness),
-            kSecondaryLineY
+            geometry.secondary_line_y
         );
 
         if (storage_error_) {
-            draw_line("Vault unavailable", kTertiaryLineY);
+            draw_line("Vault unavailable", geometry.tertiary_line_y);
         } else if (!vault_visible_) {
-            draw_line("Open Web app", kTertiaryLineY);
+            draw_line("Open Web app", geometry.tertiary_line_y);
         } else if (credentials_.empty()) {
-            draw_line("No accounts", kTertiaryLineY);
+            draw_line("No accounts", geometry.tertiary_line_y);
         } else {
             const bool generate_error =
                 last_generate_result_ != totp::GenerateResult::kOk &&
@@ -721,7 +766,7 @@ void CanonicalUiController::render() {
             } else {
                 M5.Display.setTextSize(kReadableTextSize);
                 M5.Display.setTextColor(kColorWhite, kColorBlack);
-                M5.Display.setCursor(0, kTertiaryLineY);
+                M5.Display.setCursor(ui_layout::kContentLeftPx, geometry.tertiary_line_y);
                 if (generate_error) {
                     M5.Display.print("OTP unavailable");
                 } else {
@@ -736,10 +781,10 @@ void CanonicalUiController::render() {
             render_account_label();
 
             if (reveal_active_ && time_status.readiness == time::Readiness::kReady) {
-                draw_otp(revealed_code_);
+                draw_otp(revealed_code_, geometry.otp_y);
             } else {
-                draw_line("click: 1x next", kHelpFirstY);
-                draw_line("2x prev / hold OTP", kHelpSecondY);
+                draw_line("click: 1x next", geometry.help_first_y);
+                draw_line("2x prev / hold OTP", geometry.help_second_y);
             }
         }
     }

@@ -25,13 +25,35 @@ While `LOCKED`, the Device must not display or enumerate those plaintext fields 
 
 ## Visual hierarchy
 
-The shared `M5Authenticator` product heading uses a readable blue accent on the black StickS3 background, including the startup screen and normal runtime screens.
+The shared `M5Authenticator` product heading uses the normal black Device background with a bright-blue title on both startup and canonical runtime screens. The selected title color is RGB565 `0x451f`; it supersedes #176's darker `0x1c9f` blue and remains distinct from the bright-cyan confirmation action `0x07ff`.
 
-During a pending fresh user-presence attempt, the explicit `Press A to confirm` action uses a bright cyan action accent so it is more visually prominent than explanatory text and remains distinct from the existing green/amber/red State/Time semantics. Color is supplemental only: the product title, operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
+The title geometry remains metric-derived from the configured text-size-2 font rather than a fixed assumed glyph height. The frame reserves exactly 4 px above and below the title text, 1 px to the left of the title text, and one blank 1 px black spacing row before normal content begins. All left-aligned non-title content below the frame starts at x = 4 px. Lower account/OTP/help bands are compacted within the remaining 240x135 vertical space so the enlarged title padding does not clip the OTP or help text. Centered content, including the six-digit OTP, remains geometrically centered.
 
-These accents do not change presence binding, stale-input rejection, timeout/cancel behavior, Protocol v2, or any secret-handling behavior.
+During a pending fresh user-presence attempt, the explicit `Press A to confirm` action retains the bright-cyan action accent introduced by #176 so it remains visually prominent and distinct from the title and the existing green/amber/red State/Time semantics. Color is supplemental only: the operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
 
-The production StickS3 initialization continues to disable unused internal speaker/microphone initialization and explicitly ends the speaker path. This visual hierarchy change does not alter audio/PMIC/USB-power behavior.
+Account-label scrolling uses the same 4 px normal-content left inset and a viewport reduced only by that inset. The existing transient canvas is still cleared immediately after blitting; no additional persistent credential-label buffer is introduced.
+
+These presentation changes do not alter presence binding, stale-input rejection, timeout/cancel behavior, Protocol v2, Vault/TOTP/time behavior, or any secret-handling behavior.
+
+## Residual audible/high-frequency noise validation
+
+Production initialization continues to use the existing StickS3 audio-disable sequence:
+
+```cpp
+config.internal_spk = false;
+config.internal_mic = false;
+M5.begin(config);
+M5.Speaker.end();
+```
+
+Issue #187 does not add another PMIC/speaker-control write without causal physical evidence that this documented M5Unified path fails to leave the speaker amplifier disabled.
+
+The physical validation of exact head `46802e2baa9e03cd1331244885b9e9c76f005a85` recorded residual audible/high-frequency noise as **not observed** and found no checked heat, reboot, display, or power anomaly. A later physical session on exact head `eb93bbfcc0ce0b71a293c06b9591f0a78c38a744` reproduced a faint residual/high-frequency noise. Under the #187 contract, that faint/intermittent observation alone is nonblocking when it is not accompanied by abnormal heat, reboot, display corruption/flicker, USB protocol instability, or visible power instability, and no new audio/PMIC/power/USB mitigation is proposed.
+
+When noise is not reproducible and no noise-related firmware change is proposed, a separate physical SPK-amplifier-state measurement is not required for #187. If noise becomes reproducible, characterize the power/USB/runtime conditions before changing firmware. Amplifier-state and before/after evidence become mandatory only when further audio/PMIC mitigation is proposed.
+
+If reproducible noise occurs while the amplifier is confirmed off, retain the existing audio-disable code and investigate the power-path/load hypothesis rather than adding speculative PMIC changes.
+
 
 ## User-presence request
 

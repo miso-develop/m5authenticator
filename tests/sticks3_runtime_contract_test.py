@@ -11,6 +11,7 @@ PARTITIONS = ROOT / "firmware" / "partitions.csv"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 CANONICAL_DEVICE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "canonical_device.hpp"
+UI_LAYOUT_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "ui_layout.hpp"
 UI_PALETTE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "ui_palette.hpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
@@ -67,26 +68,59 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.setTextWrap(false);", text)
         self.assertIn("M5.Display.setTextSize(kOtpTextSize);", text)
         self.assertIn("M5.Display.setTextSize(kReadableTextSize);", text)
-        self.assertIn('draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);', text)
+        self.assertIn('M5.Display.print("M5Authenticator");', text)
         self.assertNotIn('"M5 Authenticator"', text)
-        self.assertIn('M5.Display.println("M5Authenticator");', startup)
+        self.assertIn('M5.Display.print("M5Authenticator");', startup)
         self.assertNotIn('"M5 Authenticator"', startup)
         self.assertIn("M5.Display.setTextSize(2);", startup)
 
-    def test_issue_176_visual_accents_are_shared_and_presentation_only(self) -> None:
+    def test_issue_187_bright_blue_title_frame_and_content_inset_are_shared(self) -> None:
         ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         startup = RELEASE_DEVICE_CPP.read_text(encoding="utf-8")
+        layout = UI_LAYOUT_HPP.read_text(encoding="utf-8")
         palette = UI_PALETTE_HPP.read_text(encoding="utf-8")
 
-        self.assertIn("kProductTitle = 0x1c9f", palette)
+        self.assertIn("kTitleBackground = 0x0000", palette)
+        self.assertIn("kTitleText = 0x451f", palette)
+        self.assertNotIn("kTitleText = 0x1c9f", palette)
         self.assertIn("kConfirmationAction = 0x07ff", palette)
-        self.assertIn('draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);', ui)
+        for contract in (
+            "kTitlePaddingTopPx = 4",
+            "kTitlePaddingBottomPx = 4",
+            "kTitlePaddingLeftPx = 1",
+            "kHeaderSeparatorHeightPx = 1",
+            "kContentLeftPx = 4",
+        ):
+            self.assertIn(contract, layout)
+
+        # Runtime and startup both derive frame height from the configured font.
+        self.assertIn("M5.Display.fontHeight()", ui)
+        self.assertIn("ui_layout::frame_geometry(", ui)
+        self.assertIn("M5.Display.fontHeight()", startup)
+        self.assertIn("ui_layout::frame_geometry(", startup)
+
+        # Black title frame, brighter-blue title, four-pixel vertical padding,
+        # and an explicit one-pixel spacing row.
+        self.assertIn("geometry.title_band_height", ui)
+        self.assertIn("ui_palette::kTitleBackground", ui)
+        self.assertIn("ui_palette::kTitleText", ui)
+        self.assertIn("geometry.separator_y", ui)
+        self.assertIn("ui_layout::kHeaderSeparatorHeightPx", ui)
+        self.assertIn('M5.Display.print("M5Authenticator");', ui)
+        self.assertIn('M5.Display.print("M5Authenticator");', startup)
+
+        # Left-aligned content uses the shared 1px inset; centered OTP keeps its
+        # display-width centering math.
+        self.assertIn("M5.Display.setCursor(ui_layout::kContentLeftPx, y);", ui)
+        self.assertIn("ui_layout::kContentLeftPx + M5.Display.textWidth(prefix)", ui)
+        self.assertIn("ui_layout::content_viewport_width(", ui)
+        self.assertIn("ui_layout::kContentLeftPx,", ui)
+        self.assertIn("const int display_width = static_cast<int>(M5.Display.width());", ui)
+        self.assertIn("int x = std::max(0, (display_width - total_width) / 2);", ui)
+
+        # #176 confirmation emphasis and physical-presence semantics remain intact.
         self.assertIn('"Press A to confirm"', ui)
         self.assertIn("ui_palette::kConfirmationAction", ui)
-        self.assertIn("M5.Display.setTextColor(ui_palette::kProductTitle, 0x0000);", startup)
-        self.assertIn('M5.Display.println("M5Authenticator");', startup)
-
-        # Color supplements explicit wording; presentation must not alter presence semantics.
         self.assertIn("presence_.button_pressed(now_ms)", ui)
         self.assertIn("presence_.observe_button_state(M5.BtnA.isPressed());", ui)
         self.assertNotIn("kConfirmationAction", CANONICAL_PROTOCOL.read_text(encoding="utf-8"))
@@ -130,7 +164,9 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
         self.assertIn("M5Canvas* account_label_canvas()", text)
         self.assertIn("canvas.createSprite(", text)
-        self.assertIn("canvas->pushSprite(&M5.Display, 0, kAccountLabelY);", text)
+        self.assertIn("ui_layout::kContentLeftPx,", text)
+        self.assertIn("geometry.account_label_y", text)
+        self.assertIn("ui_layout::content_viewport_width(", text)
         self.assertIn("canvas->clear(0x0000);", text)
         self.assertIn("label_scroll_changed = update_label_scroll(now_ms);", text)
         self.assertIn("else if (label_scroll_changed)", text)
@@ -143,13 +179,13 @@ class StickS3RuntimeContractTests(unittest.TestCase):
 
     def test_issue_139_otp_spacing_and_readable_hint_contract(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
-        self.assertIn("constexpr int kOtpY = 101;", text)
         self.assertIn("kOtpDigitGapPx = 3;", text)
+        self.assertIn("geometry.otp_y", text)
         self.assertIn("const int group_gap = digit_width / 2;", text)
         self.assertIn("if (index == 2)", text)
         self.assertIn("M5.Display.print(otp[index]);", text)
-        self.assertIn('draw_line("click: 1x next", kHelpFirstY);', text)
-        self.assertIn('draw_line("2x prev / hold OTP", kHelpSecondY);', text)
+        self.assertIn('draw_line("click: 1x next", geometry.help_first_y);', text)
+        self.assertIn('draw_line("2x prev / hold OTP", geometry.help_second_y);', text)
         self.assertNotIn('"1x next / 2x prev / hold OTP"', text)
         self.assertNotIn('"Click: next"', text)
         self.assertNotIn('"2x: previous"', text)

@@ -8,6 +8,7 @@
 
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
 #include "m5auth/device/sticks3/totp_validity.hpp"
+#include "m5auth/device/sticks3/ui_layout.hpp"
 #include "m5auth/device/sticks3/ui_palette.hpp"
 #include "m5auth/device/sticks3/ui_model.hpp"
 
@@ -62,18 +63,39 @@ int main() {
     using m5auth::device::sticks3::label_scroll::update_offset;
     using m5auth::device::sticks3::totp_validity::from_unix_seconds;
     using m5auth::device::sticks3::totp_validity::same_period;
+    using namespace m5auth::device::sticks3::ui_layout;
     using namespace m5auth::device::sticks3::ui_palette;
     using m5auth::session::AttemptId;
     using m5auth::session::PresenceOperation;
 
-    // Issue #176: visual accents are stable presentation categories and remain
-    // distinct from the existing semantic status colors.
-    assert(kProductTitle == 0x1c9f);
+    // Issue #187: the title frame keeps its metric geometry while the
+    // reworked palette returns to black with a brighter blue title.
+    assert(kTitleBackground == 0x0000);
+    assert(kTitleText == 0x451f);
     assert(kConfirmationAction == 0x07ff);
-    assert(kProductTitle != kConfirmationAction);
-    assert(kProductTitle != 0x07e0);
-    assert(kProductTitle != 0xffe0);
-    assert(kProductTitle != 0xf800);
+    assert(kTitleText != 0x1c9f);
+    assert(kTitleText != kConfirmationAction);
+    assert(kTitlePaddingTopPx == 4);
+    assert(kTitlePaddingBottomPx == 4);
+    assert(kTitlePaddingLeftPx == 1);
+    assert(kHeaderSeparatorHeightPx == 1);
+    assert(kContentLeftPx == 4);
+    assert(kOtpBandHeightPx == 32);
+
+    constexpr auto frame = frame_geometry(16);
+    static_assert(frame.title_band_height == 24);
+    static_assert(frame.separator_y == 24);
+    static_assert(frame.content_start_y == 25);
+    static_assert(frame.primary_line_y == 25);
+    static_assert(frame.secondary_line_y == 45);
+    static_assert(frame.tertiary_line_y == 65);
+    static_assert(frame.account_label_y == 82);
+    static_assert(frame.otp_y == 103);
+    static_assert(frame.help_first_y == 101);
+    static_assert(frame.help_second_y == 119);
+    static_assert(content_viewport_width(240) == 236);
+
+    // #176's confirmation action remains distinct from status categories.
     assert(kConfirmationAction != 0x07e0);
     assert(kConfirmationAction != 0xffe0);
     assert(kConfirmationAction != 0xf800);
@@ -118,9 +140,9 @@ int main() {
         render_region_start,
         render_region_end - render_region_start
     );
-    const std::size_t erase_old_otp = render_region.find("kOtpY");
+    const std::size_t erase_old_otp = render_region.find("geometry.otp_y");
     const std::size_t draw_new_validity = render_region.find("render_reveal_validity();");
-    const std::size_t draw_new_otp = render_region.find("draw_otp(revealed_code_);");
+    const std::size_t draw_new_otp = render_region.find("draw_otp(revealed_code_, geometry.otp_y);");
     assert(erase_old_otp != std::string::npos);
     assert(draw_new_validity != std::string::npos);
     assert(draw_new_otp != std::string::npos);
