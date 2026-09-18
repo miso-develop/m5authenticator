@@ -142,8 +142,8 @@ class ScreenSnapshotRuntimeContractTest(unittest.TestCase):
             "kContentLeftPx = 1",
         ):
             self.assertIn(contract, layout)
-        self.assertIn("kTitleBackground = 0xffff", palette)
-        self.assertIn("kTitleText = 0x0000", palette)
+        self.assertIn("kTitleBackground = 0x0000", palette)
+        self.assertIn("kTitleText = 0x451f", palette)
 
         render = extract_braced_block(ui, "void CanonicalUiController::render()")
         self.assertIn("const auto geometry = display_geometry();", render)
