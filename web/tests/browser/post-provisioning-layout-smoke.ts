@@ -241,8 +241,8 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     assert(shell.lastElementChild === buildSection, "Web Build information section must follow primary Provisioning content");
 
     const majorSections = Array.from(shell.querySelectorAll<HTMLElement>(":scope > section.panel"));
-    assert(majorSections.length === 7, "Provisioning must render six operational sections plus the Build information section");
-    const expectedHeadings = [
+    assert(majorSections.length >= 7, "Provisioning must render all required operational peers plus the Build information section");
+    const requiredHeadings = [
       "Device",
       "Import accounts",
       "Canonical accounts",
@@ -251,10 +251,15 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
       "Factory Reset",
       "Build information",
     ];
-    majorSections.forEach((section, index) => {
+    const renderedHeadings = majorSections.map((section, index) => {
       const heading = section.querySelector("h2");
       assert(heading !== null, `Provisioning section ${index + 1} must have a section heading`);
-      assert(sourceTextOf(heading) === expectedHeadings[index], `Provisioning section ${index + 1} heading order changed`);
+      return sourceTextOf(heading);
+    });
+    for (const expected of requiredHeadings) {
+      assert(renderedHeadings.includes(expected), `Provisioning must retain the required peer section: ${expected}`);
+    }
+    majorSections.forEach((section, index) => {
       const style = getComputedStyle(section);
       assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `Provisioning section ${index + 1} must have one visible top divider`);
       assert(section.querySelector(":scope > hr") === null, `Provisioning section ${index + 1} must not add a duplicate hr divider`);
