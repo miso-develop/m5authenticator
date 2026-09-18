@@ -24,6 +24,7 @@ enum class SyncResult {
     kLocked,
     kNotDue,
     kInvalidTime,
+    kRejectedJump,
     kNetworkUnavailable,
     kSyncFailed,
     kInternalError,
