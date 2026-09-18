@@ -640,9 +640,28 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
       assert(subsection.querySelector(":scope > hr") === null, `${name} must not duplicate the CSS divider with an hr`);
       assert(getComputedStyle(heading!).marginTop === "0px", `${name} heading must start immediately after the shared divider spacing`);
     }
+    const recoveryStyle = getComputedStyle(recoverySubsection);
+    const passphraseStyle = getComputedStyle(passphraseSubsection);
     assert(
-      getComputedStyle(recoverySubsection).borderTopColor === getComputedStyle(passphraseSubsection).borderTopColor,
+      recoveryStyle.borderTopColor === passphraseStyle.borderTopColor,
       "Recovery subsections must share the same neutral divider treatment",
+    );
+    assert(
+      parseFloat(recoveryStyle.marginTop) === 28,
+      "Recovery Package must retain the generic 28px security-subsection spacing",
+    );
+    assert(
+      parseFloat(passphraseStyle.marginTop) >= 40,
+      "Change Recovery Passphrase must have at least 40px top margin before its divider at desktop width",
+    );
+    assert(
+      parseFloat(passphraseStyle.marginTop) > parseFloat(recoveryStyle.marginTop),
+      "Change Recovery Passphrase must be more separated from preceding controls than the generic security subsection",
+    );
+    assert(
+      passphraseSubsection.querySelectorAll(":scope > hr").length === 0 &&
+        parseFloat(passphraseStyle.borderTopWidth) >= 1,
+      "Change Recovery Passphrase must keep exactly one CSS top divider and no duplicate hr",
     );
 
     for (const [index, section] of productionPanels.entries()) {
@@ -710,6 +729,20 @@ async function verifyStickyHeaderPolicy(): Promise<void> {
     const presenceOverlay = required<HTMLElement>(provisioningDoc, ".presence-overlay");
     const overlayZ = Number.parseInt(getComputedStyle(presenceOverlay).zIndex, 10);
     assert(overlayZ > headerZ, "Security presence overlay must retain stacking priority over the sticky header");
+
+    const narrowProvisioningFrame = await loadRouteFrame("index.html", 1200, 540);
+    frames.push(narrowProvisioningFrame);
+    const narrowProvisioningDoc = requiredFrameDocument(narrowProvisioningFrame);
+    const narrowRecovery = required<HTMLElement>(narrowProvisioningDoc, '[data-security-subsection="recovery-package"]');
+    const narrowPassphrase = required<HTMLElement>(narrowProvisioningDoc, '[data-security-subsection="change-passphrase"]');
+    const narrowRecoveryMargin = parseFloat(getComputedStyle(narrowRecovery).marginTop);
+    const narrowPassphraseMargin = parseFloat(getComputedStyle(narrowPassphrase).marginTop);
+    assert(narrowPassphraseMargin >= 40, "Narrow Change Recovery Passphrase spacing must not collapse below 40px");
+    assert(narrowPassphraseMargin > narrowRecoveryMargin, "Narrow Change Recovery Passphrase spacing must remain larger than generic subsection spacing");
+    assert(
+      narrowProvisioningDoc.documentElement.scrollWidth <= requiredFrameWindow(narrowProvisioningFrame).innerWidth,
+      "Narrow Change Recovery Passphrase spacing must not create horizontal overflow",
+    );
 
     const responsiveFrame = await loadRouteFrame("help.html", 360, 540);
     frames.push(responsiveFrame);
