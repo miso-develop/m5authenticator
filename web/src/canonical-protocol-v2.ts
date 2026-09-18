@@ -80,9 +80,18 @@ export interface CanonicalFactoryResetBegin {
 
 export type CanonicalFactoryResetStatus = "awaiting_confirmation" | "confirmed";
 
+export type CanonicalTimeSourceAuthenticity =
+  | "none"
+  | "unauthenticated_network"
+  | "local_host_asserted"
+  | "unknown";
+
 export interface CanonicalTimeStatus {
   readiness: "not_synced" | "ready" | "stale";
   source: "none" | "ntp" | "usb";
+  // Production parsing always returns an explicit value. Optionality preserves
+  // structural compatibility with pre-metadata synthetic transports/fixtures.
+  sourceAuthenticity?: CanonicalTimeSourceAuthenticity;
   lastSyncUnixSeconds: bigint;
   ageSeconds: number;
   resyncDue: boolean;
@@ -262,9 +271,17 @@ export function parseCanonicalTimeStatus(data: Record<string, unknown>): Canonic
   ) {
     throw new Error("Device returned invalid trusted-time status");
   }
+  const sourceAuthenticity = parseTimeSourceAuthenticity(data.source_authenticity);
+  if (
+    sourceAuthenticity !== "unknown" &&
+    !isMatchingTimeSourceAuthenticity(data.source, sourceAuthenticity)
+  ) {
+    throw new Error("Device returned invalid trusted-time status");
+  }
   return {
     readiness: data.readiness,
     source: data.source,
+    sourceAuthenticity,
     lastSyncUnixSeconds: parseU64Decimal(data.last_sync_unix_seconds, "last_sync_unix_seconds"),
     ageSeconds: data.age_seconds,
     resyncDue: data.resync_due,
@@ -333,4 +350,28 @@ function isReadiness(value: unknown): value is CanonicalTimeStatus["readiness"] 
 
 function isTimeSource(value: unknown): value is CanonicalTimeStatus["source"] {
   return value === "none" || value === "ntp" || value === "usb";
+}
+
+function parseTimeSourceAuthenticity(value: unknown): CanonicalTimeSourceAuthenticity {
+  if (value === undefined) return "unknown";
+  if (
+    value === "none" ||
+    value === "unauthenticated_network" ||
+    value === "local_host_asserted"
+  ) {
+    return value;
+  }
+  // Protocol-v2 metadata is additive. Preserve compatibility with a future
+  // string enum value without ever treating it as an authenticated source.
+  if (typeof value === "string") return "unknown";
+  throw new Error("Device returned invalid trusted-time source authenticity");
+}
+
+function isMatchingTimeSourceAuthenticity(
+  source: CanonicalTimeStatus["source"],
+  authenticity: Exclude<CanonicalTimeSourceAuthenticity, "unknown">,
+): boolean {
+  return (source === "none" && authenticity === "none") ||
+    (source === "ntp" && authenticity === "unauthenticated_network") ||
+    (source === "usb" && authenticity === "local_host_asserted");
 }
