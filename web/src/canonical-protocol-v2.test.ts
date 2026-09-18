@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCanonicalV2Request,
+  canonicalFactoryResetAttemptParams,
   deviceSupportsVaultFormat,
   encryptedVaultParams,
+  parseCanonicalFactoryResetBegin,
+  parseCanonicalFactoryResetStatus,
   parseCanonicalHelloData,
   parseCanonicalTimeStatus,
   parseCanonicalV2Response,
@@ -46,6 +49,7 @@ describe("canonical Protocol v2 management", () => {
     expect(parsed.generation).toBe(7n);
     expect(parsed.registrationEpoch).toBe(4);
     expect(parsed.recoveryResetRequired).toBe(false);
+    expect(parsed.factoryResetPresenceRequired).toBe(false);
     expect(parsed.vaultId).toEqual(bytes(16, 0x10));
   });
 
@@ -61,6 +65,21 @@ describe("canonical Protocol v2 management", () => {
       supported_vault_formats: [1, 2],
     });
     expect(migrated.vaultFormat).toBe(2);
+  });
+
+  it("parses and fails closed on the healthy Factory Reset capability", () => {
+    expect(parseCanonicalHelloData({
+      ...helloData(),
+      factory_reset_presence_required: true,
+    }).factoryResetPresenceRequired).toBe(true);
+    expect(parseCanonicalHelloData({
+      ...helloData(),
+      factory_reset_presence_required: false,
+    }).factoryResetPresenceRequired).toBe(false);
+    expect(() => parseCanonicalHelloData({
+      ...helloData(),
+      factory_reset_presence_required: "true",
+    })).toThrow(/incompatible canonical metadata/);
   });
 
   it("rejects malformed capability metadata and unknown persisted formats", () => {
@@ -90,10 +109,32 @@ describe("canonical Protocol v2 management", () => {
 
   it("uses correlated v2 request IDs and remote rejection errors", () => {
     expect(buildCanonicalV2Request(9, "device.lock")).toBe('{"v":2,"id":9,"op":"device.lock","params":{}}\n');
-    expect(buildCanonicalV2Request(10, "factory_reset.recovery_begin")).toContain('"factory_reset.recovery_begin"');
+    expect(buildCanonicalV2Request(10, "factory_reset.begin")).toContain('"factory_reset.begin"');
+    expect(buildCanonicalV2Request(11, "factory_reset.status")).toContain('"factory_reset.status"');
+    expect(buildCanonicalV2Request(12, "factory_reset.cancel")).toContain('"factory_reset.cancel"');
+    expect(buildCanonicalV2Request(13, "factory_reset.commit")).toContain('"factory_reset.commit"');
+    expect(buildCanonicalV2Request(14, "factory_reset.recovery_begin")).toContain('"factory_reset.recovery_begin"');
     expect(parseCanonicalV2Response('{"v":2,"id":9,"ok":true,"data":{}}', 9)).toEqual({});
     expect(() => parseCanonicalV2Response('{"v":2,"id":9,"ok":false,"error":{"code":"invalid_state"}}', 9))
       .toThrow(/invalid_state/);
+  });
+
+  it("parses bounded Factory Reset attempts using the canonical attempt encoding", () => {
+    const attemptId = bytes(16, 0x70);
+    expect(parseCanonicalFactoryResetBegin({
+      attempt_id: encodeBase64UrlCanonical(attemptId),
+      expires_in_ms: 30_000,
+    })).toEqual({ attemptId, expiresInMs: 30_000 });
+    expect(parseCanonicalFactoryResetStatus({ state: "awaiting_confirmation" })).toBe("awaiting_confirmation");
+    expect(parseCanonicalFactoryResetStatus({ state: "confirmed" })).toBe("confirmed");
+    expect(canonicalFactoryResetAttemptParams(attemptId)).toEqual({
+      attempt_id: encodeBase64UrlCanonical(attemptId),
+    });
+    expect(() => parseCanonicalFactoryResetBegin({
+      attempt_id: encodeBase64UrlCanonical(attemptId),
+      expires_in_ms: 30_001,
+    })).toThrow(/invalid Factory Reset begin state/);
+    expect(() => parseCanonicalFactoryResetStatus({ state: "expired" })).toThrow(/invalid Factory Reset status/);
   });
 
   it("parses trusted-time framing and serializes both supported encrypted Vault formats", () => {
