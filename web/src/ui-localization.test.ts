@@ -53,6 +53,20 @@ describe("localized Web navigation", () => {
     )).toContain("外部Recovery Packageは変更されていません");
   });
 
+  it("localizes time readiness and source-authenticity status without overstating trust", () => {
+    expect(displayUiText("Time readiness", "ja")).toBe("時刻の利用可否");
+    expect(displayUiText("READY — operational readiness only", "ja")).toContain("運用上");
+    expect(displayUiText("Network time (unauthenticated)", "ja")).toContain("未認証");
+    expect(displayUiText(
+      "PC/local-host asserted time (not cryptographically authenticated)",
+      "ja",
+    )).toContain("暗号学的認証なし");
+    expect(displayUiText(
+      "NTP time (authenticity metadata unavailable)",
+      "ja",
+    )).toContain("メタデータなし");
+  });
+
   it("normalizes legacy product branding in both languages", () => {
     expect(displayUiText("M5 Authenticator", "en")).toBe("M5Authenticator");
     expect(displayUiText("M5 Authenticator", "ja")).toBe("M5Authenticator");

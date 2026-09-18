@@ -202,12 +202,22 @@ After a successful encrypted Vault update, the import session is cleared. Leavin
 
 ## Trusted time
 
-The UI supports non-secret `time.status` while locked, but trusted-time mutation follows Decision #49:
+The UI supports non-secret `time.status` while locked and consumes the Device-provided additive `source_authenticity` metadata:
+
+- `ntp` + `unauthenticated_network` is shown as **Network time (unauthenticated)**
+- `usb` + `local_host_asserted` is shown as an explicit PC/local-host assertion, not cryptographic authentication
+- `none` + `none` means there is no accepted current-boot time source
+- missing or future unknown string metadata remains compatible but is shown as authenticity metadata unavailable rather than inventing a trust claim
+- contradictory known source/authenticity pairs fail status parsing
+
+Trusted-time mutation still follows Decision #49:
 
 - `time.sync` is enabled only when Device is `UNLOCKED`
 - a locked/unprovisioned/provisioning/unlock-pending sync request fails closed
 - credential-backed NTP is available only while unlocked because Wi-Fi credentials are in the Vault
-- an existing current-boot trusted anchor may survive explicit Lock; reboot/power loss clears it
+- an existing current-boot accepted anchor may survive explicit Lock; reboot/power loss clears it
+
+`READY` is operational readiness only: it means a fresh enough current-boot anchor exists for OTP generation, not that the source is cryptographically authenticated. Ordinary SNTP remains vulnerable to hostile DNS/gateway/Wi-Fi/UDP/NTP-path manipulation. Once an anchor exists in the same boot, NTP samples more than 5 minutes from monotonic-projected time are rejected without refreshing freshness; that mitigation does not authenticate or protect the first NTP sync and does not prevent gradual manipulation.
 
 Time is not an authentication factor. OTP reveal still requires both `UNLOCKED` and time `READY`.
 

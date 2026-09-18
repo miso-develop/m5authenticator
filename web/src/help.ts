@@ -26,7 +26,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "Return to Provisioner and connect the M5StickS3 with Desktop Chrome. Import a standard TOTP QR image or a Google Authenticator export image. QR images and imported secrets are processed locally.",
       "For initial provisioning, choose and confirm a long unique Recovery Passphrase. M5Authenticator blocks obviously weak, repetitive, sequential, and common choices, but does not estimate or guarantee Passphrase entropy. Apply the imported accounts, then confirm the dedicated request on the M5StickS3 when prompted.",
       "After provisioning or reboot, use Unlock and confirm the UNLOCK REQUEST on the M5StickS3. A valid Trusted Browser registration does not bypass this physical confirmation.",
-      "Before using OTP codes, make sure trusted time is ready. Use Sync PC time when needed; NTP can also use the Wi-Fi configuration stored inside the encrypted Vault.",
+      "Before using OTP codes, make sure Time readiness is READY. READY means the Device has a fresh enough current-boot time anchor for OTP generation; it does not cryptographically authenticate the time source. Provisioner labels ordinary NTP as Network time (unauthenticated) and PC sync as local-host asserted.",
     ],
     otpTitle: "Accounts and OTP use",
     otp: [
@@ -52,6 +52,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "Never paste or upload TOTP secrets, QR migration payloads, Recovery Packages, Recovery Passphrases, VMK/KEK/BUK/BRK material, session material, or credential-bearing diagnostics to Issues, pull requests, logs, chat services, or external tools.",
       "Do not clear browser site data while an operation is pending reconciliation. If the UI reports an ambiguous write outcome, reconnect and let the canonical reconciliation path determine the Device state before performing another write.",
       "M5Authenticator performs QR import and browser-side secret handling locally. Do not use third-party online QR decoders, translation services, or recovery tools for credential-bearing data.",
+      "Ordinary SNTP is unauthenticated: hostile DNS, gateway, Wi-Fi, UDP, or NTP-path behavior can influence network time. After a current-boot anchor exists, M5Authenticator rejects a single NTP jump greater than 5 minutes without refreshing freshness, but this does not protect the first NTP sync or prevent gradual manipulation. PC time sync is a separate local-host assertion, not cryptographic source authentication.",
     ],
   },
   ja: {
@@ -63,7 +64,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "「プロビジョニング」に戻り、Desktop ChromeからM5StickS3へ接続します。標準TOTP QR画像またはGoogle Authenticatorのエクスポート画像をインポートします。QR画像と秘密情報はローカルで処理されます。",
       "初回プロビジョニングでは長く一意なRecovery Passphraseを設定して確認入力します。M5Authenticatorは明らかに弱い、反復的、連続的、一般的なPassphraseを拒否しますが、Passphraseのentropyを測定または保証するものではありません。インポートしたアカウントを適用し、要求されたらM5StickS3上の専用確認画面で物理確認してください。",
       "プロビジョニング後または再起動後は「ロック解除」を実行し、M5StickS3上のUNLOCK REQUESTを確認します。有効なTrusted Browser登録があっても、この物理確認は省略されません。",
-      "OTPを使用する前にTrusted timeがreadyであることを確認してください。必要に応じて「PC時刻を同期」を使用します。NTPは暗号化Vault内に保存したWi-Fi設定も利用できます。",
+      "OTPを使用する前に「時刻の利用可否」がREADYであることを確認してください。READYは現在のbootでOTP生成に十分新しい時刻anchorがあるという運用状態であり、時刻ソースが暗号学的に認証済みという意味ではありません。Provisionerでは通常のNTPを「ネットワーク時刻（未認証）」、PC同期をローカルホスト申告として区別して表示します。",
     ],
     otpTitle: "アカウント管理とOTP利用",
     otp: [
@@ -89,6 +90,7 @@ const COPY: Record<UiLanguage, HelpCopy> = {
       "TOTP secret、QR migration payload、Recovery Package、Recovery Passphrase、VMK/KEK/BUK/BRK material、session material、認証情報を含むdiagnosticsを、Issue、Pull Request、ログ、チャットサービス、外部ツールへ貼り付けたりアップロードしたりしないでください。",
       "reconciliation待ちの操作がある間はブラウザのサイトデータを消去しないでください。書き込み結果が不明と表示された場合は、別の書き込みを行う前に再接続し、Canonical reconciliationでDevice状態を確定してください。",
       "M5AuthenticatorのQRインポートとブラウザ側の秘密情報処理はローカルで行われます。認証情報を含むデータを第三者のオンラインQR decoder、翻訳サービス、Recovery toolへ渡さないでください。",
+      "通常のSNTPは未認証です。悪意あるDNS、gateway、Wi-Fi、UDP、NTP経路によってネットワーク時刻が影響を受ける可能性があります。同一bootですでにanchorがある場合、M5Authenticatorはmonotonic予測値との差が5分を超える単発NTP jumpを拒否し、その拒否でfreshnessを延長しません。ただし、この対策は最初のNTP同期を保護せず、段階的な時刻操作も防ぎません。PC時刻同期は別のローカルホスト申告経路であり、暗号学的なソース認証ではありません。",
     ],
   },
 };
@@ -98,8 +100,6 @@ function queryHelpRoot(): HTMLElement {
   if (!element) throw new Error("Help root is missing");
   return element;
 }
-
-const root = queryHelpRoot();
 
 export function helpCopy(language: UiLanguage): HelpCopy {
   return COPY[language];
@@ -120,6 +120,7 @@ function list(items: string[]): string {
 }
 
 function render(): void {
+  const root = queryHelpRoot();
   const copy = helpCopy(getLanguage());
   root.innerHTML = `
     <article class="shell help-shell">
@@ -135,5 +136,7 @@ function render(): void {
   `;
 }
 
-render();
-onLanguageChange(render);
+if (typeof document !== "undefined") {
+  render();
+  onLanguageChange(render);
+}
