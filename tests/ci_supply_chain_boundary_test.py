@@ -19,12 +19,14 @@ import esp_idf_build_image
 
 
 WORKFLOWS = ROOT / ".github" / "workflows"
-RELEASE_WORKFLOW = WORKFLOWS / "release.yml"
+RELEASE_WORKFLOW = WORKFLOWS / "release-authorized.yml"
 FOUNDATION_WORKFLOW = WORKFLOWS / "foundation.yml"
 PAGES_WORKFLOW = WORKFLOWS / "pages.yml"
 SECURITY_WORKFLOW = WORKFLOWS / "security.yml"
+LEGACY_RELEASE_WORKFLOW = WORKFLOWS / "release.yml"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 DOWNLOAD_ARTIFACT_SHA = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
+ATTEST_ACTION_SHA = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 
 
 def job_block(workflow_text: str, job_id: str) -> str:
@@ -234,22 +236,111 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci_firmware_handoff.verify_release_package(package, provenance_path, commit)
 
-    def test_release_build_verify_publish_permissions_are_separated(self) -> None:
+    def test_release_authorize_build_verify_attest_publish_permissions_are_separated(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        authorize = job_block(text, "authorize")
         build = job_block(text, "build")
         verify = job_block(text, "verify")
+        attest = job_block(text, "attest")
         publish = job_block(text, "publish")
         cleanup = job_block(text, "cleanup")
 
+        self.assertIn("contents: read", authorize)
+        self.assertIn("checks: read", authorize)
+        self.assertIn("statuses: read", authorize)
+        self.assertNotIn("contents: write", authorize)
+        self.assertIn("needs: authorize", build)
         self.assertIn("contents: read", build)
         self.assertNotIn("contents: write", build)
+        self.assertNotIn("id-token: write", build)
+        self.assertNotIn("attestations: write", build)
         self.assertIn("contents: read", verify)
         self.assertNotIn("contents: write", verify)
+        self.assertNotIn("id-token: write", verify)
+        self.assertIn("id-token: write", attest)
+        self.assertIn("attestations: write", attest)
+        self.assertIn("artifact-metadata: write", attest)
+        self.assertNotIn("contents: write", attest)
+        self.assertNotIn("docker run", attest)
+        self.assertIn("needs: [authorize, verify, attest]", publish)
         self.assertIn("contents: write", publish)
+        self.assertNotIn("id-token: write", publish)
+        self.assertNotIn("attestations: write", publish)
         self.assertNotIn("docker run", publish)
         self.assertNotIn("ci_esp_idf_isolated_build.py", publish)
         self.assertIn("actions: write", cleanup)
         self.assertNotIn("contents: write", cleanup)
+
+    def test_authorized_release_uses_default_branch_dispatch_and_retires_legacy_identity(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        header = text[: text.index("jobs:")]
+
+        self.assertEqual(RELEASE_WORKFLOW.name, "release-authorized.yml")
+        self.assertFalse(LEGACY_RELEASE_WORKFLOW.exists())
+        self.assertIn("repository_dispatch:", header)
+        self.assertIn("publish_semver_release", header)
+        self.assertNotIn("push:", header)
+        self.assertNotIn("tags:", header)
+        self.assertNotIn("workflow_dispatch:", header)
+
+    def test_release_authorization_is_exact_main_exact_tag_and_exact_sha_security_check(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        authorize = job_block(text, "authorize")
+
+        self.assertIn("github.event.client_payload.tag", authorize)
+        self.assertIn("git fetch --no-tags origin main", authorize)
+        self.assertIn("git rev-parse refs/remotes/origin/main", authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG', authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG^{commit}', authorize)
+        self.assertIn("/rules/branches/main?per_page=100", authorize)
+        self.assertIn("/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100", authorize)
+        self.assertIn("/commits/$GITHUB_SHA/status", authorize)
+        self.assertIn("scripts/release_authorization.py", authorize)
+        self.assertIn('--source-sha "$GITHUB_SHA"', authorize)
+        self.assertIn('--main-sha "$MAIN_SHA"', authorize)
+        self.assertIn('--requested-tag "$REQUESTED_TAG"', authorize)
+        self.assertIn('--firmware-version "$FIRMWARE_VERSION"', authorize)
+        self.assertIn('--tag-sha "$TAG_SHA"', authorize)
+        self.assertIn('--main-rules "$RUNNER_TEMP/main-rules.json"', authorize)
+        self.assertIn('--check-runs "$RUNNER_TEMP/check-runs.json"', authorize)
+        self.assertIn('--statuses "$RUNNER_TEMP/statuses.json"', authorize)
+        self.assertIn("scripts/validate_release.py --require-production", authorize)
+        self.assertNotIn("--verify-tag", authorize)
+
+    def test_preexisting_tag_sequence_is_explicit_and_publisher_never_moves_tag(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        authorize = job_block(text, "authorize")
+        publish = job_block(text, "publish")
+
+        self.assertIn('git fetch --force --no-tags origin', authorize)
+        self.assertIn('refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG', authorize)
+        self.assertIn("REQUESTED_TAG: ${{ needs.authorize.outputs.requested-tag }}", publish)
+        self.assertIn('gh release create "$REQUESTED_TAG"', publish)
+        self.assertNotIn("git tag", publish)
+        self.assertNotIn("git push", publish)
+
+    def test_release_attests_same_verified_artifact_before_publish(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        attest = job_block(text, "attest")
+        publish = job_block(text, "publish")
+
+        action_ref = f"actions/attest@{ATTEST_ACTION_SHA}"
+        self.assertIn("needs: [authorize, verify]", attest)
+        self.assertEqual(attest.count(action_ref), 2)
+        self.assertIn("scripts/release_attestation.py", attest)
+        self.assertIn(
+            "predicate-type: https://miso-develop.github.io/m5authenticator/attestations/release-provenance/v1",
+            attest,
+        )
+        self.assertIn("subject-path: ${{ runner.temp }}/m5auth-release/*", attest)
+        self.assertIn("artifact-ids: ${{ needs.verify.outputs.artifact-id }}", attest)
+        self.assertIn("merge-multiple: true", attest)
+        self.assertIn("artifact-ids: ${{ needs.verify.outputs.artifact-id }}", publish)
+        self.assertIn("merge-multiple: true", publish)
+        self.assertIn("EXPECTED_SHA256SUMS", attest)
+        self.assertIn("sha256sum -c SHA256SUMS", attest)
+        self.assertIn("EXPECTED_SHA256SUMS", publish)
+        self.assertIn("sha256sum -c SHA256SUMS", publish)
 
     def test_release_uses_bounded_provenance_handoffs_and_exact_verified_bytes(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -285,6 +376,8 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
     def test_security_workflow_runs_supply_chain_boundary_regression(self) -> None:
         text = SECURITY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("tests/ci_supply_chain_boundary_test.py", text)
+        self.assertIn("tests/release_authorization_test.py", text)
+        self.assertIn("tests/release_attestation_test.py", text)
 
 
 if __name__ == "__main__":

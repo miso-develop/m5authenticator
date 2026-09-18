@@ -178,16 +178,83 @@ The Web app fetches each same-origin asset before opening the Serial chooser and
 
 ## GitHub Releases
 
-`.github/workflows/release.yml` runs for SemVer-like `v*.*.*` tags and separates third-party build execution from publication authority:
+Production publication is owned by the hardened default-branch workflow `.github/workflows/release-authorized.yml`. It does **not** run on tag push. Its only production trigger is:
 
-1. the `build` job has `contents: read`, requires the production contract, verifies the tag and immutable image contract, and executes ESP-IDF only against a disposable firmware-only copy;
-2. the build job creates a short-lived raw-build handoff containing only the merged/component binaries, `dependencies.lock`, source commit, exact ESP-IDF provenance, and per-file size/SHA-256 metadata;
-3. the `verify` job also has only `contents: read`, checks out the authoritative tagged commit independently, verifies every raw handoff digest/provenance field and dependency lock, scans the final merged image, and packages the release with authoritative repository scripts;
-4. the verification job validates `release-metadata.json` against the raw build provenance, validates every `SHA256SUMS` entry, and uploads only the independently verified package as a second short-lived handoff;
-5. only the `publish` job receives `contents: write`; it never runs the ESP-IDF container, verifies that the downloaded `SHA256SUMS` file itself matches the digest emitted by the verification job, rechecks every packaged file with `sha256sum -c`, and publishes those exact bytes without rebuilding;
-6. a separate cleanup job has `actions: write` but no publication authority and deletes the transient Release handoff artifacts after the workflow completes.
+```yaml
+on:
+  repository_dispatch:
+    types:
+      - publish_semver_release
+```
+
+This keeps publication authority on the workflow revision stored on the repository default branch. A SemVer tag is release identity/input; it does not select the publisher workflow revision.
+
+The historical tag-push workflow identity at `.github/workflows/release.yml` is retired from current source. Historical commits can still contain that workflow definition, so repository-level disabling of that legacy workflow identity is a mandatory #165 Human Gate. Until the legacy workflow is verified disabled, the SemVer tag Ruleset is configured, and immutable Releases are enabled/supported as required by #165, no new production release is authorized operationally and #127 remains open.
+
+### Production release sequence
+
+M5Authenticator uses the **pre-existing tag** sequence:
+
+1. the intended release actor creates the protected `vX.Y.Z` tag at the exact current protected `main` HEAD under the #165 SemVer tag Ruleset;
+2. after the tag exists, the intended release actor requests evaluation through `repository_dispatch` and supplies that tag as `client_payload.tag`;
+3. the default-branch-owned hardened publisher validates the request and the existing tag before any build starts;
+4. the workflow never creates, moves, force-updates, or deletes a production tag.
+
+Example dispatch after the protected tag exists:
+
+```text
+gh api repos/miso-develop/m5authenticator/dispatches \
+  --method POST \
+  -f event_type=publish_semver_release \
+  -f 'client_payload[tag]=vX.Y.Z'
+```
+
+The dispatch actor needs repository Contents write permission to submit the request. That permission authorizes only a request to evaluate the release; the workflow still fails closed unless the protected-main, tag, required-check, and release validation gates all pass.
+
+### Hardened authorization and publication boundary
+
+The current single-main release policy is fail-closed:
+
+1. the `authorize` job runs from the default-branch `repository_dispatch` context, checks out that exact source SHA, requires the production release profile, and validates the requested tag uses exact `vX.Y.Z` syntax and matches `firmware/release-profile.json`;
+2. it fetches authoritative remote `main` and requires the workflow/source candidate SHA to equal the exact current `origin/main` HEAD;
+3. it fetches the requested **pre-existing** tag and requires the tag's peeled commit SHA to equal that same exact protected-main SHA; an absent, off-main, or stale-main tag fails before build;
+4. authorization reads the active rules applied to `main`, derives every required status/check context, and requires each one to be successful for the exact source SHA with the required integration identity where the Ruleset binds one;
+5. only after authorization succeeds does the `build` job run; it has `contents: read`, verifies the immutable image contract, and executes ESP-IDF only against a disposable firmware-only copy;
+6. the build job creates a short-lived raw-build handoff containing only the merged/component binaries, `dependencies.lock`, source commit, exact ESP-IDF provenance, and per-file size/SHA-256 metadata;
+7. the `verify` job also has only `contents: read`, independently checks out the authorized source, verifies every raw handoff digest/provenance field and dependency lock, scans the final merged image, packages the release with authoritative repository scripts, validates `release-metadata.json`, and validates every `SHA256SUMS` entry;
+8. the `attest` job receives the independently verified package through the exact verified artifact ID. It rechecks the checksum-manifest identity and package checksums, then uses GitHub Artifact Attestations with OIDC to create both standard build provenance and a signed M5Authenticator custom provenance predicate. Only this job has `id-token: write`, `attestations: write`, and `artifact-metadata: write`;
+9. the custom signed predicate binds the exact source commit, workflow ref/SHA/run identity, exact package asset digests, and the immutable ESP-IDF repository/tag/index digest/linux-amd64 manifest/reference recorded by the build-image contract;
+10. only the `publish` job receives `contents: write`; it has no attestation/OIDC permission and never runs the ESP-IDF container. It downloads the same verified artifact ID, rechecks the exact `SHA256SUMS` identity and all package digests, then publishes those exact bytes without rebuilding;
+11. a separate cleanup job has `actions: write` but no publication authority and deletes the transient Release handoff artifacts after the workflow completes.
+
+The `gh release create --verify-tag` option remains only as an additional remote tag-existence check at publication time. It is **not** treated as cryptographic tag-signature verification, protected-main provenance, or release authorization.
 
 The workflow contains no M5Authenticator-specific eFuse burn/read/provisioning step and no universal production encryption key input.
+
+### Verify official release attestations
+
+GitHub stores signed attestations independently from the downloadable Release assets. For an official downloaded asset, first verify the standard GitHub build provenance:
+
+```text
+gh attestation verify ./m5authenticator-v<version>-<commit>-m5sticks3.bin \
+  --repo miso-develop/m5authenticator
+```
+
+The standard verification establishes that GitHub's attestation service signed provenance for that exact asset digest from this repository/workflow identity.
+
+M5Authenticator also publishes a custom signed predicate that exposes the project-specific release trust details, including the immutable ESP-IDF build identity. Verify and inspect it with:
+
+```text
+gh attestation verify ./m5authenticator-v<version>-<commit>-m5sticks3.bin \
+  --repo miso-develop/m5authenticator \
+  --predicate-type https://miso-develop.github.io/m5authenticator/attestations/release-provenance/v1 \
+  --format json \
+  --jq '.[].verificationResult.statement.predicate'
+```
+
+For the custom predicate, confirm that `source_commit` is the expected Release commit, the `workflow` identity is `.github/workflows/release-authorized.yml` from the official repository/run, the artifact digest matches the downloaded file, and `build_environment.esp_idf` matches the immutable identity documented above and in `release-metadata.json`.
+
+A local `SHA256SUMS` match is still required for package integrity, but it is not a substitute for signed platform provenance.
 
 ## Transient GitHub Actions Artifact policy
 

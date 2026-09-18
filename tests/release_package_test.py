@@ -219,7 +219,7 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertTrue(value["exact_release"])
 
     def test_release_workflow_has_no_project_efuse_or_universal_key_dependency(self) -> None:
-        workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8").lower()
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release-authorized.yml").read_text(encoding="utf-8").lower()
         self.assertIn("--require-production", workflow)
         self.assertNotIn("efuse", workflow)
         self.assertNotIn("hmac", workflow)
