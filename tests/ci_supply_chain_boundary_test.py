@@ -289,6 +289,7 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         publish = job_block(text, "publish")
 
         action_ref = f"actions/attest@{ATTEST_ACTION_SHA}"
+        self.assertIn("needs: verify", attest)
         self.assertEqual(attest.count(action_ref), 2)
         self.assertIn("scripts/release_attestation.py", attest)
         self.assertIn(
@@ -337,6 +338,8 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
     def test_security_workflow_runs_supply_chain_boundary_regression(self) -> None:
         text = SECURITY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("tests/ci_supply_chain_boundary_test.py", text)
+        self.assertIn("tests/release_authorization_test.py", text)
+        self.assertIn("tests/release_attestation_test.py", text)
 
 
 if __name__ == "__main__":
