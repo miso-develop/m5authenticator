@@ -28,6 +28,10 @@ SDKCONFIG = ROOT / "firmware/sdkconfig.defaults"
 TRANSPORT_HEADER = ROOT / "firmware/main/usb_protocol_transport.hpp"
 TRANSPORT_CPP = ROOT / "firmware/main/usb_protocol_transport.cpp"
 APP_MAIN = ROOT / "firmware/main/app_main.cpp"
+CANONICAL_TIME_SERVICE = ROOT / "firmware/components/m5auth_time/canonical_time_service.cpp"
+TRUSTED_TIME_HEADER = ROOT / "firmware/components/m5auth_time/include/m5auth/time/trusted_time.hpp"
+TIME_DOC = ROOT / "docs/TIME.md"
+SECURITY_DOC = ROOT / "SECURITY.md"
 
 LEGACY_PROTOCOL_OPERATIONS = (
     "accounts.list",
@@ -212,6 +216,34 @@ class SecurityCloseoutContractTest(unittest.TestCase):
         self.assertIn('operation == "vault.update"', source)
         self.assertIn('operation == "vault.rekey"', source)
         self.assertIn('operation == "device.lock"', source)
+
+    def test_ntp_resync_uses_bounded_production_anchor_acceptance(self) -> None:
+        service = CANONICAL_TIME_SERVICE.read_text(encoding="utf-8")
+        header = TRUSTED_TIME_HEADER.read_text(encoding="utf-8")
+
+        self.assertIn("kMaxNtpJumpSeconds = 300", header)
+        self.assertIn("clock_.accept_ntp_sample(", service)
+        self.assertIn("return SyncResult::kRejectedJump;", service)
+        self.assertNotIn("mark_synchronized(\n        static_cast<std::uint64_t>(now.tv_sec)", service)
+
+        usb_start = service.index("SyncResult TimeService::sync_from_usb")
+        usb_end = service.index("\nSyncResult TimeService::resync_if_due", usb_start)
+        usb = service[usb_start:usb_end]
+        self.assertIn("if (!vault_runtime_.unlocked()) return SyncResult::kLocked;", usb)
+        self.assertIn("clock_.mark_synchronized(unix_seconds, esp_timer_get_time(), Source::kUsb);", usb)
+        self.assertNotIn("accept_ntp_sample", usb)
+
+    def test_time_status_authenticity_is_additive_and_truthful(self) -> None:
+        protocol = CANONICAL_PROTOCOL.read_text(encoding="utf-8")
+        time_doc = TIME_DOC.read_text(encoding="utf-8")
+        security_doc = SECURITY_DOC.read_text(encoding="utf-8")
+
+        self.assertIn('"source_authenticity"', protocol)
+        self.assertIn("time::source_authenticity_name(snapshot.source)", protocol)
+        self.assertIn("unauthenticated_network", time_doc)
+        self.assertIn("local_host_asserted", time_doc)
+        self.assertIn("ordinary SNTP", security_doc)
+        self.assertIn("unauthenticated", security_doc.lower())
 
     def test_provisioner_csp_forbids_network_and_allows_only_wasm_eval(self) -> None:
         html = PROVISIONER_HTML.read_text(encoding="utf-8")
