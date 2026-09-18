@@ -128,6 +128,39 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     assert(getComputedStyle(fields).display === "none", "Provisioned management UI must hide the non-actionable initial Recovery Passphrase block");
     assert(resetConfirmation.disabled && factoryReset.disabled, "Legacy/no-capability firmware must keep normal Factory Reset unavailable");
     assert(factoryResetHint.textContent?.includes("requires updated firmware") === true, "Legacy/no-capability firmware must show update-required Factory Reset guidance");
+    assert(sourceTextOf(deviceStatus).includes("READY — operational readiness only"), "Production status must describe READY as operational readiness");
+    assert(
+      sourceTextOf(deviceStatus).includes("PC/local-host asserted time (not cryptographically authenticated)"),
+      "Production status must distinguish local-host asserted time without an authentication claim",
+    );
+
+    currentSnapshot = {
+      ...createSnapshot(true, false),
+      time: {
+        ...createSnapshot(true, false).time,
+        source: "ntp",
+        sourceAuthenticity: "unauthenticated_network",
+      },
+    };
+    refresh.click();
+    await waitUntil(
+      () => sourceTextOf(deviceStatus).includes("Network time (unauthenticated)"),
+      "Production status did not surface unauthenticated network time",
+    );
+
+    currentSnapshot = {
+      ...createSnapshot(true, false),
+      time: {
+        ...createSnapshot(true, false).time,
+        source: "ntp",
+        sourceAuthenticity: "unknown",
+      },
+    };
+    refresh.click();
+    await waitUntil(
+      () => sourceTextOf(deviceStatus).includes("NTP time (authenticity metadata unavailable)"),
+      "Production status must not invent authenticity when Device metadata is unavailable",
+    );
 
     currentSnapshot = createSnapshot(true, true);
     refresh.click();
@@ -269,6 +302,7 @@ function createSnapshot(
     time: {
       readiness: provisioned ? "ready" : "not_synced",
       source: provisioned ? "usb" : "none",
+      sourceAuthenticity: provisioned ? "local_host_asserted" : "none",
       lastSyncUnixSeconds: provisioned ? 1n : 0n,
       ageSeconds: 0,
       resyncDue: false,
