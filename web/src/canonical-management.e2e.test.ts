@@ -110,6 +110,7 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
   currentVmk: Uint8Array | null = null;
   private attempt: SessionAttempt | null = null;
   private attemptCounter = 1;
+  private factoryResetAttemptId: Uint8Array | null = null;
 
   async requestCanonicalV2(
     op: CanonicalWireOperation,
@@ -135,6 +136,7 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
       this.currentVmk?.fill(0);
       this.currentVmk = null;
       this.attempt = null;
+      this.factoryResetAttemptId = null;
       return {};
     }
     if (op === "vault.install") {
@@ -181,8 +183,37 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
       this.attempt = null;
       return {};
     }
-    if (op === "factory_reset") {
-      if (this.state !== "unlocked") throw new CanonicalProtocolV2Error("invalid_state");
+    if (op === "factory_reset.begin") {
+      if (this.state !== "unlocked" || !this.vaultId || !this.registrationId) {
+        throw new CanonicalProtocolV2Error("invalid_state");
+      }
+      this.factoryResetAttemptId = bytes(16, 0xd0 + (this.attemptCounter++ & 0x0f));
+      return {
+        attempt_id: encodeBase64UrlCanonical(this.factoryResetAttemptId),
+        expires_in_ms: 30_000,
+      };
+    }
+    if (op === "factory_reset.status") {
+      if (!this.factoryResetAttemptId ||
+          String(params.attempt_id) !== encodeBase64UrlCanonical(this.factoryResetAttemptId)) {
+        throw new CanonicalProtocolV2Error("invalid_attempt");
+      }
+      return { state: "confirmed" };
+    }
+    if (op === "factory_reset.cancel") {
+      if (!this.factoryResetAttemptId ||
+          String(params.attempt_id) !== encodeBase64UrlCanonical(this.factoryResetAttemptId)) {
+        throw new CanonicalProtocolV2Error("invalid_attempt");
+      }
+      this.factoryResetAttemptId = null;
+      return {};
+    }
+    if (op === "factory_reset.commit") {
+      if (this.state !== "unlocked" || !this.factoryResetAttemptId ||
+          String(params.attempt_id) !== encodeBase64UrlCanonical(this.factoryResetAttemptId)) {
+        throw new CanonicalProtocolV2Error("invalid_attempt");
+      }
+      this.factoryResetAttemptId = null;
       this.currentVmk?.fill(0);
       this.currentVmk = null;
       this.vaultId = null;
@@ -196,6 +227,7 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
       this.attempt = null;
       return {};
     }
+    if (op === "factory_reset") throw new CanonicalProtocolV2Error("presence_required");
     throw new Error(`unexpected canonical operation ${op}`);
   }
 
@@ -343,6 +375,7 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
     this.currentVmk?.fill(0);
     this.currentVmk = null;
     this.attempt = null;
+    this.factoryResetAttemptId = null;
   }
 
   private hello(): Record<string, unknown> {
@@ -356,6 +389,8 @@ class SyntheticCanonicalDevice implements CanonicalV2Transport {
       build_commit: "synthetic",
       state: this.state,
       storage_ready: this.storageReady,
+      recovery_reset_required: false,
+      factory_reset_presence_required: true,
       vault_present: this.vaultId !== null,
       vault_id: this.vaultId ? encodeBase64UrlCanonical(this.vaultId) : null,
       generation: this.generation.toString(10),
@@ -393,6 +428,8 @@ function helloFor(device: SyntheticCanonicalDevice) {
     buildCommit: String(data.build_commit),
     state: data.state as "unprovisioned" | "locked" | "unlocked",
     storageReady: Boolean(data.storage_ready),
+    recoveryResetRequired: false,
+    factoryResetPresenceRequired: data.factory_reset_presence_required === true,
     vaultPresent: Boolean(data.vault_present),
     vaultId: data.vault_id ? decodeBase64UrlCanonical(String(data.vault_id), 16) : null,
     generation: BigInt(String(data.generation)),
@@ -533,7 +570,7 @@ describe("canonical Protocol v2 synthetic integration", () => {
     expect(device.state).toBe("locked");
     await activeReplacement.requestUnlock();
     expect(device.state).toBe("unlocked");
-    await activeReplacement.factoryReset();
+    await activeReplacement.factoryReset({ pollIntervalMs: 0 });
     expect(device.state).toBe("unprovisioned");
     expect(device.vaultId).toBeNull();
     expect(device.registrationId).toBeNull();
