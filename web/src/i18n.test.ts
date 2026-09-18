@@ -39,6 +39,16 @@ describe("Web UI localization", () => {
     unsubscribe();
   });
 
+  it("localizes automatic PC-time success and failure without changing authenticity semantics", () => {
+    const success = "Trusted Browser active; Device is UNLOCKED. PC time synchronized automatically from this local host (not cryptographically authenticated).";
+    const warning = "Device is UNLOCKED, but automatic PC time sync failed. Use Sync PC time to retry.";
+
+    expect(translateUiText(success, "ja")).toContain("ローカルホスト");
+    expect(translateUiText(success, "ja")).toContain("暗号学的に認証された時刻ではありません");
+    expect(translateUiText(warning, "ja")).toContain("PC時刻の自動同期に失敗");
+    expect(translateUiText(warning, "ja")).toContain("PC時刻を同期");
+  });
+
   it("keeps English as the fallback for untranslated text", () => {
     const source = "Deterministic untranslated fallback marker";
     expect(translateUiText(source, "ja")).toBe(source);
