@@ -85,11 +85,11 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("kTitleText = 0x1c9f", palette)
         self.assertIn("kConfirmationAction = 0x07ff", palette)
         for contract in (
-            "kTitlePaddingTopPx = 1",
-            "kTitlePaddingBottomPx = 1",
+            "kTitlePaddingTopPx = 4",
+            "kTitlePaddingBottomPx = 4",
             "kTitlePaddingLeftPx = 1",
             "kHeaderSeparatorHeightPx = 1",
-            "kContentLeftPx = 1",
+            "kContentLeftPx = 4",
         ):
             self.assertIn(contract, layout)
 
@@ -99,7 +99,8 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.fontHeight()", startup)
         self.assertIn("ui_layout::frame_geometry(", startup)
 
-        # Black title frame, brighter-blue title, and explicit one-pixel spacing row.
+        # Black title frame, brighter-blue title, four-pixel vertical padding,
+        # and an explicit one-pixel spacing row.
         self.assertIn("geometry.title_band_height", ui)
         self.assertIn("ui_palette::kTitleBackground", ui)
         self.assertIn("ui_palette::kTitleText", ui)
