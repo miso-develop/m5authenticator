@@ -189,7 +189,7 @@ on:
 
 This keeps publication authority on the workflow revision stored on the repository default branch. A SemVer tag is release identity/input; it does not select the publisher workflow revision.
 
-The historical tag-push workflow identity at `.github/workflows/release.yml` is retired from current source. Historical commits can still contain that workflow definition, so repository-level disabling of that legacy workflow identity is a mandatory #165 Human Gate. Until the legacy workflow is verified disabled, the SemVer tag Ruleset is configured, and immutable Releases are enabled/supported as required by #165, no new production release is authorized operationally and #127 remains open.
+The historical workflow path `.github/workflows/release.yml` is retained only as a permanently retired **tombstone**. It has workflow name `Release`, exposes only manual `workflow_dispatch`, has read-only `contents` permission, and has no build, publication, tag, artifact, dispatch, reusable-workflow, secret, or environment authority. It is not a release entrypoint and must never delegate to `release-authorized.yml`. Per Decision #200, the tombstone must remain present after the #165 Human Gate verifies continuity with historical workflow ID `354596449` and disables that exact identity; deleting it again is prohibited because the durable retirement state depends on the explicit disabled workflow identity. Until #165 completes that disable plus the required SemVer tag Ruleset and immutable-Releases controls, no new production release is authorized operationally and #127 remains open.
 
 ### Production release sequence
 
