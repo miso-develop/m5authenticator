@@ -54,7 +54,10 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   const originalConfirm = window.confirm;
 
   SerialSession.connect = async () => ({
-    session: {} as SerialSession,
+    session: {
+      isClosed: () => false,
+      close: async () => undefined,
+    } as unknown as SerialSession,
     hello: currentSnapshot.hello,
   });
   CanonicalDeviceManagement.prototype.initialize = async function (): Promise<void> {};
