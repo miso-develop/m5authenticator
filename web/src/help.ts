@@ -101,8 +101,6 @@ function queryHelpRoot(): HTMLElement {
   return element;
 }
 
-const root = queryHelpRoot();
-
 export function helpCopy(language: UiLanguage): HelpCopy {
   return COPY[language];
 }
