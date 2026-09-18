@@ -7,6 +7,7 @@ namespace m5auth::time {
 
 inline constexpr std::int64_t kResyncIntervalSeconds = 6 * 60 * 60;
 inline constexpr std::int64_t kStaleAfterSeconds = 24 * 60 * 60;
+inline constexpr std::uint64_t kMaxNtpJumpSeconds = 300;
 
 enum class Readiness {
     kNotSynced,
@@ -38,6 +39,14 @@ public:
         Source source
     );
 
+    // Accept the first current-boot NTP anchor. After an anchor exists, only
+    // accept NTP samples within kMaxNtpJumpSeconds of monotonic-projected time.
+    // Rejection leaves the existing anchor/source/freshness state unchanged.
+    bool accept_ntp_sample(
+        std::uint64_t unix_seconds,
+        std::int64_t monotonic_us
+    );
+
     Snapshot snapshot(std::int64_t monotonic_us) const;
 
     bool current_unix_seconds(
@@ -55,5 +64,6 @@ private:
 
 const char* readiness_name(Readiness readiness);
 const char* source_name(Source source);
+const char* source_authenticity_name(Source source);
 
 }  // namespace m5auth::time

@@ -32,6 +32,7 @@ class FactoryResetProtocolBehaviorBuildTest(unittest.TestCase):
             "firmware/components/m5auth_session/session_protocol_v2.cpp",
             "firmware/components/m5auth_session/p256_public_key.cpp",
             "firmware/components/m5auth_session/user_presence.cpp",
+            "firmware/components/m5auth_time/trusted_time.cpp",
             "firmware/components/m5auth_vault/vault_format.cpp",
             "firmware/components/m5auth_vault/vault_crypto.cpp",
             "firmware/components/m5auth_vault_runtime/runtime.cpp",

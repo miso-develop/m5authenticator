@@ -173,15 +173,23 @@ Recovery provisioning, Trusted Browser replacement, VMK re-key, Factory Reset, r
 
 ### `time.status`
 
-Available while locked because it returns only non-secret state such as `not_synced`, `ready`, `stale`, source, last-sync metadata, age, and resync-due state.
+Available while locked because it returns only non-secret readiness/source metadata. Protocol v2 keeps the existing fields and adds the stable string field `source_authenticity`:
+
+| `source` | `source_authenticity` | Meaning |
+| --- | --- | --- |
+| `none` | `none` | no current-boot accepted source |
+| `ntp` | `unauthenticated_network` | ordinary SNTP; operational but not cryptographically authenticated |
+| `usb` | `local_host_asserted` | explicit local-host assertion; not cryptographically authenticated |
+
+`READY` means an accepted current-boot anchor is fresh enough for OTP generation; it does not assert source authenticity.
 
 ### `time.sync`
 
-Accepts a bounded host Unix timestamp **only while Device state is `UNLOCKED`**. In `locked`, `unprovisioned`, `unlock_pending`, or `provisioning`, it returns a bounded non-secret `invalid_state` error and does not change the trusted-time anchor.
+Accepts a bounded host Unix timestamp **only while Device state is `UNLOCKED`**. In `locked`, `unprovisioned`, `unlock_pending`, or `provisioning`, it returns a bounded non-secret `invalid_state` error and does not change the time anchor.
 
-A successful sync updates the current boot's trusted monotonic anchor. OTP reveal still requires both `UNLOCKED` and trusted-time `READY`.
+A successful USB sync updates the current boot's monotonic anchor directly. The 300-second same-boot jump rule applies only to NTP/SNTP samples and is not applied to explicit USB/local-host correction.
 
-An already-established current-boot trusted anchor may survive explicit Lock; reboot/power loss clears it.
+An already-established current-boot accepted anchor may survive explicit Lock; reboot/power loss clears it. OTP reveal still requires both `UNLOCKED` and time-readiness `READY`.
 
 ## Factory Reset
 

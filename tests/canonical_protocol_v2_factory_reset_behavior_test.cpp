@@ -214,6 +214,7 @@ struct ParsedResponse {
     std::string error;
     std::string attempt_id;
     std::string state;
+    std::string source_authenticity;
     bool reset_capability{false};
 };
 
@@ -233,6 +234,10 @@ ParsedResponse parse_response(const std::string& response) {
         if (cJSON_IsString(attempt) && attempt->valuestring != nullptr) parsed.attempt_id = attempt->valuestring;
         cJSON* state = cJSON_GetObjectItemCaseSensitive(data, "state");
         if (cJSON_IsString(state) && state->valuestring != nullptr) parsed.state = state->valuestring;
+        cJSON* authenticity = cJSON_GetObjectItemCaseSensitive(data, "source_authenticity");
+        if (cJSON_IsString(authenticity) && authenticity->valuestring != nullptr) {
+            parsed.source_authenticity = authenticity->valuestring;
+        }
         parsed.reset_capability = cJSON_IsTrue(
             cJSON_GetObjectItemCaseSensitive(data, m5auth::provisioning::kFactoryResetPresenceCapability)
         );
@@ -318,6 +323,14 @@ public:
     std::array<std::uint8_t, m5auth::vault::kVaultIdBytes> vault_id{};
 };
 
+void time_status_exposes_additive_source_authenticity() {
+    Fixture fixture;
+    const ParsedResponse status = parse_response(
+        fixture.handler.handle_line(request(90, "time.status"), 500)
+    );
+    assert(status.ok);
+    assert(status.source_authenticity == "none");
+}
 void legacy_raw_reset_is_non_destructive() {
     Fixture fixture;
     const ParsedResponse hello = parse_response(fixture.handler.handle_line(request(1, "hello"), 1'000));
@@ -619,23 +632,6 @@ const char* sync_result_code(SyncResult result) {
     return result == SyncResult::kOk ? "ok" : "sync_failed";
 }
 
-const char* readiness_name(Readiness readiness) {
-    switch (readiness) {
-        case Readiness::kNotSynced: return "not_synced";
-        case Readiness::kReady: return "ready";
-        case Readiness::kStale: return "stale";
-    }
-    return "not_synced";
-}
-
-const char* source_name(Source source) {
-    switch (source) {
-        case Source::kNone: return "none";
-        case Source::kNtp: return "ntp";
-        case Source::kUsb: return "usb";
-    }
-    return "none";
-}
 
 }  // namespace m5auth::time
 
@@ -757,6 +753,7 @@ session::protocol_v2::Operation CanonicalVmkSink::pending_operation() const {
 }  // namespace m5auth::provisioning
 
 int main() {
+    time_status_exposes_additive_source_authenticity();
     legacy_raw_reset_is_non_destructive();
     no_presence_stale_cancel_timeout_and_supersession_do_not_erase();
     disconnect_invalidates_before_and_after_confirmation();

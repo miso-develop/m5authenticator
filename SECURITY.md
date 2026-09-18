@@ -75,11 +75,16 @@ If unsure whether a value is sensitive, treat it as sensitive and do not publish
 
 ### Trusted time
 
-- TOTP reveal requires both Device `UNLOCKED` and trusted-time `READY`.
+- TOTP reveal requires both Device `UNLOCKED` and time-readiness `READY`.
+- `READY` is an operational readiness state and does not claim cryptographic source authenticity.
+- ordinary SNTP is retained as an explicitly unauthenticated network time source; DNS/gateway/Wi-Fi/UDP/NTP manipulation remains an integrity/availability risk.
 - credential-backed NTP runs only while unlocked.
-- non-secret `time.status` may be read while locked.
-- `time.sync` may mutate the trusted-time anchor only while unlocked; a locked USB host cannot pre-seed trusted time.
-- a current-boot trusted anchor may survive explicit Lock but is cleared by reboot/power loss.
+- after a current-boot anchor exists, NTP samples more than 300 seconds from monotonic-projected time are rejected without refreshing the anchor or 24-hour freshness lifetime; exactly 300 seconds remains acceptable.
+- non-secret `time.status` may be read while locked and reports source authenticity explicitly: NTP is `unauthenticated_network`, while USB is `local_host_asserted`.
+- `local_host_asserted` is not a cryptographic-authentication claim.
+- `time.sync` may mutate the time anchor only while unlocked; a locked USB host cannot pre-seed time, and the NTP jump rule does not apply to explicit USB correction.
+- a current-boot accepted anchor may survive explicit Lock but is cleared by reboot/power loss.
+- rejected/failed resync does not extend freshness; more than 24 hours without an accepted sync remains fail-closed for OTP reveal.
 
 ### Recovery Package
 
