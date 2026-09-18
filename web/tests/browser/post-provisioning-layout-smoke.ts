@@ -53,8 +53,20 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   const originalRefresh = CanonicalDeviceManagement.prototype.refresh;
   const originalImportAccounts = CanonicalDeviceManagement.prototype.importAccounts;
   const originalFactoryReset = CanonicalDeviceManagement.prototype.factoryReset;
+  const originalRequestUnlock = CanonicalDeviceManagement.prototype.requestUnlock;
+  const originalSyncTime = CanonicalDeviceManagement.prototype.syncTime;
+  const originalClose = CanonicalDeviceManagement.prototype.close;
+  const originalDisconnectTransport = CanonicalDeviceManagement.prototype.disconnectTransport;
   const originalHasCompleteAccounts = ImportSession.prototype.hasCompleteAccounts;
   const originalConfirm = window.confirm;
+
+  let syncTimeCalls = 0;
+  let requestUnlockCalls = 0;
+  let explicitCloseCalls = 0;
+  let transportDisconnectCalls = 0;
+  let syncFailure: Error | null = null;
+  let unlockFailure: Error | null = null;
+  let unlockGate: Promise<void> | null = null;
 
   SerialSession.connect = async () => ({
     session: {
@@ -74,6 +86,39 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
   ): Promise<number> {
     currentSnapshot = createSnapshot(true, false);
     return 1;
+  };
+  CanonicalDeviceManagement.prototype.requestUnlock = async function (): Promise<void> {
+    requestUnlockCalls += 1;
+    if (unlockGate) await unlockGate;
+    if (unlockFailure) throw unlockFailure;
+    currentSnapshot = {
+      ...currentSnapshot,
+      hello: { ...currentSnapshot.hello, state: "unlocked" },
+      browserOwnership: "active",
+      unlockRequired: false,
+    };
+  };
+  CanonicalDeviceManagement.prototype.syncTime = async function () {
+    syncTimeCalls += 1;
+    if (syncFailure) throw syncFailure;
+    currentSnapshot = {
+      ...currentSnapshot,
+      time: {
+        readiness: "ready",
+        source: "usb",
+        sourceAuthenticity: "local_host_asserted",
+        lastSyncUnixSeconds: 1n,
+        ageSeconds: 0,
+        resyncDue: false,
+      },
+    };
+    return currentSnapshot.time;
+  };
+  CanonicalDeviceManagement.prototype.close = async function (): Promise<void> {
+    explicitCloseCalls += 1;
+  };
+  CanonicalDeviceManagement.prototype.disconnectTransport = async function (): Promise<void> {
+    transportDisconnectCalls += 1;
   };
   ImportSession.prototype.hasCompleteAccounts = function (): boolean {
     return true;
@@ -103,12 +148,17 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await import("../../src/main");
 
     const connect = required<HTMLButtonElement>(document, "#connect");
+    const unlock = required<HTMLButtonElement>(document, "#unlock-device");
+    const disconnect = required<HTMLButtonElement>(document, "#disconnect");
     const refresh = required<HTMLButtonElement>(document, "#refresh-device");
+    const syncTime = required<HTMLButtonElement>(document, "#sync-time");
     const connectionState = required<HTMLElement>(document, "#connection-state");
     const deviceStatus = required<HTMLElement>(document, "#device-status");
     const fields = required<HTMLElement>(document, "#initial-passphrase-fields");
     const passphrase = required<HTMLInputElement>(document, "#initial-recovery-passphrase");
     const passphraseConfirm = required<HTMLInputElement>(document, "#initial-recovery-passphrase-confirm");
+    const wifiPassword = required<HTMLInputElement>(document, "#wifi-password");
+    const rekeyPassphrase = required<HTMLInputElement>(document, "#rekey-recovery-passphrase");
     const provision = required<HTMLButtonElement>(document, "#provision-import");
     const resetConfirmation = required<HTMLInputElement>(document, "#reset-confirmation");
     const factoryReset = required<HTMLButtonElement>(document, "#factory-reset");
@@ -277,6 +327,10 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     CanonicalDeviceManagement.prototype.refresh = originalRefresh;
     CanonicalDeviceManagement.prototype.importAccounts = originalImportAccounts;
     CanonicalDeviceManagement.prototype.factoryReset = originalFactoryReset;
+    CanonicalDeviceManagement.prototype.requestUnlock = originalRequestUnlock;
+    CanonicalDeviceManagement.prototype.syncTime = originalSyncTime;
+    CanonicalDeviceManagement.prototype.close = originalClose;
+    CanonicalDeviceManagement.prototype.disconnectTransport = originalDisconnectTransport;
     ImportSession.prototype.hasCompleteAccounts = originalHasCompleteAccounts;
     window.confirm = originalConfirm;
     app.remove();
