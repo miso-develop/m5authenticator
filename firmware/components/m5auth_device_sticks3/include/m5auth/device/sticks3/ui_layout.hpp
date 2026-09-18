@@ -2,20 +2,23 @@
 
 namespace m5auth::device::sticks3::ui_layout {
 
-inline constexpr int kTitlePaddingTopPx = 1;
-inline constexpr int kTitlePaddingBottomPx = 1;
+inline constexpr int kTitlePaddingTopPx = 4;
+inline constexpr int kTitlePaddingBottomPx = 4;
 inline constexpr int kTitlePaddingLeftPx = 1;
 inline constexpr int kHeaderSeparatorHeightPx = 1;
-inline constexpr int kContentLeftPx = 1;
+inline constexpr int kContentLeftPx = 4;
 
 inline constexpr int kLineAdvancePx = 20;
 inline constexpr int kStatusBandHeightPx = 18;
 inline constexpr int kAccountLabelHeightPx = 18;
-inline constexpr int kAccountLabelOffsetPx = 60;
-inline constexpr int kOtpOffsetPx = 81;
-inline constexpr int kOtpBandHeightPx = 34;
-inline constexpr int kHelpFirstOffsetPx = 79;
-inline constexpr int kHelpSecondOffsetPx = 97;
+// The larger 4 px title padding raises content_start_y by 6 px. Lower account/
+// OTP/help bands recover 3 px of that growth so the 240x135 layout stays
+// inside the physical display without changing status-line spacing.
+inline constexpr int kAccountLabelOffsetPx = 57;
+inline constexpr int kOtpOffsetPx = 78;
+inline constexpr int kOtpBandHeightPx = 32;
+inline constexpr int kHelpFirstOffsetPx = 76;
+inline constexpr int kHelpSecondOffsetPx = 94;
 
 struct FrameGeometry {
     int title_band_height;
