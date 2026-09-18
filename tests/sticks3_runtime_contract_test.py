@@ -11,6 +11,7 @@ PARTITIONS = ROOT / "firmware" / "partitions.csv"
 RELEASE_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "release_device.cpp"
 CANONICAL_DEVICE_CPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "canonical_device.cpp"
 CANONICAL_DEVICE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "canonical_device.hpp"
+UI_PALETTE_HPP = ROOT / "firmware" / "components" / "m5auth_device_sticks3" / "include" / "m5auth" / "device" / "sticks3" / "ui_palette.hpp"
 APP_MAIN = ROOT / "firmware" / "main" / "app_main.cpp"
 APP_MAIN_CMAKE = ROOT / "firmware" / "main" / "CMakeLists.txt"
 TRANSPORT_CPP = ROOT / "firmware" / "main" / "usb_protocol_transport.cpp"
@@ -66,11 +67,29 @@ class StickS3RuntimeContractTests(unittest.TestCase):
         self.assertIn("M5.Display.setTextWrap(false);", text)
         self.assertIn("M5.Display.setTextSize(kOtpTextSize);", text)
         self.assertIn("M5.Display.setTextSize(kReadableTextSize);", text)
-        self.assertIn('draw_line("M5Authenticator", kHeaderY);', text)
+        self.assertIn('draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);', text)
         self.assertNotIn('"M5 Authenticator"', text)
         self.assertIn('M5.Display.println("M5Authenticator");', startup)
         self.assertNotIn('"M5 Authenticator"', startup)
         self.assertIn("M5.Display.setTextSize(2);", startup)
+
+    def test_issue_176_visual_accents_are_shared_and_presentation_only(self) -> None:
+        ui = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
+        startup = RELEASE_DEVICE_CPP.read_text(encoding="utf-8")
+        palette = UI_PALETTE_HPP.read_text(encoding="utf-8")
+
+        self.assertIn("kProductTitle = 0x1c9f", palette)
+        self.assertIn("kConfirmationAction = 0x07ff", palette)
+        self.assertIn('draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);', ui)
+        self.assertIn('"Press A to confirm"', ui)
+        self.assertIn("ui_palette::kConfirmationAction", ui)
+        self.assertIn("M5.Display.setTextColor(ui_palette::kProductTitle, 0x0000);", startup)
+        self.assertIn('M5.Display.println("M5Authenticator");', startup)
+
+        # Color supplements explicit wording; presentation must not alter presence semantics.
+        self.assertIn("presence_.button_pressed(now_ms)", ui)
+        self.assertIn("presence_.observe_button_state(M5.BtnA.isPressed());", ui)
+        self.assertNotIn("kConfirmationAction", CANONICAL_PROTOCOL.read_text(encoding="utf-8"))
 
     def test_issue_139_single_click_hides_active_otp_before_next_navigation(self) -> None:
         text = CANONICAL_DEVICE_CPP.read_text(encoding="utf-8")
