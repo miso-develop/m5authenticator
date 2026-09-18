@@ -25,11 +25,11 @@ While `LOCKED`, the Device must not display or enumerate those plaintext fields 
 
 ## Visual hierarchy
 
-The shared `M5Authenticator` product heading uses a full-width white title band with black title text on both startup and canonical runtime screens. The title geometry is derived from the configured text-size-2 font metrics rather than a fixed assumed glyph height.
+The shared `M5Authenticator` product heading uses the normal black Device background with a bright-blue title on both startup and canonical runtime screens. The selected title color is RGB565 `0x451f`; it supersedes #176's darker `0x1c9f` blue and remains distinct from the bright-cyan confirmation action `0x07ff`.
 
-The title frame reserves exactly 1 px of white padding above, below, and to the left of the title text. The white band is immediately followed by exactly 1 px of black separator before normal content begins. All left-aligned non-title content below the band starts at x = 1 px. Centered content, including the six-digit OTP, remains geometrically centered.
+The title geometry remains metric-derived from the configured text-size-2 font rather than a fixed assumed glyph height. The frame reserves exactly 1 px above, below, and to the left of the title text, followed by one blank 1 px black spacing row before normal content begins. All left-aligned non-title content below the frame starts at x = 1 px. Centered content, including the six-digit OTP, remains geometrically centered.
 
-During a pending fresh user-presence attempt, the explicit `Press A to confirm` action retains the bright cyan action accent introduced by #176 so it remains visually prominent and distinct from the existing green/amber/red State/Time semantics. Color is supplemental only: the operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
+During a pending fresh user-presence attempt, the explicit `Press A to confirm` action retains the bright-cyan action accent introduced by #176 so it remains visually prominent and distinct from the title and the existing green/amber/red State/Time semantics. Color is supplemental only: the operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
 
 Account-label scrolling uses the same 1 px left inset and a viewport reduced only by that inset. The existing transient canvas is still cleared immediately after blitting; no additional persistent credential-label buffer is introduced.
 
@@ -46,17 +46,14 @@ M5.begin(config);
 M5.Speaker.end();
 ```
 
-Issue #187 does not add another PMIC/speaker-control write without physical evidence that this documented M5Unified path fails to leave the speaker amplifier disabled.
+Issue #187 does not add another PMIC/speaker-control write without causal physical evidence that this documented M5Unified path fails to leave the speaker amplifier disabled.
 
-Before Integration, exact-head physical validation must record a non-secret observation matrix covering:
+The physical validation of exact head `46802e2baa9e03cd1331244885b9e9c76f005a85` recorded residual audible/high-frequency noise as **not observed** and found no checked heat, reboot, display, or power anomaly. Historical intermittent noise remains an observation to follow separately if it returns.
 
-- startup-only vs persistent vs intermittent noise;
-- PC USB vs battery / known-clean USB power;
-- Web Serial disconnected vs connected/active;
-- whether heat, reboot, display corruption/flicker, or power instability is present;
-- whether the documented StickS3 speaker-amplifier-off state is asserted after `M5.begin(config)`, after `M5.Speaker.end()`, and in stable runtime.
+When noise is not reproducible and no noise-related firmware change is proposed, a separate physical SPK-amplifier-state measurement is not required for #187. If noise becomes reproducible, characterize the power/USB/runtime conditions before changing firmware. Amplifier-state and before/after evidence become mandatory only when further audio/PMIC mitigation is proposed.
 
-If the amplifier is already confirmed off while noise persists, retain the existing audio-disable code and treat the remaining observation as a power-path/load investigation rather than adding speculative PMIC changes.
+If reproducible noise occurs while the amplifier is confirmed off, retain the existing audio-disable code and investigate the power-path/load hypothesis rather than adding speculative PMIC changes.
+
 
 ## User-presence request
 
