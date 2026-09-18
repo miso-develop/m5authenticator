@@ -68,6 +68,7 @@ Other M5Stack targets should not be assumed to be supported unless they are expl
 
 ### Usage / Web Provisioner
 
+- [Hosted Help / Usage](https://miso-develop.github.io/m5authenticator/help.html) — user-facing usage guidance in the deployed Web app
 - [Web Provisioner](docs/WEB_PROVISIONER.md) — provisioning, account management, browser state, Trusted Browser flows, and recovery
 - [Device UI](docs/DEVICE_UI.md) — account selection, Device confirmation, time status, and OTP display behavior
 - [Time](docs/TIME.md) — synchronization and OTP readiness rules
