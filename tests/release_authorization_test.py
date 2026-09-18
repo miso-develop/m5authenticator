@@ -157,6 +157,67 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             REQUESTED_TAG,
         )
 
+    def test_unbound_required_context_may_be_satisfied_by_check_run_only(self) -> None:
+        rules = main_rules(checks=[{"context": "external-status", "integration_id": None}])
+        self.assertEqual(
+            authorize(
+                rules=rules,
+                runs=check_runs(context="external-status"),
+                status_payload={"state": "pending", "statuses": []},
+            ),
+            REQUESTED_TAG,
+        )
+
+    def test_unbound_required_context_requires_both_same_name_mechanisms_to_pass(self) -> None:
+        rules = main_rules(checks=[{"context": "external-status", "integration_id": None}])
+
+        with self.subTest("successful check run plus failed classic status"):
+            with self.assertRaisesRegex(ValueError, "external-status"):
+                authorize(
+                    rules=rules,
+                    runs=check_runs(
+                        context="external-status",
+                        status="completed",
+                        conclusion="success",
+                    ),
+                    status_payload=statuses(
+                        context="external-status",
+                        state="failure",
+                    ),
+                )
+
+        with self.subTest("failed check run plus successful classic status"):
+            with self.assertRaisesRegex(ValueError, "external-status"):
+                authorize(
+                    rules=rules,
+                    runs=check_runs(
+                        context="external-status",
+                        status="completed",
+                        conclusion="failure",
+                    ),
+                    status_payload=statuses(
+                        context="external-status",
+                        state="success",
+                    ),
+                )
+
+        with self.subTest("both same-name mechanisms successful"):
+            self.assertEqual(
+                authorize(
+                    rules=rules,
+                    runs=check_runs(
+                        context="external-status",
+                        status="completed",
+                        conclusion="success",
+                    ),
+                    status_payload=statuses(
+                        context="external-status",
+                        state="success",
+                    ),
+                ),
+                REQUESTED_TAG,
+            )
+
     def test_failed_classic_status_fails_closed(self) -> None:
         rules = main_rules(checks=[{"context": "external-status", "integration_id": None}])
         with self.assertRaisesRegex(ValueError, "external-status"):
