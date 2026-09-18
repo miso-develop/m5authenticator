@@ -220,6 +220,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: ${{ runner.temp }}/m5auth-release
+          merge-multiple: true
       - name: Reconfirm exact verified asset bytes before attestation
         shell: bash
         env:
@@ -264,6 +265,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: ${{ runner.temp }}/m5auth-release
+          merge-multiple: true
       - name: Confirm publish bytes match verification output
         shell: bash
         env:
