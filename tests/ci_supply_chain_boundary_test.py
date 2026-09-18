@@ -271,17 +271,85 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         self.assertIn("actions: write", cleanup)
         self.assertNotIn("contents: write", cleanup)
 
-    def test_authorized_release_uses_default_branch_dispatch_and_retires_legacy_identity(self) -> None:
+    def test_authorized_release_uses_default_branch_dispatch_and_keeps_legacy_tombstone_non_authoritative(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         header = text[: text.index("jobs:")]
 
         self.assertEqual(RELEASE_WORKFLOW.name, "release-authorized.yml")
-        self.assertFalse(LEGACY_RELEASE_WORKFLOW.exists())
+        self.assertTrue(LEGACY_RELEASE_WORKFLOW.exists())
         self.assertIn("repository_dispatch:", header)
         self.assertIn("publish_semver_release", header)
         self.assertNotIn("push:", header)
         self.assertNotIn("tags:", header)
         self.assertNotIn("workflow_dispatch:", header)
+
+    def test_legacy_release_tombstone_is_exact_harmless_manual_retirement_surface(self) -> None:
+        expected = """name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retired:
+    name: legacy-release-retired
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Explain retirement
+        run: echo "Legacy Release workflow is retired. Use Authorized Release."
+"""
+        text = LEGACY_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertEqual(LEGACY_RELEASE_WORKFLOW.as_posix().split("/.github/")[-1], "workflows/release.yml")
+        self.assertEqual(text, expected)
+
+        header = text[: text.index("jobs:")]
+        retired = job_block(text, "retired")
+        self.assertIn("workflow_dispatch:", header)
+        for forbidden_trigger in (
+            "push:",
+            "repository_dispatch:",
+            "workflow_call:",
+            "schedule:",
+            "release:",
+        ):
+            self.assertNotIn(forbidden_trigger, header)
+
+        for forbidden_permission in (
+            "contents: write",
+            "actions: write",
+            "id-token: write",
+            "attestations: write",
+            "artifact-metadata: write",
+            "packages: write",
+            "security-events: write",
+            "deployments: write",
+        ):
+            self.assertNotIn(forbidden_permission, text)
+
+        for forbidden_behavior in (
+            "actions/checkout",
+            "docker ",
+            "podman ",
+            "upload-artifact",
+            "download-artifact",
+            "gh release",
+            "git tag",
+            "git push",
+            "repository_dispatch",
+            "release-authorized.yml",
+            "uses:",
+            "secrets.",
+            "environment:",
+            "curl ",
+            "wget ",
+        ):
+            self.assertNotIn(forbidden_behavior, retired)
+
+        self.assertIn('echo "Legacy Release workflow is retired. Use Authorized Release."', retired)
 
     def test_release_authorization_is_exact_main_exact_tag_and_exact_sha_security_check(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
