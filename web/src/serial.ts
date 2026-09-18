@@ -126,6 +126,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     }
 
     const session = new SerialSession(port, port.readable.getReader(), port.writable.getWriter());
+    await session.normalizeUsbSerialJtagControlLines();
     try {
       const data = await session.requestInitialHello();
       return { session, hello: parseCanonicalHelloData(data) };
@@ -180,7 +181,7 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     this.staleInitialHelloResponseId = undefined;
     this.staleInitialHelloResponsesRemaining = 0;
 
-    await this.normalizeUsbSerialJtagControlLinesBeforeClose();
+    await this.normalizeUsbSerialJtagControlLines();
 
     try {
       await this.reader.cancel();
@@ -201,14 +202,15 @@ export class SerialSession implements DeviceTransport, CanonicalV2Transport {
     await this.port.close();
   }
 
-  private async normalizeUsbSerialJtagControlLinesBeforeClose(): Promise<void> {
+  private async normalizeUsbSerialJtagControlLines(): Promise<void> {
     const setSignals = this.port.setSignals?.bind(this.port);
     if (!setSignals) return;
 
-    // ESP32-S3 USB Serial/JTAG treats RTS=1,DTR=0 as a reset request. Web
-    // Serial applies DTR before RTS when both are supplied together, so never
-    // normalize both lines in one call. Deassert RTS first; only after that
-    // succeeds is it safe to deassert DTR.
+    // Keep ESP32-S3 USB Serial/JTAG in a safe host-control state throughout
+    // the open session and immediately before close. RTS=1,DTR=0 is a reset
+    // request. Web Serial applies DTR before RTS when both are supplied
+    // together, so never normalize both lines in one call. Deassert RTS first;
+    // only after that succeeds is it safe to deassert DTR.
     try {
       await setSignals({ requestToSend: false });
     } catch {
