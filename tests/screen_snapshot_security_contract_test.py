@@ -11,7 +11,7 @@ FIRMWARE_CMAKE = ROOT / "firmware/CMakeLists.txt"
 APP_MAIN_CMAKE = ROOT / "firmware/main/CMakeLists.txt"
 DEVICE_CMAKE = ROOT / "firmware/components/m5auth_device_sticks3/CMakeLists.txt"
 DEVICE_HEADER = ROOT / "firmware/components/m5auth_device_sticks3/include/m5auth/device/sticks3/canonical_device.hpp"
-RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release-authorized.yml"
 PAGES_WORKFLOW = ROOT / ".github/workflows/pages.yml"
 
 
