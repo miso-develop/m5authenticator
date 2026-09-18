@@ -10,9 +10,6 @@ Use the hosted Web app with the latest stable **Desktop Chrome** and Web Serial:
 
 You can import standard TOTP QR images and Google Authenticator migration QR images locally in the browser, provision the Device, select an account on M5StickS3, and reveal a six-digit OTP without using a smartphone at authentication time.
 
-> [!IMPORTANT]
-> This is a public repository. Never commit, paste, upload, log, or attach real authentication material. This includes TOTP secrets or QR exports, passwords or Recovery Passphrases, Recovery Packages, private/session keys, and credential-bearing logs or dumps. See [SECURITY.md](SECURITY.md) for the complete policy.
-
 ## Key features
 
 - RFC 6238 TOTP using SHA-1, 6 digits, and a 30-second period
