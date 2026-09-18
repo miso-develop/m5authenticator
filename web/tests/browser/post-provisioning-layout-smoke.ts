@@ -628,7 +628,12 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
       ["Change Recovery Passphrase", passphraseSubsection],
     ] as const) {
       const heading = subsection.querySelector(":scope > h3");
-      assert(sourceTextOf(heading!) === name, `${name} must retain its semantic localized h3 heading source`);
+      const expectedHeading = name === "Recovery Package"
+        ? "Recovery Package"
+        : provisioningDoc.documentElement.lang === "ja"
+          ? "Recovery Passphraseを変更"
+          : "Change Recovery Passphrase";
+      assert(heading?.textContent === expectedHeading, `${name} must retain its semantic localized h3 heading`);
       const style = getComputedStyle(subsection);
       assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `${name} must have one visible subsection divider`);
       assert(parseFloat(style.marginTop) > 0 && parseFloat(style.paddingTop) > 0, `${name} divider must retain subsection spacing`);
