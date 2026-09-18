@@ -88,10 +88,12 @@ app.innerHTML = `
     <section class="panel danger" aria-labelledby="reset-heading">
       <h2 id="reset-heading">Factory Reset</h2>
       <p class="hint">Deletes the encrypted canonical Vault and active Trusted Browser registration from the Device and removes this browser's matching canonical state. The stable non-secret Device ID is preserved.</p>
+      <p id="factory-reset-hint" class="hint">Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.</p>
       <label for="reset-confirmation">Type RESET to enable</label>
       <input id="reset-confirmation" type="text" autocomplete="off" disabled />
       <div class="actions">
         <button id="factory-reset" class="danger-button" type="button" disabled>Factory Reset</button>
+        <button id="cancel-factory-reset" class="secondary" type="button" hidden disabled>Cancel Factory Reset</button>
         <button id="recovery-factory-reset" class="danger-button" type="button" hidden disabled>Recovery Factory Reset</button>
       </div>
       <p id="recovery-reset-hint" class="hint" hidden>Canonical Vault/registration ownership is inconsistent. Normal unlock and Vault access are blocked. Recovery Factory Reset requires a fresh physical confirmation on M5StickS3, deletes only this Device's local canonical state, and does not delete external Recovery Packages.</p>
@@ -127,6 +129,8 @@ const rekeyPassphrase = queryRequired<HTMLInputElement>("#rekey-recovery-passphr
 const rotateVmkButton = queryRequired<HTMLButtonElement>("#rotate-vmk", "VMK rotation button is missing");
 const resetConfirmation = queryRequired<HTMLInputElement>("#reset-confirmation", "Reset confirmation is missing");
 const factoryResetButton = queryRequired<HTMLButtonElement>("#factory-reset", "Factory reset button is missing");
+const cancelFactoryResetButton = queryRequired<HTMLButtonElement>("#cancel-factory-reset", "Factory reset cancel button is missing");
+const factoryResetHint = queryRequired<HTMLElement>("#factory-reset-hint", "Factory reset hint is missing");
 const recoveryFactoryResetButton = queryRequired<HTMLButtonElement>("#recovery-factory-reset", "Recovery Factory Reset button is missing");
 const recoveryResetHint = queryRequired<HTMLElement>("#recovery-reset-hint", "Recovery Factory Reset hint is missing");
 
@@ -136,6 +140,8 @@ let management: CanonicalDeviceManagement | null = null;
 let recoveryReset: CanonicalRecoveryResetController | null = null;
 let snapshot: CanonicalDeviceSnapshot | null = null;
 let deviceActionInProgress = false;
+let factoryResetAbortController: AbortController | null = null;
+let factoryResetPending = false;
 
 const autoLockSettings = createAutoLockSettingsController(async (days) => {
   if (deviceActionInProgress || recoveryReset || !management) {
@@ -320,14 +326,36 @@ resetConfirmation.addEventListener("input", updateControls);
 factoryResetButton.addEventListener("click", () => {
   if (resetConfirmation.value !== "RESET") return;
   if (!window.confirm("Factory Reset will permanently delete the Device encrypted Vault, active Browser registration, and this browser's matching canonical state. Continue?")) return;
-  void runDeviceAction("Factory Reset in progress…", async () => {
-    await requireManagement().factoryReset();
-    resetConfirmation.value = "";
-    wifiPassword.value = "";
-    rekeyPassphrase.value = "";
-    deviceNotice.textContent = "Factory Reset completed. Encrypted user state and active registration were removed; stable Device ID was preserved.";
-    await refreshDevice();
+  void runDeviceAction("FACTORY RESET REQUEST — starting secure Device confirmation…", async () => {
+    const abortController = new AbortController();
+    factoryResetAbortController = abortController;
+    try {
+      await requireManagement().factoryReset({
+        signal: abortController.signal,
+        onAwaitingConfirmation: () => {
+          factoryResetPending = true;
+          deviceNotice.textContent = "FACTORY RESET REQUEST — press A on M5StickS3 to confirm this destructive action.";
+          updateControls();
+        },
+      });
+      resetConfirmation.value = "";
+      wifiPassword.value = "";
+      rekeyPassphrase.value = "";
+      deviceNotice.textContent = "Factory Reset completed. Device canonical state is unprovisioned; browser canonical state was cleared after read-only proof. External Recovery Packages were not changed.";
+      await refreshDevice();
+    } finally {
+      factoryResetPending = false;
+      factoryResetAbortController = null;
+      updateControls();
+    }
   });
+});
+
+cancelFactoryResetButton.addEventListener("click", () => {
+  if (!factoryResetPending || !factoryResetAbortController) return;
+  deviceNotice.textContent = "Canceling Factory Reset request…";
+  cancelFactoryResetButton.disabled = true;
+  factoryResetAbortController.abort();
 });
 
 recoveryFactoryResetButton.addEventListener("click", () => {
@@ -359,6 +387,7 @@ window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
 });
 
 window.addEventListener("pagehide", () => {
+  factoryResetAbortController?.abort();
   importSession.clear();
   wifiPassword.value = "";
   rekeyPassphrase.value = "";
@@ -438,6 +467,7 @@ function updateControls(): void {
   const normalConnected = management !== null;
   const connected = normalConnected || recoveryMode;
   const writable = normalConnected && canWriteCanonical();
+  const secureFactoryResetSupported = writable && snapshot?.hello.factoryResetPresenceRequired === true;
   const initial = normalConnected && snapshot !== null && !snapshot.hello.vaultPresent;
   const unlockable = normalConnected && snapshot?.browserOwnership === "active" && snapshot.hello.state === "locked";
   const recoverable = normalConnected && snapshot?.recoveryProvisioningAvailable === true &&
@@ -460,8 +490,11 @@ function updateControls(): void {
   clearWifiButton.disabled = deviceActionInProgress || !writable || snapshot?.wifi.configured !== true;
   rekeyPassphrase.disabled = deviceActionInProgress || !writable;
   rotateVmkButton.disabled = deviceActionInProgress || !writable || rekeyPassphrase.value.length === 0;
-  resetConfirmation.disabled = deviceActionInProgress || !writable;
-  factoryResetButton.disabled = deviceActionInProgress || !writable || resetConfirmation.value !== "RESET";
+  resetConfirmation.disabled = deviceActionInProgress || !secureFactoryResetSupported;
+  factoryResetButton.disabled = deviceActionInProgress || !secureFactoryResetSupported || resetConfirmation.value !== "RESET";
+  cancelFactoryResetButton.hidden = !factoryResetPending;
+  cancelFactoryResetButton.disabled = !factoryResetPending;
+  factoryResetHint.hidden = recoveryMode;
   recoveryFactoryResetButton.hidden = !recoveryMode;
   recoveryResetHint.hidden = !recoveryMode;
   recoveryFactoryResetButton.disabled = deviceActionInProgress || !recoveryMode;
@@ -474,6 +507,7 @@ function renderDevice(): void {
   deviceStatus.replaceChildren();
 
   if (recoveryReset) {
+    factoryResetHint.hidden = true;
     const hello = recoveryReset.currentHello();
     appendStatus("Device", hello.device);
     appendStatus("Device ID", hello.deviceId);
@@ -496,6 +530,7 @@ function renderDevice(): void {
   }
 
   if (!snapshot) {
+    factoryResetHint.textContent = "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.";
     appendStatus("Status", connected ? "Connected; canonical status not loaded" : "Not connected");
     storedAccountList.replaceChildren();
     accountsEmpty.textContent = connected ? "Refresh canonical status to load Browser Vault metadata." : "Connect a device to load canonical Vault state.";
@@ -506,6 +541,9 @@ function renderDevice(): void {
   }
 
   const hello = snapshot.hello;
+  factoryResetHint.textContent = hello.factoryResetPresenceRequired === true
+    ? "Factory Reset requires fresh confirmation on M5StickS3 after browser confirmation. External Recovery Packages are not deleted or revoked."
+    : "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.";
   appendStatus("Device", hello.device);
   appendStatus("Device ID", hello.deviceId);
   appendStatus("Firmware", hello.firmware);
