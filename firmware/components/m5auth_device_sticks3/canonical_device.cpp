@@ -1,6 +1,7 @@
 #include "m5auth/device/sticks3/canonical_device.hpp"
 #include "m5auth/device/sticks3/label_scroll_state.hpp"
 #include "m5auth/device/sticks3/totp_validity.hpp"
+#include "m5auth/device/sticks3/ui_palette.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -106,6 +107,14 @@ void draw_line(const char* text, int y) {
     M5.Display.setTextColor(kColorWhite, kColorBlack);
     M5.Display.setCursor(0, y);
     M5.Display.print(text);
+}
+
+void draw_accent_line(const char* text, int y, std::uint16_t color) {
+    M5.Display.setTextSize(kReadableTextSize);
+    M5.Display.setTextColor(color, kColorBlack);
+    M5.Display.setCursor(0, y);
+    M5.Display.print(text);
+    M5.Display.setTextColor(kColorWhite, kColorBlack);
 }
 
 void draw_semantic_line(
@@ -661,7 +670,7 @@ void CanonicalUiController::render() {
 
     M5.Display.clear();
     prepare_readable_display();
-    draw_line("M5Authenticator", kHeaderY);
+    draw_accent_line("M5Authenticator", kHeaderY, ui_palette::kProductTitle);
 
     if (presence.active) {
         draw_line("UNLOCK REQUEST", kPrimaryLineY);
@@ -675,7 +684,11 @@ void CanonicalUiController::render() {
             draw_line("Confirmed", status_y);
             draw_line("Waiting for browser", status_y + 20);
         } else {
-            draw_line("Press A to confirm", status_y);
+            draw_accent_line(
+                "Press A to confirm",
+                status_y,
+                ui_palette::kConfirmationAction
+            );
             draw_line("Expires in 30 sec", status_y + 20);
         }
     } else {
