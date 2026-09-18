@@ -10,6 +10,7 @@ import { decodeQrImage } from "./import/qr";
 import { ImportSession, type ImportSessionUpdate } from "./import/session";
 import { ImportError, type ImportedAccountPreview } from "./import/types";
 import { SerialSession } from "./serial";
+import { settleDeviceActionNotice } from "./device-action-notice";
 
 const app = queryRequired<HTMLElement>("#app", "Application root is missing");
 
@@ -231,7 +232,7 @@ connectButton.addEventListener("click", async () => {
   }
 });
 
-unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST — confirm on M5StickS3…", async () => {
+unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST — confirm on M5StickS3…", "Unlock request completed; Device status refreshed.", async () => {
   await requireManagement().requestUnlock();
   await refreshDevice();
   deviceNotice.textContent = snapshot?.hello.state === "unlocked"
@@ -242,7 +243,7 @@ unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST —
 restoreRecoveryButton.addEventListener("click", () => {
   if (!snapshot?.recoveryProvisioningAvailable) return;
   if (!window.confirm("Restore the imported encrypted canonical Vault onto this clean replacement M5StickS3? This creates a new Device registration and requires a fresh physical confirmation.")) return;
-  void runDeviceAction("RECOVERY PROVISIONING — confirm on M5StickS3…", async () => {
+  void runDeviceAction("RECOVERY PROVISIONING — confirm on M5StickS3…", "Recovery provisioning completed. The imported canonical Vault is now active on this replacement Device with a fresh registration.", async () => {
     await requireManagement().recoverImportedVaultToCleanDevice();
     deviceNotice.textContent = "Recovery provisioning completed. The imported canonical Vault is now active on this replacement Device with a fresh registration.";
     await refreshDevice();
@@ -259,14 +260,14 @@ disconnectButton.addEventListener("click", async () => {
   setDeviceBusy(false);
 });
 
-refreshButton.addEventListener("click", () => runDeviceAction("Refreshing canonical status…", refreshDevice));
-syncTimeButton.addEventListener("click", () => runDeviceAction("Synchronizing PC time…", async () => {
+refreshButton.addEventListener("click", () => runDeviceAction("Refreshing canonical status…", "Canonical status refreshed.", refreshDevice));
+syncTimeButton.addEventListener("click", () => runDeviceAction("Synchronizing PC time…", "Trusted time synchronized from this PC while Device was UNLOCKED.", async () => {
   await requireManagement().syncTime();
   deviceNotice.textContent = "Trusted time synchronized from this PC while Device was UNLOCKED.";
   await refreshDevice();
 }));
 
-provisionButton.addEventListener("click", () => runDeviceAction("Updating canonical Vault…", async () => {
+provisionButton.addEventListener("click", () => runDeviceAction("Updating canonical Vault…", "Canonical Vault update completed.", async () => {
   let passphrase: string | undefined;
   if (snapshot && !snapshot.hello.vaultPresent) {
     if (initialPassphrase.value !== initialPassphraseConfirm.value) {
@@ -287,14 +288,14 @@ wifiForm.addEventListener("submit", (event) => {
   const ssid = wifiSsid.value;
   const password = wifiPassword.value;
   wifiPassword.value = "";
-  void runDeviceAction("Updating encrypted Wi-Fi state…", async () => {
+  void runDeviceAction("Updating encrypted Wi-Fi state…", "Wi-Fi credentials committed inside the next encrypted Vault generation.", async () => {
     await requireManagement().setWifi(ssid, password);
     deviceNotice.textContent = "Wi-Fi credentials committed inside the next encrypted Vault generation.";
     await refreshDevice();
   });
 });
 
-clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi from canonical Vault…", async () => {
+clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi from canonical Vault…", "Wi-Fi credentials removed in the next encrypted Vault generation.", async () => {
   await requireManagement().clearWifi();
   wifiPassword.value = "";
   deviceNotice.textContent = "Wi-Fi credentials removed in the next encrypted Vault generation.";
@@ -311,7 +312,7 @@ rotateVmkButton.addEventListener("click", () => {
   }
   let passphrase = rekeyPassphrase.value;
   rekeyPassphrase.value = "";
-  void runDeviceAction("Rotating Vault Master Key… confirm on M5StickS3.", async () => {
+  void runDeviceAction("Rotating Vault Master Key… confirm on M5StickS3.", "Vault Master Key rotated. Export a fresh Recovery Package and retire older copies you control.", async () => {
     try {
       await requireManagement().rotateVmk(passphrase);
       deviceNotice.textContent = "Vault Master Key rotated. Export a fresh Recovery Package and retire older copies you control.";
@@ -326,7 +327,7 @@ resetConfirmation.addEventListener("input", updateControls);
 factoryResetButton.addEventListener("click", () => {
   if (resetConfirmation.value !== "RESET") return;
   if (!window.confirm("Factory Reset will permanently delete the Device encrypted Vault, active Browser registration, and this browser's matching canonical state. Continue?")) return;
-  void runDeviceAction("FACTORY RESET REQUEST — starting secure Device confirmation…", async () => {
+  void runDeviceAction("FACTORY RESET REQUEST — starting secure Device confirmation…", "Factory Reset completed. Device canonical state is unprovisioned; browser canonical state was cleared after read-only proof. External Recovery Packages were not changed.", async () => {
     const abortController = new AbortController();
     factoryResetAbortController = abortController;
     try {
@@ -361,7 +362,7 @@ cancelFactoryResetButton.addEventListener("click", () => {
 recoveryFactoryResetButton.addEventListener("click", () => {
   if (!recoveryReset) return;
   if (!window.confirm("Recovery Factory Reset is only for a broken Vault/registration ownership state. It will delete this Device's encrypted Vault and registration plus matching local browser state. External Recovery Packages are not deleted. Continue?")) return;
-  void runDeviceAction("RECOVERY RESET REQUEST — confirm on M5StickS3…", async () => {
+  void runDeviceAction("RECOVERY RESET REQUEST — confirm on M5StickS3…", "Recovery Factory Reset completed. Device canonical state is unprovisioned; external Recovery Packages were not changed.", async () => {
     const controller = requireRecoveryReset();
     const nextHello = await controller.perform(() => {
       deviceNotice.textContent = "RECOVERY RESET REQUEST — press A on M5StickS3 to confirm this destructive recovery action.";
@@ -438,11 +439,20 @@ async function disconnectDevice(lockDevice = true): Promise<void> {
   renderDevice();
 }
 
-async function runDeviceAction(message: string, action: () => Promise<void>): Promise<void> {
+async function runDeviceAction(
+  message: string,
+  successMessage: string,
+  action: () => Promise<void>,
+): Promise<void> {
   if (deviceActionInProgress || (!management && !recoveryReset)) return;
   setDeviceBusy(true, message);
   try {
     await action();
+    deviceNotice.textContent = settleDeviceActionNotice(
+      message,
+      deviceNotice.textContent ?? "",
+      successMessage,
+    );
   } catch (error) {
     const errorMessage = userFacingError(error, "Device operation failed.");
     if (serialSession?.isClosed()) await disconnectDevice(false);
@@ -617,7 +627,7 @@ function renderStoredAccounts(accounts: CanonicalDeviceSnapshot["accounts"]): vo
 
     const actions = document.createElement("div");
     actions.className = "actions compact";
-    const rename = actionButton("Rename", () => runDeviceAction("Renaming account in canonical Vault…", async () => {
+    const rename = actionButton("Rename", () => runDeviceAction("Renaming account in canonical Vault…", "Account renamed in the canonical Vault.", async () => {
       await requireManagement().renameAccount(account.id, input.value);
       await refreshDevice();
     }));
@@ -625,7 +635,7 @@ function renderStoredAccounts(accounts: CanonicalDeviceSnapshot["accounts"]): vo
     const down = actionButton("↓", () => reorderStoredAccount(index, 1));
     const remove = actionButton("Delete", () => {
       if (!window.confirm(`Delete ${account.account} from the canonical Vault?`)) return Promise.resolve();
-      return runDeviceAction("Deleting account from canonical Vault…", async () => {
+      return runDeviceAction("Deleting account from canonical Vault…", "Account deleted from the canonical Vault.", async () => {
         await requireManagement().deleteAccount(account.id);
         await refreshDevice();
       });
@@ -648,7 +658,7 @@ async function reorderStoredAccount(index: number, offset: -1 | 1): Promise<void
   if (target < 0 || target >= snapshot.accounts.length) return;
   const ids = snapshot.accounts.map((account) => account.id);
   [ids[index], ids[target]] = [ids[target]!, ids[index]!];
-  await runDeviceAction("Reordering canonical accounts…", async () => {
+  await runDeviceAction("Reordering canonical accounts…", "Canonical account order updated.", async () => {
     await requireManagement().reorderAccounts(ids);
     await refreshDevice();
   });
