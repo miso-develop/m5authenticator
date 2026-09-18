@@ -36,16 +36,16 @@ constexpr FrameGeometry frame_geometry(int title_font_height) {
     const int content_start_y =
         title_band_height + kHeaderSeparatorHeightPx;
     return FrameGeometry{
-        .title_band_height = title_band_height,
-        .separator_y = title_band_height,
-        .content_start_y = content_start_y,
-        .primary_line_y = content_start_y,
-        .secondary_line_y = content_start_y + kLineAdvancePx,
-        .tertiary_line_y = content_start_y + (2 * kLineAdvancePx),
-        .account_label_y = content_start_y + kAccountLabelOffsetPx,
-        .otp_y = content_start_y + kOtpOffsetPx,
-        .help_first_y = content_start_y + kHelpFirstOffsetPx,
-        .help_second_y = content_start_y + kHelpSecondOffsetPx,
+        title_band_height,
+        title_band_height,
+        content_start_y,
+        content_start_y,
+        content_start_y + kLineAdvancePx,
+        content_start_y + (2 * kLineAdvancePx),
+        content_start_y + kAccountLabelOffsetPx,
+        content_start_y + kOtpOffsetPx,
+        content_start_y + kHelpFirstOffsetPx,
+        content_start_y + kHelpSecondOffsetPx,
     };
 }
 
