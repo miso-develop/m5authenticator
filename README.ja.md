@@ -1,76 +1,94 @@
-# M5 Authenticator
+# M5Authenticator
 
 [English](README.md) | **日本語**
 
-**M5StickS3** から対応を開始する、M5Stackデバイス向けのコンパクトなTOTP認証器プロジェクトです。
+M5Authenticatorは、**M5StickS3**で使うスタンドアロンのTOTP認証器です。TOTP認証情報はDevice上の暗号化Vaultに保存し、Vault Master Key（VMK）はUnlock中のみRAMに保持します。Provisioning、アカウント管理、Firmware更新、Recoveryには、ローカル処理を前提としたWebアプリを使用します。
+
+最新安定版の**Desktop Chrome**とWeb Serialで、Hosted Webアプリを利用できます。
+
+**[M5Authenticator Webを開く](https://miso-develop.github.io/m5authenticator/)**
+
+標準TOTP QR画像やGoogle Authenticatorの移行QR画像はブラウザ内でローカルに読み込み、M5StickS3へProvisioningできます。認証時はスマートフォンを操作せず、Device上でアカウントを選択して6桁のOTPを表示できます。
 
 > [!IMPORTANT]
-> このリポジトリは公開されています。**実際の認証シークレットや認証情報を、コミット、貼り付け、アップロード、ログ出力、添付してはいけません。** 対象にはTOTPシークレット、`otpauth://` URI、Google Authenticator移行payload/QR画像、token、API key、private key、password、Wi-Fi credential、Vault/browser/session key、ユーザー生成Recovery Package、credentialを含むDevice dump等が含まれます。
+> このリポジトリは公開されています。実際の認証情報をコミット、貼り付け、アップロード、ログ出力、添付してはいけません。対象にはTOTPシークレットやQRエクスポート、パスワードやRecovery Passphrase、Recovery Package、private/session key、認証情報を含むログやdumpが含まれます。完全なポリシーは[SECURITY.md](SECURITY.md)を参照してください。
 
-## プロジェクト状況
+## 主な機能
 
-V1実装とsecurity closeoutは完了しています。canonical production architectureは **Protocol 2 / Storage Schema 2 / Vault Format 1**、security profileは `encrypted-vault-ram-only-vmk` で、fail-closedなrelease/profile checkを前提にproduction release eligibilityが有効化されています。
-
-GitHub Pages経路では、検証済みproduction firmwareをWeb Flasher向けにbuild/deployする状態です。正式なGitHub Releaseはversion tagによって作成され、Pages/M5Burnerと同じsecret-freeなCI-built merged firmware imageを使用します。
-
-最初の対象はM5StickS3で、以下に対応します。
-
-- TOTP（SHA-1、6桁、30秒周期）
+- RFC 6238 TOTP（SHA-1、6桁、30秒周期）
 - 最大32アカウント
-- デバイス側でのアカウント選択と10秒間のOTP表示
-- USB/Web Serialによるprovisioningと管理
-- 標準TOTP QR screenshotおよびGoogle Authenticator migration QR screenshotからのimport
-- GitHub Pages Web UIによるclient-side-only provisioning
-- Device Flashへ保存する1 generation単位のapplication-level AES-GCM Encrypted Vault
-- `UNLOCKED`中だけDevice RAMに保持するrandom Vault Master Key（VMK）
-- Passphrase再入力なしのquick unlockに使用するactive Trusted Browser 1つと、Device上のfresh physical confirmation
-- Browser recovery用のEncrypted Recovery Package export/import（browser quick-unlock private keyは含めない）
-- M5Authenticator固有eFuse burnや不可逆security provisioningを行わない設計
-- Device unlock後のみ実行するNTP / USB trusted-time sync
+- M5StickS3上でのアカウント選択
+- Device上での短時間OTP表示
+- 標準TOTP QR画像とGoogle Authenticator移行QR画像のローカルImport
+- 認証情報を永続化する暗号化Device Vault
+- DeviceがUnlock中の間だけRAMに保持するVMK
+- Passphraseを毎回再入力せずに使えるTrusted Browser Unlockと、Unlock時のM5StickS3上でのfreshな物理確認
+- NTP / PC時刻同期と、OTP表示前のtime readiness gate
+- Web UIからのFirmware初回Installとstate-preserving Update
+- Browser recovery用の暗号化Recovery Package export/import
+- M5Authenticator固有のeFuse provisioningを必要としない設計
 
-再起動や電源断後はVMKがFlashに保存されていないためDeviceはLOCKEDから開始します。登録済みTrusted Browserなら通常はPassphraseを再入力せずに復旧できますが、そのunlock attemptに対するfresh user-presence確認がDevice側で必要です。
+## 仕組みとセキュリティモデル
 
-外部serviceのTOTP enrollment / source Authenticatorはcredentialをreplace/re-enrollするためのauthoritative sourceとして維持します。Web ProvisionerのEncrypted VaultはM5Authenticator内部でbrowser/device replicaを同期するためのcanonical encrypted replicaです。
+M5Authenticatorは、永続化する暗号化データと、それを復号するための鍵を分離します。
 
-V1全体像は [`docs/V1_REQUIREMENTS.md`](docs/V1_REQUIREMENTS.md) と [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) から参照してください。鍵階層、persistence、unlock/recovery、Trusted Browser等のsecurity-sensitiveなcurrent truthは [`docs/SECRET_VAULT.md`](docs/SECRET_VAULT.md) に集約しています。project-wide constraintは `PROJECT.md`、必須security policy / threat modelは `SECURITY.md` を正本とします。
+- Device Flashに保存するのは**暗号化Vault**であり、平文のTOTPシークレットではありません。
+- **Vault Master Key（VMK）**はDeviceがUnlock中の間だけRAMに保持されます。Lock、再起動、電源断で破棄されます。
+- **Trusted Browser**は通常のUnlockを簡単にしますが、M5StickS3上でのfreshな物理確認を省略する仕組みではありません。
+- **Recovery Package**は暗号化されていますが、入手した第三者がPassphraseをオフラインで推測できるため、引き続きsecurity-sensitiveなオフライン成果物です。
+- Device Factory Resetを行っても、過去に外部へExportしたRecovery Packageは消去・暗号学的revokeされません。
+- 通常のNTP時刻は運用上利用しますが、**暗号学的に認証された時刻源ではありません**。
+- hardware root of trustや、compromised Trusted Browser/OS、malicious firmware、Unlock中のRAM probing、高度なphysical attackに対する強い耐性は主張しません。
 
-## V1ドキュメント
+正本となるSecurity contractは[SECURITY.md](SECURITY.md)と[docs/SECRET_VAULT.md](docs/SECRET_VAULT.md)を参照してください。
 
-- `docs/V1_REQUIREMENTS.md`: V1確定要件の横断index、状態/操作表、version boundary、Decision lineage
-- `docs/ARCHITECTURE.md`: Firmware/Web/Vault/Protocolの責務境界と主要end-to-end flow
-- `docs/SECRET_VAULT.md`: Encrypted Vault、RAM-only VMK、Passphrase/Recovery Package、Trusted Browser、Lock/Unlock、user-presence設計
-- `docs/DEVICE_UI.md`: StickS3のaccount selection、unlock user presence、trusted-time表示、10秒OTP reveal
-- `docs/WEB_PROVISIONER.md`: local-only Web Serial管理、encrypted browser state、Trusted Browser ownership/recovery、account/device management
-- `docs/TIME.md`: trusted-time syncとTOTP readiness rule
-- `docs/STORAGE.md`: Encrypted Vault persistence、metadata privacy、versioning boundary
-- `docs/PROVISIONING_PROTOCOL.md`: canonical Protocol 2 NDJSON provisioning/unlock protocol
-- `docs/DISTRIBUTION.md`: Web Flasher、GitHub Releases、M5Burner、state-preserving update contract
-- `docs/DEVELOPMENT.md`: pinned toolchainと再現可能なbuild/test command
-- `docs/REPOSITORY_SECURITY.md`: repository-level secret protection control
+## はじめ方
 
-## 開発基盤
+1. 最新安定版のDesktop Chromeで[Hosted M5Authenticator Webアプリ](https://miso-develop.github.io/m5authenticator/)を開きます。
+2. 新しいDevice、または意図的に初期化したいDeviceにだけ**First install / erase**を使用します。Provisioning済みDeviceでは、対応するユーザー状態を維持する**Update**経路を使用します。
+3. Web SerialでM5StickS3へ接続します。
+4. 標準TOTP QRまたはGoogle Authenticator移行QRのデータをブラウザ内でローカルにImportします。
+5. 選択したアカウントをProvisioningし、Device上で操作を確認します。
+6. DeviceがLockされている場合はWebアプリからUnlockし、M5StickS3上でfreshな物理確認を行います。
+7. 表示されたOTPを利用する前に、時刻状態がreadyであることを確認します。
 
-M5StickS3向けfirmwareのcanonical buildはESP-IDF / CMakeです。Web AppはVanilla TypeScript + Vite + Vitestを使用します。正確なpinned versionとcommandは `docs/DEVELOPMENT.md` を参照してください。
+Provisionerの詳細動作、アカウント管理、Recovery、Firmware操作は[docs/WEB_PROVISIONER.md](docs/WEB_PROVISIONER.md)と[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)を参照してください。
 
-## 開発プロセス
+## 対応環境
 
-このrepositoryはGitHub上の `[Map]` → `[Decision]` → `[Spec]` → `[Task]` work itemを使うLoop Engineeringに従います。`AGENTS.md` と `agent/WORK-TRACKING.md` を参照してください。
+現在のproduction supportは意図的に限定しています。
 
-## セキュリティ
+- **Device:** M5StickS3
+- **Browser:** 最新安定版Desktop Chrome
+- **Device通信:** Web Serial
 
-認証情報の保護はこのprojectで最優先のinvariantです。real secretやユーザー生成encrypted credential backupをGit history、Issue/PR、CI log、test fixture、screenshot、Artifact、external web requestへ入れてはいけません。
+他のM5Stack Deviceは、production targetとして明示されていない限り対応済みとはみなしません。
 
-V1はcredential VaultをdecryptするVMKをDeviceへpersistしないことで、power-off/reboot済みDeviceのFlash copyからcredentialを直接取得されるriskを抑えます。一方、hardware root of trust、compromised Trusted Browser/OS、malicious firmware/fake Device、UNLOCKED中のRAM probing、hardware-backed rollback、高度なphysical attackへの強い耐性は主張しません。
+## 利用・Recoveryドキュメント
 
-real secretが露出した場合はcompromisedとして扱い、authoritative source serviceでrotate/re-enrollしてください。Git commit/commentの削除だけではremediationになりません。また、過去にexportしたRecovery Packageはcurrent Passphraseを変更しただけではcryptographically revokeされません。詳細は `SECURITY.md` と `docs/SECRET_VAULT.md` を参照してください。
+### 利用 / Web Provisioner
 
-### Repository security check
+- [Web Provisioner](docs/WEB_PROVISIONER.md) — Provisioning、アカウント管理、Browser state、Trusted Browser、Recovery
+- [Device UI](docs/DEVICE_UI.md) — アカウント選択、Device確認、時刻状態、OTP表示
+- [Time](docs/TIME.md) — 時刻同期とOTP readiness rule
+- [Distribution](docs/DISTRIBUTION.md) — Web Flasher、First install、state-preserving Update、Release packaging
 
-security-sensitive changeをpushする前に以下を実行します。
+### Security / Recovery
 
-```text
-python3 -m unittest discover -s tests -p "test_security_scan.py"
-python3 scripts/security_scan.py
-```
+- [Security Policy](SECURITY.md) — secret handling要件とthreat-model boundary
+- [Secret Vault Architecture](docs/SECRET_VAULT.md) — 暗号化Vault、VMK、Passphrase、Trusted Browser、Lock/Unlock、Recovery Package
+- [Storage](docs/STORAGE.md) — 暗号化永続化とversioning boundary
 
-repository operation `security:scan` はPull Requestと `main` のGitHub Actionsで強制されます。2層のsecret protection baselineとallowlist policyは `docs/REPOSITORY_SECURITY.md` を参照してください。
+### Architecture / Protocol
+
+- [Architecture](docs/ARCHITECTURE.md) — Device/Web/Vaultの責務境界と主要flow
+- [Provisioning Protocol](docs/PROVISIONING_PROTOCOL.md) — Web Serial provisioning / unlock protocol
+- [V1 Requirements](docs/V1_REQUIREMENTS.md) — cross-feature要件のdurable reference
+
+## 開発・Contributing
+
+FirmwareはESP-IDF/CMake、WebアプリはTypeScript/Viteで構成されています。開発環境、pinned toolchain、再現可能なcommandは[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)を参照してください。
+
+RepositoryへのContributionとwork trackingのルールは[AGENTS.md](AGENTS.md)と[agent/WORK-TRACKING.md](agent/WORK-TRACKING.md)にあります。これらの開発プロセス文書は、上記のProduct利用方法やSecurity contractとは分離されています。
+
+Repositoryへ変更を提出する際は、例やtest materialを必ずsyntheticな値にし、[SECURITY.md](SECURITY.md)に従ってください。
