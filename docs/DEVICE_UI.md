@@ -25,13 +25,38 @@ While `LOCKED`, the Device must not display or enumerate those plaintext fields 
 
 ## Visual hierarchy
 
-The shared `M5Authenticator` product heading uses a readable blue accent on the black StickS3 background, including the startup screen and normal runtime screens.
+The shared `M5Authenticator` product heading uses a full-width white title band with black title text on both startup and canonical runtime screens. The title geometry is derived from the configured text-size-2 font metrics rather than a fixed assumed glyph height.
 
-During a pending fresh user-presence attempt, the explicit `Press A to confirm` action uses a bright cyan action accent so it is more visually prominent than explanatory text and remains distinct from the existing green/amber/red State/Time semantics. Color is supplemental only: the product title, operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
+The title frame reserves exactly 1 px of white padding above, below, and to the left of the title text. The white band is immediately followed by exactly 1 px of black separator before normal content begins. All left-aligned non-title content below the band starts at x = 1 px. Centered content, including the six-digit OTP, remains geometrically centered.
 
-These accents do not change presence binding, stale-input rejection, timeout/cancel behavior, Protocol v2, or any secret-handling behavior.
+During a pending fresh user-presence attempt, the explicit `Press A to confirm` action retains the bright cyan action accent introduced by #176 so it remains visually prominent and distinct from the existing green/amber/red State/Time semantics. Color is supplemental only: the operation text, button identity, confirmation wording, destructive-reset warning, and timeout text remain explicit.
 
-The production StickS3 initialization continues to disable unused internal speaker/microphone initialization and explicitly ends the speaker path. This visual hierarchy change does not alter audio/PMIC/USB-power behavior.
+Account-label scrolling uses the same 1 px left inset and a viewport reduced only by that inset. The existing transient canvas is still cleared immediately after blitting; no additional persistent credential-label buffer is introduced.
+
+These presentation changes do not alter presence binding, stale-input rejection, timeout/cancel behavior, Protocol v2, Vault/TOTP/time behavior, or any secret-handling behavior.
+
+## Residual audible/high-frequency noise validation
+
+Production initialization continues to use the existing StickS3 audio-disable sequence:
+
+```cpp
+config.internal_spk = false;
+config.internal_mic = false;
+M5.begin(config);
+M5.Speaker.end();
+```
+
+Issue #187 does not add another PMIC/speaker-control write without physical evidence that this documented M5Unified path fails to leave the speaker amplifier disabled.
+
+Before Integration, exact-head physical validation must record a non-secret observation matrix covering:
+
+- startup-only vs persistent vs intermittent noise;
+- PC USB vs battery / known-clean USB power;
+- Web Serial disconnected vs connected/active;
+- whether heat, reboot, display corruption/flicker, or power instability is present;
+- whether the documented StickS3 speaker-amplifier-off state is asserted after `M5.begin(config)`, after `M5.Speaker.end()`, and in stable runtime.
+
+If the amplifier is already confirmed off while noise persists, retain the existing audio-disable code and treat the remaining observation as a power-path/load investigation rather than adding speculative PMIC changes.
 
 ## User-presence request
 
