@@ -319,25 +319,6 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
         assert(parseFloat(style.paddingTop) >= 32, `Provisioning section ${index + 1} requires at least 32px boundary padding`);
       }
     });
-    const recoverySubsection = required<HTMLElement>(shell, '[data-security-subsection="recovery-package"]');
-    const passphraseSubsection = required<HTMLElement>(shell, '[data-security-subsection="change-passphrase"]');
-    for (const [name, subsection] of [
-      ["Recovery Package", recoverySubsection],
-      ["Change Recovery Passphrase", passphraseSubsection],
-    ] as const) {
-      const heading = subsection.querySelector(":scope > h3");
-      assert(heading?.textContent === name, `${name} must retain its semantic h3 heading`);
-      const style = getComputedStyle(subsection);
-      assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `${name} must have one visible subsection divider`);
-      assert(parseFloat(style.marginTop) > 0 && parseFloat(style.paddingTop) > 0, `${name} divider must retain subsection spacing`);
-      assert(subsection.querySelector(":scope > hr") === null, `${name} must not duplicate the CSS divider with an hr`);
-      assert(getComputedStyle(heading).marginTop === "0px", `${name} heading must start immediately after the shared divider spacing`);
-    }
-    assert(
-      getComputedStyle(recoverySubsection).borderTopColor === getComputedStyle(passphraseSubsection).borderTopColor,
-      "Recovery subsections must share the same neutral divider treatment",
-    );
-
     const regularDivider = getComputedStyle(majorSections[0]!).borderTopColor;
     const dangerDivider = getComputedStyle(required<HTMLElement>(shell, "section.danger")).borderTopColor;
     assert(dangerDivider !== regularDivider, "Factory Reset must retain its danger-tinted divider semantics");
@@ -639,6 +620,26 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
     const productionPanels = Array.from(provisioningShell.querySelectorAll<HTMLElement>(":scope > section.panel"));
     assert(productionPanels.length >= 7, "Production Provisioning route must keep all major peer sections on the shared panel contract");
     assert(provisioningShell.lastElementChild === productionBuildSection, "Production Web Build information section must remain the final Provisioning peer section");
+
+    const recoverySubsection = required<HTMLElement>(provisioningShell, '[data-security-subsection="recovery-package"]');
+    const passphraseSubsection = required<HTMLElement>(provisioningShell, '[data-security-subsection="change-passphrase"]');
+    for (const [name, subsection] of [
+      ["Recovery Package", recoverySubsection],
+      ["Change Recovery Passphrase", passphraseSubsection],
+    ] as const) {
+      const heading = subsection.querySelector(":scope > h3");
+      assert(sourceTextOf(heading!) === name, `${name} must retain its semantic localized h3 heading source`);
+      const style = getComputedStyle(subsection);
+      assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `${name} must have one visible subsection divider`);
+      assert(parseFloat(style.marginTop) > 0 && parseFloat(style.paddingTop) > 0, `${name} divider must retain subsection spacing`);
+      assert(subsection.querySelector(":scope > hr") === null, `${name} must not duplicate the CSS divider with an hr`);
+      assert(getComputedStyle(heading!).marginTop === "0px", `${name} heading must start immediately after the shared divider spacing`);
+    }
+    assert(
+      getComputedStyle(recoverySubsection).borderTopColor === getComputedStyle(passphraseSubsection).borderTopColor,
+      "Recovery subsections must share the same neutral divider treatment",
+    );
+
     for (const [index, section] of productionPanels.entries()) {
       const style = getComputedStyle(section);
       assert(style.borderTopStyle !== "none" && parseFloat(style.borderTopWidth) >= 1, `Production Provisioning peer section ${index + 1} must retain a visible top divider`);
