@@ -10,8 +10,39 @@ permissions:
   contents: read
 
 jobs:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.impact.outputs.web }}
+      firmware: ${{ steps.impact.outputs.firmware }}
+      pages: ${{ steps.impact.outputs.pages }}
+      security_release_shared: ${{ steps.impact.outputs.security_release_shared }}
+      snapshot_contract: ${{ steps.impact.outputs.snapshot_contract }}
+      snapshot_build: ${{ steps.impact.outputs.snapshot_build }}
+      process_docs_only: ${{ steps.impact.outputs.process_docs_only }}
+      uncertain: ${{ steps.impact.outputs.uncertain }}
+    steps:
+      - name: Checkout complete history for deterministic diff
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Classify changed paths fail-safe
+        id: impact
+        shell: bash
+        run: >-
+          python3 scripts/ci_change_impact.py
+          --event-file "$GITHUB_EVENT_PATH"
+          --event-name "$GITHUB_EVENT_NAME"
+          --github-output "$GITHUB_OUTPUT"
+
   web:
     name: web
+    needs: classify
+    if: needs.classify.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -72,6 +103,57 @@ jobs:
             cat /tmp/qr-smoke-dom.html
             exit 1
           fi
+      - name: Build production-equivalent Web smoke
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path("../firmware/release-profile.json").read_text(encoding="utf-8"))["firmware_version"])
+          PY
+          )"
+          VITE_M5AUTH_WEB_VERSION="$version" \
+          VITE_M5AUTH_WEB_BUILD_COMMIT="$GITHUB_SHA" \
+          VITE_M5AUTH_WEB_EXACT_RELEASE=false \
+          VITE_M5AUTH_FLASH_ENABLED=true \
+            npx --no-install vite build --mode production-smoke
+      - name: Test production-equivalent routes and same-origin firmware assets on Chrome
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_url="http://127.0.0.1:4174/m5authenticator/tests/browser/production-site-smoke.html"
+          npx --no-install vite preview --mode production-smoke --host 127.0.0.1 --port 4174 --strictPort >/tmp/m5auth-production-smoke-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..30}; do
+            if curl -fsS "$smoke_url" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$smoke_url" >/dev/null
+
+          google-chrome \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --virtual-time-budget=120000 \
+            --dump-dom \
+            "$smoke_url" \
+            >/tmp/production-site-smoke-dom.html
+
+          if ! grep -q 'data-status="pass"' /tmp/production-site-smoke-dom.html \
+            || ! grep -q 'data-stage="complete"' /tmp/production-site-smoke-dom.html \
+            || ! grep -q 'PRODUCTION_SITE_SMOKE_PASS' /tmp/production-site-smoke-dom.html; then
+            cat /tmp/production-site-smoke-dom.html
+            cat /tmp/m5auth-production-smoke-vite.log
+            exit 1
+          fi
+
       - name: Build Web App
         working-directory: web
         run: npm run build
@@ -80,6 +162,8 @@ jobs:
 
   web-qr-windows:
     name: web QR Windows Chrome
+    needs: classify
+    if: needs.classify.outputs.web == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -154,6 +238,8 @@ jobs:
 
   firmware:
     name: firmware
+    needs: classify
+    if: needs.classify.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
