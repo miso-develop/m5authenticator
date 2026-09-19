@@ -13,6 +13,7 @@ on:
       - "tests/screen_snapshot_*"
       - "tests/esp_idf_image_pin_contract_test.py"
       - "scripts/esp_idf_build_image.py"
+      - "scripts/ci_change_impact.py"
       - "tools/diagnostics/screen_snapshot.py"
       - "scripts/windows/**"
       - "docs/testing/screen-snapshot-diagnostics.md"
