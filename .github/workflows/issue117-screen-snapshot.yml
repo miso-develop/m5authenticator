@@ -16,18 +16,43 @@ on:
       - "tools/diagnostics/screen_snapshot.py"
       - "scripts/windows/**"
       - "docs/testing/screen-snapshot-diagnostics.md"
+      - "docs/testing/screen-snapshot-usb-tx-investigation.md"
       - "AGENTS.md"
       - ".github/workflows/issue117-screen-snapshot.yml"
-      - ".github/workflows/security.yml"
 
 permissions:
   contents: read
 
 jobs:
-  test-screen-snapshot-profile:
-    name: test-only screen snapshot profile
+  classify:
+    name: classify snapshot impact
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      snapshot_contract: ${{ steps.impact.outputs.snapshot_contract }}
+      snapshot_build: ${{ steps.impact.outputs.snapshot_build }}
+      uncertain: ${{ steps.impact.outputs.uncertain }}
+    steps:
+      - name: Checkout complete history for deterministic diff
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Classify snapshot impact fail-safe
+        id: impact
+        run: >-
+          python3 scripts/ci_change_impact.py
+          --event-file "$GITHUB_EVENT_PATH"
+          --event-name "$GITHUB_EVENT_NAME"
+          --github-output "$GITHUB_OUTPUT"
+
+  snapshot-contract:
+    name: snapshot contract
+    needs: classify
+    if: needs.classify.outputs.snapshot_contract == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +73,18 @@ jobs:
           tests/screen_snapshot_tx_atomicity_test.py
           tests/screen_snapshot_usage_contract_test.py
           tests/screen_snapshot_windows_scripts_contract_test.py
+
+  snapshot-build:
+    name: test-only screen snapshot profile
+    needs: classify
+    if: needs.classify.outputs.snapshot_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Verify immutable ESP-IDF build image contract
         run: python3 -m unittest tests/esp_idf_image_pin_contract_test.py
       - name: Build diagnostics-ON profile with ESP-IDF 5.5.5
