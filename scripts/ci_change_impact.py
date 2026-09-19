@@ -173,8 +173,14 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
             result["firmware"] = True
             continue
 
+        if path == "tools/diagnostics/screen_snapshot.py":
+            continue
+
         if path.startswith("tests/"):
             if path.endswith((".cpp", ".cc", ".cxx")):
+                result["firmware"] = True
+                continue
+            if snapshot_build:
                 result["firmware"] = True
                 continue
             if snapshot_contract:
