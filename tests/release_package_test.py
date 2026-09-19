@@ -53,6 +53,69 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertEqual(profile["post_update_state"], "locked")
         self.assertTrue(profile["production_release_allowed"])
 
+    def test_product_version_sources_are_exactly_1_0_0(self) -> None:
+        result = validate_release.validate_release(require_production=True)
+        self.assertEqual(result["project_version"], "1.0.0")
+        self.assertEqual(result["metadata"]["firmware_version"], "1.0.0")
+        self.assertEqual(result["profile"]["firmware_version"], "1.0.0")
+
+    def test_release_version_consistency_rejects_each_source_divergence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            cmake_path = root / "CMakeLists.txt"
+            cmake_path.write_text(
+                validate_release.DEFAULT_PROJECT_CMAKE.read_text(encoding="utf-8").replace(
+                    "VERSION 1.0.0",
+                    "VERSION 9.9.9",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "CMake project version does not match firmware metadata",
+            ):
+                validate_release.validate_release(project_cmake_path=cmake_path)
+
+            metadata_path = root / "metadata.hpp"
+            metadata_path.write_text(
+                validate_release.DEFAULT_METADATA.read_text(encoding="utf-8").replace(
+                    'kFirmwareVersion[] = "1.0.0"',
+                    'kFirmwareVersion[] = "9.9.9"',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "firmware_version does not match firmware metadata",
+            ):
+                validate_release.validate_release(metadata_path=metadata_path)
+
+            profile = validate_release.load_profile()
+            profile["firmware_version"] = "9.9.9"
+            profile_path = root / "profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "firmware_version does not match firmware metadata",
+            ):
+                validate_release.validate_release(profile_path=profile_path)
+
+    def test_cmake_product_version_parser_rejects_missing_or_malformed_version(self) -> None:
+        invalid_sources = (
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(other VERSION 1.0.0)\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, source in enumerate(invalid_sources):
+                with self.subTest(source=source):
+                    cmake_path = root / f"CMakeLists-{index}.txt"
+                    cmake_path.write_text(source, encoding="utf-8")
+                    with self.assertRaises(validate_release.ReleaseValidationError):
+                        validate_release.parse_cmake_project_version(cmake_path)
+
     def test_production_validation_fails_closed_when_eligibility_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = validate_release.load_profile()
@@ -125,6 +188,10 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertIn("update-manifest-abcdef123456.json", names)
             self.assertIn("firmware-target.json", names)
             self.assertIn("SHA256SUMS", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-bootloader.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-partition-table.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-ota0.bin", names)
             self.assertFalse(any(name.endswith("-m5burner.zip") for name in names))
 
             factory = json.loads((root / "out" / "factory-manifest.json").read_text())
@@ -140,6 +207,9 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(factory["name"], "M5Authenticator")
             self.assertEqual(update["name"], "M5Authenticator")
             self.assertEqual(factory["version"], update["version"])
+            self.assertEqual(factory["version"], "1.0.0")
+            self.assertEqual(update["version"], "1.0.0")
+            self.assertEqual(target["version"], "1.0.0")
             self.assertEqual(factory["build_commit"], "abcdef123456")
             self.assertEqual(update["build_commit"], "abcdef123456")
             self.assertFalse(factory["exact_release"])
@@ -171,6 +241,7 @@ class ReleasePackagingTest(unittest.TestCase):
 
             metadata = json.loads((root / "out" / "release-metadata.json").read_text())
             self.assertEqual(metadata["format"], 2)
+            self.assertEqual(metadata["firmware_version"], "1.0.0")
             self.assertEqual(metadata["protocol_version"], 2)
             self.assertEqual(metadata["storage_schema_version"], 2)
             self.assertEqual(metadata["vault_format_version"], 1)
