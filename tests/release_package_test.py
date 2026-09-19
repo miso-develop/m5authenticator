@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -58,6 +59,50 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertEqual(result["project_version"], "1.0.0")
         self.assertEqual(result["metadata"]["firmware_version"], "1.0.0")
         self.assertEqual(result["profile"]["firmware_version"], "1.0.0")
+
+    def test_remaining_0_1_0_literals_are_only_noncanonical_metadata_or_smoke_fixtures(self) -> None:
+        allowed = {
+            "web/package.json": "private npm package metadata",
+            "web/package-lock.json": "private npm package-lock metadata",
+            "web/vite.config.ts": "test-only production-bundle smoke fixture",
+        }
+        completed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        occurrences: dict[str, list[str]] = {}
+        unexpected: list[str] = []
+        for raw_path in completed.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            relative = raw_path.decode("utf-8")
+            path = REPO_ROOT / relative
+            try:
+                source = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for line_number, line in enumerate(source.splitlines(), start=1):
+                if "0.1.0" not in line:
+                    continue
+                occurrences.setdefault(relative, []).append(f"{line_number}: {line.strip()}")
+                if relative not in allowed:
+                    unexpected.append(f"{relative}:{line_number}: {line.strip()}")
+
+        self.assertFalse(
+            unexpected,
+            "unexpected current 0.1.0 literal(s) outside classified noncanonical sources:\n"
+            + "\n".join(unexpected),
+        )
+        self.assertEqual(set(occurrences), set(allowed))
+        self.assertEqual(occurrences["web/package.json"], ['4: "version": "0.1.0",'])
+        self.assertEqual(
+            occurrences["web/package-lock.json"],
+            ['3: "version": "0.1.0",', '9: "version": "0.1.0",'],
+        )
+        self.assertEqual(len(occurrences["web/vite.config.ts"]), 5)
+        self.assertTrue(all("SMOKE_BUILD_COMMIT" in line or 'version: "0.1.0"' in line for line in occurrences["web/vite.config.ts"]))
 
     def test_release_version_consistency_rejects_each_source_divergence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
