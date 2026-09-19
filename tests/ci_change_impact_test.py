@@ -202,6 +202,9 @@ class ChangeImpactWorkflowContractTests(unittest.TestCase):
         self.assertIn("retention-days: 1", text)
         self.assertIn("actions/artifacts/$PAGES_ARTIFACT_ID", text)
         self.assertIn("GITHUB_STEP_SUMMARY", text)
+        self.assertIn("python scripts/ci_pages_summary.py candidate-authorization", text)
+        self.assertIn("python scripts/ci_pages_summary.py candidate-build-identity", text)
+        self.assertNotRegex(text, r'echo\s+"[^"\n]*`')
 
     def test_release_authorized_artifact_boundary_is_unchanged(self) -> None:
         text = self.RELEASE.read_text(encoding="utf-8")
