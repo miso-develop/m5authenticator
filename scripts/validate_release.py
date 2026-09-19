@@ -13,6 +13,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE = REPO_ROOT / "firmware" / "release-profile.json"
 DEFAULT_METADATA = REPO_ROOT / "firmware" / "components" / "m5auth_core" / "include" / "m5auth" / "core" / "metadata.hpp"
+DEFAULT_PROJECT_CMAKE = REPO_ROOT / "firmware" / "CMakeLists.txt"
 DEFAULT_PARTITIONS = REPO_ROOT / "firmware" / "partitions.csv"
 DEFAULT_BOOTSTRAP = REPO_ROOT / "firmware" / "main" / "app_main.cpp"
 DEFAULT_SDKCONFIG = REPO_ROOT / "firmware" / "sdkconfig.defaults"
@@ -73,6 +74,23 @@ def parse_metadata(path: Path = DEFAULT_METADATA) -> dict[str, Any]:
         "storage_schema_version": int(storage.group(1)),
         "vault_format_version": int(vault.group(1)),
     }
+
+
+def parse_cmake_project_version(path: Path = DEFAULT_PROJECT_CMAKE) -> str:
+    source = _read_text(path, "firmware project CMake")
+    project = re.search(
+        r"project\s*\(\s*m5authenticator\b(?P<body>[^)]*)\)",
+        source,
+        re.IGNORECASE | re.DOTALL,
+    )
+    _require(project is not None, "m5authenticator CMake project declaration not found")
+    versions = re.findall(
+        r"\bVERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\b",
+        project.group("body"),
+        re.IGNORECASE,
+    )
+    _require(len(versions) == 1, "m5authenticator CMake project VERSION must be exactly X.Y.Z")
+    return versions[0]
 
 
 def parse_partitions(path: Path = DEFAULT_PARTITIONS) -> dict[str, dict[str, int | str]]:
@@ -262,9 +280,11 @@ def validate_release(
     sdkconfig_path: Path = DEFAULT_SDKCONFIG,
     transport_header_path: Path = DEFAULT_TRANSPORT_HEADER,
     transport_cpp_path: Path = DEFAULT_TRANSPORT_CPP,
+    project_cmake_path: Path = DEFAULT_PROJECT_CMAKE,
 ) -> dict[str, Any]:
     profile = load_profile(profile_path)
     metadata = parse_metadata(metadata_path)
+    project_version = parse_cmake_project_version(project_cmake_path)
     partitions = parse_partitions(partitions_path)
 
     _require(profile.get("format") == 2, "unsupported release profile format")
@@ -274,6 +294,15 @@ def validate_release(
 
     for key in ("firmware_version", "protocol_version", "storage_schema_version", "vault_format_version"):
         _require(profile.get(key) == metadata[key], f"{key} does not match firmware metadata")
+
+    _require(
+        project_version == metadata["firmware_version"],
+        "CMake project version does not match firmware metadata",
+    )
+    _require(
+        project_version == profile.get("firmware_version"),
+        "CMake project version does not match release profile",
+    )
 
     _require(profile.get("protocol_version") == 2, "V1 production contract requires Protocol 2")
     _require(profile.get("storage_schema_version") == 2, "V1 production contract requires Storage Schema 2")
@@ -334,6 +363,7 @@ def validate_release(
     return {
         "profile": profile,
         "metadata": metadata,
+        "project_version": project_version,
         "partitions": partitions,
     }
 
@@ -342,17 +372,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--metadata", type=Path, default=DEFAULT_METADATA)
+    parser.add_argument("--project-cmake", type=Path, default=DEFAULT_PROJECT_CMAKE)
     parser.add_argument("--partitions", type=Path, default=DEFAULT_PARTITIONS)
     parser.add_argument("--bootstrap", type=Path, default=DEFAULT_BOOTSTRAP)
     parser.add_argument("--require-production", action="store_true")
     args = parser.parse_args()
     try:
         result = validate_release(
-            args.profile,
-            args.metadata,
-            args.partitions,
-            args.require_production,
-            args.bootstrap,
+            profile_path=args.profile,
+            metadata_path=args.metadata,
+            partitions_path=args.partitions,
+            require_production=args.require_production,
+            bootstrap_path=args.bootstrap,
+            project_cmake_path=args.project_cmake,
         )
     except ReleaseValidationError as exc:
         print(f"release validation failed: {exc}")
