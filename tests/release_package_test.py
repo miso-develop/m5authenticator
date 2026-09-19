@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,217 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertIs(profile["project_specific_efuse_required"], False)
         self.assertEqual(profile["post_update_state"], "locked")
         self.assertTrue(profile["production_release_allowed"])
+
+    def test_product_version_sources_are_exactly_1_0_0(self) -> None:
+        result = validate_release.validate_release(require_production=True)
+        self.assertEqual(result["project_version"], "1.0.0")
+        self.assertEqual(result["metadata"]["firmware_version"], "1.0.0")
+        self.assertEqual(result["profile"]["firmware_version"], "1.0.0")
+
+    def test_remaining_0_1_0_literals_are_only_classified_noncanonical_values(self) -> None:
+        legacy_version = "0." + "1.0"
+        private_npm_metadata = {
+            "web/package.json",
+            "web/package-lock.json",
+        }
+        historical_compatibility_references = {
+            "firmware/components/m5auth_vault/include/m5auth/vault.hpp",
+            "tests/vault_interop_test.cpp",
+        }
+
+        completed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        classified: dict[str, list[str]] = {
+            "private npm package metadata": [],
+            "test/smoke fixture": [],
+            "historical compatibility reference": [],
+        }
+        unexpected: list[str] = []
+
+        for raw_path in completed.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            relative = raw_path.decode("utf-8")
+            path = REPO_ROOT / relative
+            try:
+                source = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+
+            for line_number, line in enumerate(source.splitlines(), start=1):
+                if legacy_version not in line:
+                    continue
+                evidence = f"{relative}:{line_number}: {line.strip()}"
+
+                if relative in private_npm_metadata:
+                    classified["private npm package metadata"].append(evidence)
+                    continue
+
+                if relative in historical_compatibility_references:
+                    self.assertIn("v" + legacy_version, line)
+                    self.assertTrue(line.lstrip().startswith("//"))
+                    classified["historical compatibility reference"].append(evidence)
+                    continue
+
+                is_web_unit_fixture = relative.startswith("web/src/") and relative.endswith(".test.ts")
+                is_browser_smoke_fixture = relative.startswith("web/tests/browser/") and relative.endswith(".ts")
+                if relative == "web/vite.config.ts" or is_web_unit_fixture or is_browser_smoke_fixture:
+                    classified["test/smoke fixture"].append(evidence)
+                    continue
+
+                unexpected.append(evidence)
+
+        self.assertFalse(
+            unexpected,
+            "unexpected current legacy version literal outside classified noncanonical sources:\n"
+            + "\n".join(unexpected),
+        )
+        self.assertTrue(classified["private npm package metadata"])
+        self.assertTrue(classified["test/smoke fixture"])
+        self.assertTrue(classified["historical compatibility reference"])
+
+        canonical_sources = {
+            "firmware/CMakeLists.txt",
+            "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp",
+            "firmware/release-profile.json",
+        }
+        all_classified = "\n".join(item for values in classified.values() for item in values)
+        for canonical in canonical_sources:
+            self.assertNotIn(canonical + ":", all_classified)
+
+    def test_release_version_consistency_rejects_each_source_divergence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            cmake_path = root / "CMakeLists.txt"
+            cmake_path.write_text(
+                validate_release.DEFAULT_PROJECT_CMAKE.read_text(encoding="utf-8").replace(
+                    "VERSION 1.0.0",
+                    "VERSION 9.9.9",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "CMake project version does not match firmware metadata",
+            ):
+                validate_release.validate_release(project_cmake_path=cmake_path)
+
+            metadata_path = root / "metadata.hpp"
+            metadata_path.write_text(
+                validate_release.DEFAULT_METADATA.read_text(encoding="utf-8").replace(
+                    'kFirmwareVersion[] = "1.0.0"',
+                    'kFirmwareVersion[] = "9.9.9"',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "firmware_version does not match firmware metadata",
+            ):
+                validate_release.validate_release(metadata_path=metadata_path)
+
+            profile = validate_release.load_profile()
+            profile["firmware_version"] = "9.9.9"
+            profile_path = root / "profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            with self.assertRaisesRegex(
+                validate_release.ReleaseValidationError,
+                "firmware_version does not match firmware metadata",
+            ):
+                validate_release.validate_release(profile_path=profile_path)
+
+    def test_cmake_product_version_parser_rejects_missing_or_malformed_version(self) -> None:
+        invalid_sources = (
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0.0.1)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0.0-beta)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(other VERSION 1.0.0)\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, source in enumerate(invalid_sources):
+                with self.subTest(source=source):
+                    cmake_path = root / f"CMakeLists-{index}.txt"
+                    cmake_path.write_text(source, encoding="utf-8")
+                    with self.assertRaises(validate_release.ReleaseValidationError):
+                        validate_release.parse_cmake_project_version(cmake_path)
+
+    def test_non_x_y_z_cmake_version_fails_both_validation_paths(self) -> None:
+        invalid_versions = ("1.0.0.1", "1.0.0-beta")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for version in invalid_versions:
+                cmake_path = root / ("CMakeLists-" + version.replace(".", "_") + ".txt")
+                cmake_path.write_text(
+                    f"cmake_minimum_required(VERSION 3.16)\n"
+                    f"project(m5authenticator VERSION {version})\n",
+                    encoding="utf-8",
+                )
+                for require_production in (False, True):
+                    with self.subTest(version=version, require_production=require_production):
+                        with self.assertRaisesRegex(
+                            validate_release.ReleaseValidationError,
+                            "VERSION must be exactly X.Y.Z",
+                        ):
+                            validate_release.validate_release(
+                                project_cmake_path=cmake_path,
+                                require_production=require_production,
+                            )
+
+    def test_inactive_cmake_project_examples_cannot_mask_active_version(self) -> None:
+        cases = (
+            (
+                "# project(m5authenticator VERSION 1.0.0)\n"
+                "project(m5authenticator VERSION 1.0.0.1)\n",
+                "VERSION must be exactly X.Y.Z",
+            ),
+            (
+                "# project(m5authenticator VERSION 1.0.0)\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                'set(EXAMPLE "project(m5authenticator VERSION 1.0.0)")\n'
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                "#[[\n"
+                "project(m5authenticator VERSION 1.0.0)\n"
+                "]]\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                "set(EXAMPLE [[project(m5authenticator VERSION 1.0.0)]])\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, (source, expected_error) in enumerate(cases):
+                cmake_path = root / f"CMakeLists-mask-{index}.txt"
+                cmake_path.write_text(source, encoding="utf-8")
+                for require_production in (False, True):
+                    with self.subTest(
+                        source=source,
+                        require_production=require_production,
+                    ):
+                        with self.assertRaisesRegex(
+                            validate_release.ReleaseValidationError,
+                            expected_error,
+                        ):
+                            validate_release.validate_release(
+                                project_cmake_path=cmake_path,
+                                require_production=require_production,
+                            )
 
     def test_production_validation_fails_closed_when_eligibility_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -125,6 +337,10 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertIn("update-manifest-abcdef123456.json", names)
             self.assertIn("firmware-target.json", names)
             self.assertIn("SHA256SUMS", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-bootloader.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-partition-table.bin", names)
+            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-ota0.bin", names)
             self.assertFalse(any(name.endswith("-m5burner.zip") for name in names))
 
             factory = json.loads((root / "out" / "factory-manifest.json").read_text())
@@ -140,6 +356,9 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(factory["name"], "M5Authenticator")
             self.assertEqual(update["name"], "M5Authenticator")
             self.assertEqual(factory["version"], update["version"])
+            self.assertEqual(factory["version"], "1.0.0")
+            self.assertEqual(update["version"], "1.0.0")
+            self.assertEqual(target["version"], "1.0.0")
             self.assertEqual(factory["build_commit"], "abcdef123456")
             self.assertEqual(update["build_commit"], "abcdef123456")
             self.assertFalse(factory["exact_release"])
@@ -171,6 +390,7 @@ class ReleasePackagingTest(unittest.TestCase):
 
             metadata = json.loads((root / "out" / "release-metadata.json").read_text())
             self.assertEqual(metadata["format"], 2)
+            self.assertEqual(metadata["firmware_version"], "1.0.0")
             self.assertEqual(metadata["protocol_version"], 2)
             self.assertEqual(metadata["storage_schema_version"], 2)
             self.assertEqual(metadata["vault_format_version"], 1)

@@ -7,4 +7,4 @@ option(
 )
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(m5authenticator VERSION 0.1.0)
+project(m5authenticator VERSION 1.0.0)
