@@ -216,6 +216,55 @@ class ReleasePackagingTest(unittest.TestCase):
                                 require_production=require_production,
                             )
 
+    def test_inactive_cmake_project_examples_cannot_mask_active_version(self) -> None:
+        cases = (
+            (
+                "# project(m5authenticator VERSION 1.0.0)\n"
+                "project(m5authenticator VERSION 1.0.0.1)\n",
+                "VERSION must be exactly X.Y.Z",
+            ),
+            (
+                "# project(m5authenticator VERSION 1.0.0)\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                'set(EXAMPLE "project(m5authenticator VERSION 1.0.0)")\n'
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                "#[[\n"
+                "project(m5authenticator VERSION 1.0.0)\n"
+                "]]\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+            (
+                "set(EXAMPLE [[project(m5authenticator VERSION 1.0.0)]])\n"
+                "project(m5authenticator VERSION 9.9.9)\n",
+                "CMake project version does not match firmware metadata",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, (source, expected_error) in enumerate(cases):
+                cmake_path = root / f"CMakeLists-mask-{index}.txt"
+                cmake_path.write_text(source, encoding="utf-8")
+                for require_production in (False, True):
+                    with self.subTest(
+                        source=source,
+                        require_production=require_production,
+                    ):
+                        with self.assertRaisesRegex(
+                            validate_release.ReleaseValidationError,
+                            expected_error,
+                        ):
+                            validate_release.validate_release(
+                                project_cmake_path=cmake_path,
+                                require_production=require_production,
+                            )
+
     def test_production_validation_fails_closed_when_eligibility_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = validate_release.load_profile()
