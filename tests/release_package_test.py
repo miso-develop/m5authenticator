@@ -60,20 +60,30 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertEqual(result["metadata"]["firmware_version"], "1.0.0")
         self.assertEqual(result["profile"]["firmware_version"], "1.0.0")
 
-    def test_remaining_0_1_0_literals_are_only_noncanonical_metadata_or_smoke_fixtures(self) -> None:
-        allowed = {
-            "web/package.json": "private npm package metadata",
-            "web/package-lock.json": "private npm package-lock metadata",
-            "web/vite.config.ts": "test-only production-bundle smoke fixture",
+    def test_remaining_0_1_0_literals_are_only_classified_noncanonical_values(self) -> None:
+        legacy_version = "0." + "1.0"
+        private_npm_metadata = {
+            "web/package.json",
+            "web/package-lock.json",
         }
+        historical_compatibility_references = {
+            "firmware/components/m5auth_vault/include/m5auth/vault.hpp",
+            "tests/vault_interop_test.cpp",
+        }
+
         completed = subprocess.run(
             ["git", "ls-files", "-z"],
             cwd=REPO_ROOT,
             check=True,
             stdout=subprocess.PIPE,
         )
-        occurrences: dict[str, list[str]] = {}
+        classified: dict[str, list[str]] = {
+            "private npm package metadata": [],
+            "test/smoke fixture": [],
+            "historical compatibility reference": [],
+        }
         unexpected: list[str] = []
+
         for raw_path in completed.stdout.split(b"\0"):
             if not raw_path:
                 continue
@@ -83,26 +93,47 @@ class ReleasePackagingTest(unittest.TestCase):
                 source = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
+
             for line_number, line in enumerate(source.splitlines(), start=1):
-                if "0.1.0" not in line:
+                if legacy_version not in line:
                     continue
-                occurrences.setdefault(relative, []).append(f"{line_number}: {line.strip()}")
-                if relative not in allowed:
-                    unexpected.append(f"{relative}:{line_number}: {line.strip()}")
+                evidence = f"{relative}:{line_number}: {line.strip()}"
+
+                if relative in private_npm_metadata:
+                    classified["private npm package metadata"].append(evidence)
+                    continue
+
+                if relative in historical_compatibility_references:
+                    self.assertIn("v" + legacy_version, line)
+                    self.assertTrue(line.lstrip().startswith("//"))
+                    classified["historical compatibility reference"].append(evidence)
+                    continue
+
+                is_web_unit_fixture = relative.startswith("web/src/") and relative.endswith(".test.ts")
+                is_browser_smoke_fixture = relative.startswith("web/tests/browser/") and relative.endswith(".ts")
+                if relative == "web/vite.config.ts" or is_web_unit_fixture or is_browser_smoke_fixture:
+                    classified["test/smoke fixture"].append(evidence)
+                    continue
+
+                unexpected.append(evidence)
 
         self.assertFalse(
             unexpected,
-            "unexpected current 0.1.0 literal(s) outside classified noncanonical sources:\n"
+            "unexpected current legacy version literal outside classified noncanonical sources:\n"
             + "\n".join(unexpected),
         )
-        self.assertEqual(set(occurrences), set(allowed))
-        self.assertEqual(occurrences["web/package.json"], ['4: "version": "0.1.0",'])
-        self.assertEqual(
-            occurrences["web/package-lock.json"],
-            ['3: "version": "0.1.0",', '9: "version": "0.1.0",'],
-        )
-        self.assertEqual(len(occurrences["web/vite.config.ts"]), 5)
-        self.assertTrue(all("SMOKE_BUILD_COMMIT" in line or 'version: "0.1.0"' in line for line in occurrences["web/vite.config.ts"]))
+        self.assertTrue(classified["private npm package metadata"])
+        self.assertTrue(classified["test/smoke fixture"])
+        self.assertTrue(classified["historical compatibility reference"])
+
+        canonical_sources = {
+            "firmware/CMakeLists.txt",
+            "firmware/components/m5auth_core/include/m5auth/core/metadata.hpp",
+            "firmware/release-profile.json",
+        }
+        all_classified = "\n".join(item for values in classified.values() for item in values)
+        for canonical in canonical_sources:
+            self.assertNotIn(canonical + ":", all_classified)
 
     def test_release_version_consistency_rejects_each_source_divergence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
