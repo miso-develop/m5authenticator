@@ -84,13 +84,20 @@ def parse_cmake_project_version(path: Path = DEFAULT_PROJECT_CMAKE) -> str:
         re.IGNORECASE | re.DOTALL,
     )
     _require(project is not None, "m5authenticator CMake project declaration not found")
-    versions = re.findall(
-        r"\bVERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\b",
+
+    version_tokens = re.findall(
+        r"\bVERSION\s+([^\s)]+)",
         project.group("body"),
         re.IGNORECASE,
     )
-    _require(len(versions) == 1, "m5authenticator CMake project VERSION must be exactly X.Y.Z")
-    return versions[0]
+    _require(len(version_tokens) == 1, "m5authenticator CMake project VERSION must be exactly X.Y.Z")
+
+    version = version_tokens[0]
+    _require(
+        re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is not None,
+        "m5authenticator CMake project VERSION must be exactly X.Y.Z",
+    )
+    return version
 
 
 def parse_partitions(path: Path = DEFAULT_PARTITIONS) -> dict[str, dict[str, int | str]]:
