@@ -69,6 +69,7 @@ SNAPSHOT_CONTRACT_PREFIXES = (
     "tests/screen_snapshot_",
 )
 SNAPSHOT_BUILD_EXACT = {
+    "scripts/ci_change_impact.py",
     "firmware/CMakeLists.txt",
     "firmware/sdkconfig.defaults",
     "scripts/esp_idf_build_image.py",
