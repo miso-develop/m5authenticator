@@ -76,14 +76,92 @@ def parse_metadata(path: Path = DEFAULT_METADATA) -> dict[str, Any]:
     }
 
 
+def _cmake_bracket_delimiter(source: str, start: int) -> tuple[str, int] | None:
+    if start >= len(source) or source[start] != "[":
+        return None
+    index = start + 1
+    while index < len(source) and source[index] == "=":
+        index += 1
+    if index >= len(source) or source[index] != "[":
+        return None
+    equals = source[start + 1 : index]
+    return "]" + equals + "]", index + 1
+
+
+def _sanitize_cmake_inactive_text(source: str) -> str:
+    sanitized: list[str] = []
+    index = 0
+
+    def append_inactive(text: str) -> None:
+        sanitized.extend("\n" if character == "\n" else " " for character in text)
+
+    while index < len(source):
+        character = source[index]
+
+        if character == "#":
+            bracket = _cmake_bracket_delimiter(source, index + 1)
+            if bracket is not None:
+                closing, content_start = bracket
+                close_index = source.find(closing, content_start)
+                _require(close_index >= 0, "unterminated CMake bracket comment")
+                end = close_index + len(closing)
+                append_inactive(source[index:end])
+                index = end
+                continue
+
+            line_end = source.find("\n", index)
+            if line_end < 0:
+                append_inactive(source[index:])
+                break
+            append_inactive(source[index:line_end])
+            index = line_end
+            continue
+
+        if character == '"':
+            end = index + 1
+            escaped = False
+            while end < len(source):
+                current = source[end]
+                if current == '"' and not escaped:
+                    end += 1
+                    break
+                if current == "\\" and not escaped:
+                    escaped = True
+                else:
+                    escaped = False
+                end += 1
+            _require(end <= len(source) and source[end - 1] == '"', "unterminated CMake quoted string")
+            append_inactive(source[index:end])
+            index = end
+            continue
+
+        bracket = _cmake_bracket_delimiter(source, index)
+        if bracket is not None:
+            closing, content_start = bracket
+            close_index = source.find(closing, content_start)
+            _require(close_index >= 0, "unterminated CMake bracket argument")
+            end = close_index + len(closing)
+            append_inactive(source[index:end])
+            index = end
+            continue
+
+        sanitized.append(character)
+        index += 1
+
+    return "".join(sanitized)
+
+
 def parse_cmake_project_version(path: Path = DEFAULT_PROJECT_CMAKE) -> str:
-    source = _read_text(path, "firmware project CMake")
-    project = re.search(
-        r"project\s*\(\s*m5authenticator\b(?P<body>[^)]*)\)",
-        source,
-        re.IGNORECASE | re.DOTALL,
+    source = _sanitize_cmake_inactive_text(_read_text(path, "firmware project CMake"))
+    projects = list(
+        re.finditer(
+            r"^[ \t]*project\s*\(\s*m5authenticator\b(?P<body>[^)]*)\)[ \t]*$",
+            source,
+            re.IGNORECASE | re.MULTILINE,
+        )
     )
-    _require(project is not None, "m5authenticator CMake project declaration not found")
+    _require(len(projects) == 1, "exactly one active m5authenticator CMake project declaration is required")
+    project = projects[0]
 
     version_tokens = re.findall(
         r"\bVERSION\s+([^\s)]+)",
