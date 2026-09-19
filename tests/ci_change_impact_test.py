@@ -82,6 +82,14 @@ class ChangeImpactClassificationTests(unittest.TestCase):
                 self.assertTrue(result["snapshot_contract"])
                 self.assertTrue(result["snapshot_build"])
 
+    def test_classifier_change_exercises_snapshot_build_semantics(self) -> None:
+        result = ci_change_impact.classify_paths(["scripts/ci_change_impact.py"])
+        self.assertTrue(result["snapshot_contract"])
+        self.assertTrue(result["snapshot_build"])
+        self.assertTrue(result["web"])
+        self.assertTrue(result["firmware"])
+        self.assertTrue(result["security_release_shared"])
+
     def test_unknown_and_empty_inputs_fail_safe(self) -> None:
         unknown = ci_change_impact.classify_paths(["unknown/new-surface.xyz"])
         self.assertTrue(unknown["web"])
@@ -205,6 +213,8 @@ class ChangeImpactWorkflowContractTests(unittest.TestCase):
 
     def test_snapshot_workflow_splits_contract_and_build_jobs(self) -> None:
         text = self.SNAPSHOT.read_text(encoding="utf-8")
+        header = text[: text.index("permissions:")]
+        self.assertIn('      - "scripts/ci_change_impact.py"', header)
         self.assertIn("snapshot-contract:", text)
         self.assertIn("snapshot-build:", text)
         self.assertIn("needs.classify.outputs.snapshot_contract == 'true'", text)
