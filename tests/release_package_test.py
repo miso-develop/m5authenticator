@@ -181,6 +181,8 @@ class ReleasePackagingTest(unittest.TestCase):
         invalid_sources = (
             "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator)\n",
             "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0.0.1)\n",
+            "cmake_minimum_required(VERSION 3.16)\nproject(m5authenticator VERSION 1.0.0-beta)\n",
             "cmake_minimum_required(VERSION 3.16)\nproject(other VERSION 1.0.0)\n",
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -191,6 +193,28 @@ class ReleasePackagingTest(unittest.TestCase):
                     cmake_path.write_text(source, encoding="utf-8")
                     with self.assertRaises(validate_release.ReleaseValidationError):
                         validate_release.parse_cmake_project_version(cmake_path)
+
+    def test_non_x_y_z_cmake_version_fails_both_validation_paths(self) -> None:
+        invalid_versions = ("1.0.0.1", "1.0.0-beta")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for version in invalid_versions:
+                cmake_path = root / ("CMakeLists-" + version.replace(".", "_") + ".txt")
+                cmake_path.write_text(
+                    f"cmake_minimum_required(VERSION 3.16)\n"
+                    f"project(m5authenticator VERSION {version})\n",
+                    encoding="utf-8",
+                )
+                for require_production in (False, True):
+                    with self.subTest(version=version, require_production=require_production):
+                        with self.assertRaisesRegex(
+                            validate_release.ReleaseValidationError,
+                            "VERSION must be exactly X.Y.Z",
+                        ):
+                            validate_release.validate_release(
+                                project_cmake_path=cmake_path,
+                                require_production=require_production,
+                            )
 
     def test_production_validation_fails_closed_when_eligibility_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
