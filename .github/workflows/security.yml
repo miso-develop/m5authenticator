@@ -26,7 +26,10 @@ jobs:
       - name: Verify CI supply-chain privilege and workspace boundaries
         run: python3 -m unittest tests/ci_supply_chain_boundary_test.py
       - name: Verify CI change-impact routing and Pages cadence
-        run: python3 -m unittest tests/ci_change_impact_test.py
+        run: >-
+          python3 -m unittest
+          tests/ci_change_impact_test.py
+          tests/ci_pages_summary_test.py
       - name: Verify protected-main release authorization
         run: python3 -m unittest tests/release_authorization_test.py
       - name: Verify signed release attestation provenance contract
