@@ -69,6 +69,8 @@ describe("Web UI localization", () => {
       "Local canonical Vault manager",
       "Canonical accounts",
       "Unprovisioned canonical Protocol 2 Device connected.",
+      "No canonical Vault",
+      "Create the Protocol 2 canonical Vault from the Import accounts section after connecting an unprovisioned Device",
     ]) {
       expect(hasJapaneseTranslation(forbidden)).toBe(false);
     }
