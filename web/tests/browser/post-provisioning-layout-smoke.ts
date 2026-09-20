@@ -639,6 +639,8 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
     const provisioningText = provisioningShell.textContent ?? "";
     assert(!provisioningText.includes("Local canonical Vault manager"), "Provisioning must not restore the old internal primary heading");
     assert(!provisioningText.includes("Canonical accounts"), "Provisioning must not restore the old internal account heading");
+    assert(!provisioningText.includes("No canonical Vault"), "Provisioning must not restore the old internal empty-Vault label");
+    assert(!provisioningText.includes("Protocol 2 canonical Vault"), "Provisioning must not expose Protocol 2 canonical Vault as first-use guidance");
 
     const helpDoc = requiredFrameDocument(frames[2]!);
     const helpLanguage = helpDoc.documentElement.lang;
