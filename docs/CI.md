@@ -107,6 +107,38 @@ Tag and manual candidate runs preserve the production build/deployment path:
 
 Because the manual candidate overwrites the public Pages site, it is used only when an approved release gate explicitly calls for hosted production validation.
 
+## Web-only Pages with immutable released firmware
+
+`.github/workflows/pages-web-released-firmware.yml` is a separate manual-only production path for post-release Web/static publication. It does not change the existing SemVer-tag Pages path or the pre-release candidate path in `pages.yml`.
+
+The operator must provide:
+
+- an exact `web_sha` that still equals freshly fetched protected `main`;
+- an existing canonical SemVer `firmware_release_tag`;
+- the explicit deployment acknowledgement.
+
+The unprivileged build/verify job fails closed unless current-main required checks pass using the same repository-owned semantics as Authorized Release. It derives firmware source identity from the selected tag, requires an immutable non-draft/non-prerelease GitHub Release, validates the active SemVer tag-immutability Ruleset, requires the release source to be an ancestor of the selected Web SHA, and requires current/release `firmware/release-profile.json` to match exactly except for `firmware_version`.
+
+Historical Release source is treated as data only. Current-main `scripts/ci_pages_released_firmware.py` reads exactly the Specification-approved fixed Git-blob allowlist from the peeled source SHA, requires ordinary non-executable `100644` blobs, materializes only those bytes into an isolated temporary validation-data directory outside the workspace, and applies current-main `validate_release` logic with explicit paths. No historical script/module/worktree is executed or added to `PATH`/`PYTHONPATH`. The temporary data tree is removed immediately after validation; later package/provenance stages consume only the bounded current-main-produced `released-firmware-source-validation.json` result.
+
+Firmware is never rebuilt in this mode. Every existing Release asset is downloaded and verified against:
+
+- GitHub Release API size and SHA-256 digest metadata;
+- exact `SHA256SUMS` coverage and bytes;
+- release metadata, firmware target, pinned manifests, and referenced binaries;
+- standard GitHub Artifact Attestation provenance;
+- the M5Authenticator custom signed release-provenance predicate.
+
+The custom predicate intentionally allows the truthful recovery case where firmware `source_commit` differs from the publisher `workflow_sha`; both identities remain independently verified.
+
+The Web build always uses the exact current-main SHA with `VITE_M5AUTH_WEB_EXACT_RELEASE=false`. Verified released firmware files remain unchanged and are copied into `web/dist/firmware/` only after the Vite build. The current-main canonical product `THIRD_PARTY_NOTICES.md` is independently verified and copied to the site root, so it is not falsely represented as an asset that existed in an older immutable Release.
+
+One Pages staging artifact is uploaded with one-day retention. Only the deploy job receives `pages: write`, `id-token: write`, and `actions: write`; it deploys the preassembled artifact and deletes it afterward by exact artifact ID. The build/verify job has read-only contents/checks/statuses/attestations access and no Release/tag mutation authority.
+
+This workflow shares the repository-wide `github-pages` concurrency group but uses `cancel-in-progress: false`, so a manually started Web-only deployment cannot cancel an in-progress release-stage deployment.
+
+Merging this workflow does **not** authorize its first public use. The first activation remains blocked until Issue #227's public third-party-notice remediation and final `V1_0_1_REMEDIATION` disposition are complete, followed by the exact-SHA/tag Human Gate recorded for Issue #229. If #227 concludes that v1.0.1 remediation is required, v1.0.0 is not an allowed firmware selection for that first activation.
+
 ## Screen snapshot diagnostics
 
 The Issue117 workflow separates lightweight contract validation from diagnostics firmware build work.
