@@ -22,6 +22,9 @@ RECOVERY_FAILED_RUN_ID = 35454271560
 RECOVERY_WORKFLOW_ID = 361302600
 RECOVERY_REPOSITORY = "miso-develop/m5authenticator"
 RECOVERY_WORKFLOW_PATH = ".github/workflows/release-authorized.yml"
+LEGACY_WORKFLOW_NAME = "Release"
+LEGACY_WORKFLOW_PATH = ".github/workflows/release.yml"
+LEGACY_WORKFLOW_DISABLED_STATE = "disabled_manually"
 RECOVERY_MANIFEST = {
     "format": 1,
     "recovery_id": RECOVERY_ID,
@@ -317,8 +320,13 @@ def require_tag_immutability(ruleset_payload: object) -> None:
     conditions = ruleset_payload.get("conditions")
     ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
     includes = ref_name.get("include") if isinstance(ref_name, dict) else None
+    excludes = ref_name.get("exclude") if isinstance(ref_name, dict) else None
     if not isinstance(includes, list) or "refs/tags/v*.*.*" not in includes:
         raise ValueError("SemVer tag immutability Ruleset does not cover release tags")
+    if excludes != []:
+        raise ValueError(
+            "SemVer tag immutability Ruleset must have no ref exclusions for recovery"
+        )
 
     rules = ruleset_payload.get("rules")
     if not isinstance(rules, list):
@@ -344,6 +352,22 @@ def require_release_absent(release_state: str) -> None:
 def require_legacy_release_tombstone(text: str) -> None:
     if text != EXPECTED_LEGACY_RELEASE_WORKFLOW:
         raise ValueError("legacy Release workflow is not the exact retired tombstone")
+
+
+def require_legacy_workflow_disabled(payload: object) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("legacy Release workflow metadata must be an object")
+    expected = {
+        "name": LEGACY_WORKFLOW_NAME,
+        "path": LEGACY_WORKFLOW_PATH,
+        "state": LEGACY_WORKFLOW_DISABLED_STATE,
+    }
+    for key, expected_value in expected.items():
+        if payload.get(key) != expected_value:
+            raise ValueError(f"legacy Release workflow metadata mismatch: {key}")
+    workflow_id = payload.get("id")
+    if not isinstance(workflow_id, int) or workflow_id <= 0:
+        raise ValueError("legacy Release workflow metadata has invalid id")
 
 
 def _run_git(
@@ -527,6 +551,7 @@ def authorize_dispatch(
     tag_immutability_ruleset_payload: object | None = None,
     release_state: str | None = None,
     legacy_workflow_text: str | None = None,
+    legacy_workflow_metadata_payload: object | None = None,
     repo_root: Path = Path("."),
 ) -> tuple[str, str, bool]:
     workflow = require_exact_main(workflow_sha, main_sha)
@@ -576,6 +601,7 @@ def authorize_dispatch(
     if legacy_workflow_text is None:
         raise ValueError("legacy Release tombstone evidence is missing")
     require_legacy_release_tombstone(legacy_workflow_text)
+    require_legacy_workflow_disabled(legacy_workflow_metadata_payload)
 
     require_recovery_ancestry(repo_root, source, main_sha)
     require_recovery_delta(repo_root, source, main_sha)
@@ -622,6 +648,7 @@ def main() -> int:
     parser.add_argument("--tag-immutability-ruleset", type=Path)
     parser.add_argument("--release-state", choices=("absent", "present"))
     parser.add_argument("--legacy-workflow", type=Path)
+    parser.add_argument("--legacy-workflow-metadata", type=Path)
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--github-output", type=Path, required=True)
     args = parser.parse_args()
@@ -638,6 +665,7 @@ def main() -> int:
         failed_jobs_payload = None
         tag_immutability_ruleset_payload = None
         legacy_workflow_text = None
+        legacy_workflow_metadata_payload = None
 
         if args.recovery_id:
             recovery_manifest_payload = _load_json(args.recovery_manifest, "recovery manifest")
@@ -652,6 +680,10 @@ def main() -> int:
             if args.legacy_workflow is None:
                 raise ValueError("legacy workflow path is required in recovery mode")
             legacy_workflow_text = args.legacy_workflow.read_text(encoding="utf-8")
+            legacy_workflow_metadata_payload = _load_json(
+                args.legacy_workflow_metadata,
+                "legacy workflow metadata",
+            )
 
         requested, source, recovery_mode = authorize_dispatch(
             args.workflow_sha,
@@ -671,6 +703,7 @@ def main() -> int:
             tag_immutability_ruleset_payload=tag_immutability_ruleset_payload,
             release_state=args.release_state,
             legacy_workflow_text=legacy_workflow_text,
+            legacy_workflow_metadata_payload=legacy_workflow_metadata_payload,
             repo_root=args.repo_root,
         )
         _write_github_output(args.github_output, requested, source, recovery_mode)
