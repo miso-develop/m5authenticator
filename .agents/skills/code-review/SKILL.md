@@ -17,7 +17,7 @@ Determine the exact diff, then read:
 - selected `[Task]` and Parent `[Spec]`
 - `.agent/PROJECT.md`
 - `SECURITY.md`
-- applicable `AGENTS.md` / `agent/` rules
+- applicable `AGENTS.md` / `.agent/` rules
 - relevant tests and current public behavior
 
 ## 2. Review behavior/spec compliance
