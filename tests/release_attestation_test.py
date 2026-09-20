@@ -15,7 +15,7 @@ import esp_idf_build_image
 import release_attestation
 
 
-SOURCE_SHA = "a" * 40
+SOURCE_SHA = "996378b07d8587c0d11e43362590e5d1062ad8c2
 WORKFLOW_SHA = "b" * 40
 
 
@@ -64,6 +64,7 @@ class ReleaseAttestationTest(unittest.TestCase):
                 "2",
             )
 
+            self.assertNotEqual(SOURCE_SHA, WORKFLOW_SHA)
             self.assertEqual(predicate["source_commit"], SOURCE_SHA)
             self.assertEqual(predicate["workflow"]["workflow_sha"], WORKFLOW_SHA)
             self.assertEqual(predicate["workflow"]["run_id"], 12345)

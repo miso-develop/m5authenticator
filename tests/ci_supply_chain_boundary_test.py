@@ -248,7 +248,9 @@ class CiSupplyChainBoundaryTest(unittest.TestCase):
         self.assertIn("contents: read", authorize)
         self.assertIn("checks: read", authorize)
         self.assertIn("statuses: read", authorize)
+        self.assertIn("actions: read", authorize)
         self.assertNotIn("contents: write", authorize)
+        self.assertNotIn("actions: write", authorize)
         self.assertIn("needs: authorize", build)
         self.assertIn("contents: read", build)
         self.assertNotIn("contents: write", build)
@@ -364,16 +366,60 @@ jobs:
         self.assertIn("/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100", authorize)
         self.assertIn("/commits/$GITHUB_SHA/status", authorize)
         self.assertIn("scripts/release_authorization.py", authorize)
-        self.assertIn('--source-sha "$GITHUB_SHA"', authorize)
+        self.assertIn('--workflow-sha "$GITHUB_SHA"', authorize)
         self.assertIn('--main-sha "$MAIN_SHA"', authorize)
         self.assertIn('--requested-tag "$REQUESTED_TAG"', authorize)
         self.assertIn('--firmware-version "$FIRMWARE_VERSION"', authorize)
         self.assertIn('--tag-sha "$TAG_SHA"', authorize)
         self.assertIn('--main-rules "$RUNNER_TEMP/main-rules.json"', authorize)
-        self.assertIn('--check-runs "$RUNNER_TEMP/check-runs.json"', authorize)
-        self.assertIn('--statuses "$RUNNER_TEMP/statuses.json"', authorize)
+        self.assertIn('--main-check-runs "$RUNNER_TEMP/main-check-runs.json"', authorize)
+        self.assertIn('--main-statuses "$RUNNER_TEMP/main-statuses.json"', authorize)
         self.assertIn("scripts/validate_release.py --require-production", authorize)
         self.assertNotIn("--verify-tag", authorize)
+
+    def test_authorized_release_recovery_is_incident_specific_and_has_no_caller_source_sha(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        authorize = job_block(text, "authorize")
+
+        self.assertIn("github.event.client_payload.recovery_id", authorize)
+        self.assertNotIn("github.event.client_payload.source_sha", authorize)
+        self.assertIn("v1.0.0-authorized-release-shell-repair", authorize)
+        self.assertIn("996378b07d8587c0d11e43362590e5d1062ad8c2", authorize)
+        self.assertIn("35454271560", authorize)
+        self.assertIn("/actions/runs/$APPROVED_FAILED_RUN_ID", authorize)
+        self.assertIn("/actions/runs/$APPROVED_FAILED_RUN_ID/jobs?per_page=100", authorize)
+        self.assertIn("/rulesets?includes_parents=true", authorize)
+        self.assertIn("/releases/tags/$REQUESTED_TAG", authorize)
+        self.assertIn("--recovery-manifest \".github/release-recovery.json\"", authorize)
+        self.assertIn("--source-check-runs", authorize)
+        self.assertIn("--source-statuses", authorize)
+        self.assertIn("--failed-run", authorize)
+        self.assertIn("--failed-run-jobs", authorize)
+        self.assertIn("--tag-immutability-ruleset", authorize)
+        self.assertIn('git worktree add --detach "$RECOVERY_SOURCE_ROOT" "$SOURCE_SHA"', authorize)
+        self.assertIn('python "$RECOVERY_SOURCE_ROOT/scripts/validate_release.py" --require-production', authorize)
+
+    def test_authorized_release_shell_continuations_are_exact_single_backslashes(self) -> None:
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        offenders = [
+            (number, line)
+            for number, line in enumerate(text.splitlines(), start=1)
+            if re.search(r"\\\\{2,}$", line)
+        ]
+        self.assertEqual(offenders, [])
+
+        for token in (
+            "git fetch --force --no-tags origin \\",
+            "python scripts/release_authorization.py \\",
+            "python scripts/ci_esp_idf_isolated_build.py \\",
+            "python scripts/ci_firmware_handoff.py create-build \\",
+            "python scripts/ci_firmware_handoff.py verify-build \\",
+            "python scripts/package_firmware.py \\",
+            "python scripts/release_attestation.py \\",
+            'gh release create "$REQUESTED_TAG" \\',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, text)
 
     def test_preexisting_tag_sequence_is_explicit_and_publisher_never_moves_tag(self) -> None:
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
