@@ -114,6 +114,11 @@ jobs:
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "/repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true" \
               > "$RUNNER_TEMP/rulesets.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/actions/workflows/release.yml" \
+              > "$RUNNER_TEMP/legacy-workflow-metadata.json"
 
             IMMUTABILITY_RULESET_ID="$(python - <<'PY'
           import json
@@ -161,6 +166,7 @@ jobs:
               --tag-immutability-ruleset "$RUNNER_TEMP/tag-immutability-ruleset.json"
               --release-state "$RELEASE_STATE"
               --legacy-workflow ".github/workflows/release.yml"
+              --legacy-workflow-metadata "$RUNNER_TEMP/legacy-workflow-metadata.json"
             )
           fi
 
