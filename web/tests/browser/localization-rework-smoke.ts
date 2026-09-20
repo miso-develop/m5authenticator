@@ -129,10 +129,10 @@ export async function runLocalizationReworkSmoke(): Promise<void> {
   apply.click();
   expectCondition(!overlay.hidden, "Presence overlay did not open for initial provisioning");
 
-  deviceNotice.textContent = "Updating canonical Vault…";
+  deviceNotice.textContent = "Updating accounts…";
   await flushDom();
   expectCondition(
-    deviceNotice.textContent === "Canonical Vaultを更新しています…",
+    deviceNotice.textContent === "アカウントを更新しています…",
     "Provisioning progress did not render in Japanese",
   );
   expectCondition(!overlay.hidden, "Localized progress dismissed the presence overlay prematurely");
@@ -151,17 +151,17 @@ export async function runLocalizationReworkSmoke(): Promise<void> {
   importStatus.textContent = "1 account ready for review.";
   await flushDom();
   apply.click();
-  deviceNotice.textContent = "Updating canonical Vault…";
+  deviceNotice.textContent = "Updating accounts…";
   await flushDom();
   expectCondition(!overlay.hidden, "Presence overlay did not reopen for the success path");
 
   importStatus.textContent =
-    "1 account committed to the encrypted canonical Vault. Import secrets cleared from the browser session.";
+    "1 account committed to the encrypted Vault. Import secrets cleared from the browser session.";
   await flushDom();
   expectCondition(overlay.hidden, "Localized provisioning success did not dismiss the presence overlay");
   expectCondition(provisionError.textContent === "", "Provisioning success left a stale error");
   expectCondition(
-    importStatus.textContent?.includes("暗号化Canonical Vaultへ保存"),
+    importStatus.textContent?.includes("暗号化Vaultへ保存"),
     "Provisioning success did not render in Japanese",
   );
 
