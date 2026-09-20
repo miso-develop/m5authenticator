@@ -46,19 +46,19 @@ Production closure is derived from `web/package.json` and exact resolved non-dev
 
 | Package | Exact version | License | Distribution note | Authoritative source |
 | --- | --- | --- | --- | --- |
-| `@lit-labs/ssr-dom-shim` | `1.6.0` | BSD-3-Clause | Lit family | https://github.com/lit/lit |
-| `@lit/context` | `1.1.6` | BSD-3-Clause | Lit family | https://github.com/lit/lit |
-| `@lit/reactive-element` | `2.1.2` | BSD-3-Clause | Lit family | https://github.com/lit/lit |
+| `@lit-labs/ssr-dom-shim` | `1.6.0` | BSD-3-Clause | Lit family | [npm 1.6.0](https://www.npmjs.com/package/@lit-labs/ssr-dom-shim/v/1.6.0) · [exact lockfile tarball](https://registry.npmjs.org/@lit-labs/ssr-dom-shim/-/ssr-dom-shim-1.6.0.tgz) |
+| `@lit/context` | `1.1.6` | BSD-3-Clause | Lit family | [npm 1.1.6](https://www.npmjs.com/package/@lit/context/v/1.1.6) · [exact lockfile tarball](https://registry.npmjs.org/@lit/context/-/context-1.1.6.tgz) |
+| `@lit/reactive-element` | `2.1.2` | BSD-3-Clause | Lit family | [npm 2.1.2](https://www.npmjs.com/package/@lit/reactive-element/v/2.1.2) · [exact lockfile tarball](https://registry.npmjs.org/@lit/reactive-element/-/reactive-element-2.1.2.tgz) |
 | `@material/web` | `2.2.0` | Apache-2.0 | Material Web | https://github.com/material-components/material-web/tree/v2.2.0 |
-| `@protobufjs/aspromise` | `1.1.2` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/base64` | `1.1.2` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/codegen` | `2.0.5` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/eventemitter` | `1.1.1` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/fetch` | `1.1.1` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/float` | `1.0.2` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/path` | `1.1.2` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/pool` | `1.1.0` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
-| `@protobufjs/utf8` | `1.1.2` | BSD-3-Clause | protobuf.js family | https://github.com/protobufjs/protobuf.js |
+| `@protobufjs/aspromise` | `1.1.2` | BSD-3-Clause | protobuf.js family | [npm 1.1.2](https://www.npmjs.com/package/@protobufjs/aspromise/v/1.1.2) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz) |
+| `@protobufjs/base64` | `1.1.2` | BSD-3-Clause | protobuf.js family | [npm 1.1.2](https://www.npmjs.com/package/@protobufjs/base64/v/1.1.2) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/base64/-/base64-1.1.2.tgz) |
+| `@protobufjs/codegen` | `2.0.5` | BSD-3-Clause | protobuf.js family | [npm 2.0.5](https://www.npmjs.com/package/@protobufjs/codegen/v/2.0.5) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/codegen/-/codegen-2.0.5.tgz) |
+| `@protobufjs/eventemitter` | `1.1.1` | BSD-3-Clause | protobuf.js family | [npm 1.1.1](https://www.npmjs.com/package/@protobufjs/eventemitter/v/1.1.1) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/eventemitter/-/eventemitter-1.1.1.tgz) |
+| `@protobufjs/fetch` | `1.1.1` | BSD-3-Clause | protobuf.js family | [npm 1.1.1](https://www.npmjs.com/package/@protobufjs/fetch/v/1.1.1) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/fetch/-/fetch-1.1.1.tgz) |
+| `@protobufjs/float` | `1.0.2` | BSD-3-Clause | protobuf.js family | [npm 1.0.2](https://www.npmjs.com/package/@protobufjs/float/v/1.0.2) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/float/-/float-1.0.2.tgz) |
+| `@protobufjs/path` | `1.1.2` | BSD-3-Clause | protobuf.js family | [npm 1.1.2](https://www.npmjs.com/package/@protobufjs/path/v/1.1.2) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/path/-/path-1.1.2.tgz) |
+| `@protobufjs/pool` | `1.1.0` | BSD-3-Clause | protobuf.js family | [npm 1.1.0](https://www.npmjs.com/package/@protobufjs/pool/v/1.1.0) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/pool/-/pool-1.1.0.tgz) |
+| `@protobufjs/utf8` | `1.1.2` | BSD-3-Clause | protobuf.js family | [npm 1.1.2](https://www.npmjs.com/package/@protobufjs/utf8/v/1.1.2) · [exact lockfile tarball](https://registry.npmjs.org/@protobufjs/utf8/-/utf8-1.1.2.tgz) |
 | `@types/node` | `22.20.2` | MIT | type-only production closure entry; not emitted as browser runtime code | https://www.npmjs.com/package/@types/node/v/22.20.2 |
 | `@types/trusted-types` | `2.0.7` | MIT | type-only production closure entry; not emitted as browser runtime code | https://www.npmjs.com/package/@types/trusted-types/v/2.0.7 |
 | `@zxing/browser` | `0.2.1` | MIT | ZXing for JS browser | https://github.com/zxing-js/browser/tree/v0.2.1 |
@@ -71,8 +71,8 @@ Production closure is derived from `web/package.json` and exact resolved non-dev
 | `improv-wifi-serial-sdk` | `2.8.0` | Apache-2.0 | Improv Wi-Fi Serial SDK | https://github.com/improv-wifi/sdk-serial-js/tree/2.8.0 |
 | `@material/web` | `2.5.0` | Apache-2.0 | nested Improv dependency | https://github.com/material-components/material-web/tree/v2.5.0 |
 | `lit` | `3.3.3` | BSD-3-Clause | Lit family | https://github.com/lit/lit/tree/lit@3.3.3 |
-| `lit-element` | `4.2.2` | BSD-3-Clause | Lit family | https://github.com/lit/lit |
-| `lit-html` | `3.3.3` | BSD-3-Clause | Lit family | https://github.com/lit/lit |
+| `lit-element` | `4.2.2` | BSD-3-Clause | Lit family | [npm 4.2.2](https://www.npmjs.com/package/lit-element/v/4.2.2) · [exact lockfile tarball](https://registry.npmjs.org/lit-element/-/lit-element-4.2.2.tgz) |
+| `lit-html` | `3.3.3` | BSD-3-Clause | Lit family | [npm 3.3.3](https://www.npmjs.com/package/lit-html/v/3.3.3) · [exact lockfile tarball](https://registry.npmjs.org/lit-html/-/lit-html-3.3.3.tgz) |
 | `long` | `5.3.2` | Apache-2.0 | long.js | https://github.com/dcodeIO/long.js/tree/v5.3.2 |
 | `pako` | `2.2.0` | MIT AND Zlib | pako plus zlib-derived implementation notices | https://github.com/nodeca/pako/tree/2.2.0 |
 | `protobufjs` | `7.6.6` | BSD-3-Clause | protobuf.js | https://github.com/protobufjs/protobuf.js/tree/protobufjs-v7.6.6 |
