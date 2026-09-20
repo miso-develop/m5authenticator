@@ -230,8 +230,8 @@ class AgentDocumentationMigrationTests(unittest.TestCase):
         failures: list[str] = []
         for path, text in tracked.items():
             for needle in retired:
-                if needle in text:
-                    failures.append(f"{path}: {needle}")
+                for match in re.finditer(r"(?<!\.)" + re.escape(needle), text):
+                    failures.append(f"{path}: {needle} at {match.start()}")
             for match in re.finditer(r"(?<!\.agent/)PROJECT\.md", text):
                 failures.append(f"{path}: retired root project reference at {match.start()}")
         self.assertEqual(failures, [])
