@@ -11,7 +11,7 @@ Convert one settled Spec into implementation tickets. Do not redesign the featur
 
 ## 1. Read the Spec graph
 
-Read the Spec, references, relevant Decision outcomes, `PROJECT.md`, `SECURITY.md`, and repository current truth.
+Read the Spec, references, relevant Decision outcomes, `.agent/PROJECT.md`, `SECURITY.md`, and repository current truth.
 
 If decomposition exposes an unresolved product, architecture, or security decision, stop and route it back to planning. Do not hide a decision inside a Task.
 
@@ -25,7 +25,7 @@ Security controls must not be postponed to a generic cleanup Task when they are 
 
 ## 3. Create Issues in two passes
 
-First design the blocker graph by title. Then create each `[Task]` using `agent/WORK-TRACKING.md`. After real issue numbers exist, update blockers and the parent Spec's canonical `Implementation tasks` list.
+First design the blocker graph by title. Then create each `[Task]` using `.agent/WORK-TRACKING.md`. After real issue numbers exist, update blockers and the parent Spec's canonical `Implementation tasks` list.
 
 ## 4. Verify the frontier
 

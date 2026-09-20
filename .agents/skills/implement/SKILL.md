@@ -16,7 +16,7 @@ Resolve the Task by full Issue URL or `owner/repo#number`, confirm `[Task]`, the
 - Task body/comments
 - Parent Spec
 - referenced Map/Decision outcomes
-- `PROJECT.md`
+- `.agent/PROJECT.md`
 - `SECURITY.md`
 - relevant repository current truth
 - existing PR/branch for the same Task
@@ -46,7 +46,7 @@ Real user authentication material must never be used as committed test data or p
 Before closeout:
 
 1. run repository-defined targeted and required tests/checks,
-2. run `code-review` against Task, Parent Spec, `PROJECT.md`, and `SECURITY.md`,
+2. run `code-review` against Task, Parent Spec, `.agent/PROJECT.md`, and `SECURITY.md`,
 3. fix concrete valid blocking findings,
 4. re-run affected checks.
 

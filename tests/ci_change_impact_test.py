@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +24,8 @@ class ChangeImpactClassificationTests(unittest.TestCase):
         cases = (
             (["README.md"], False, False, True),
             (["README.md", "docs/assets/hero.jpg"], False, False, True),
-            ([".agent/BOOTSTRAP.md", "agent/WORK-TRACKING.md"], False, False, True),
+            ([".agent/BOOTSTRAP.md", ".agent/WORK-TRACKING.md"], False, False, True),
+            ([".agent/PROJECT.md", ".agents/skills/README.md"], False, False, True),
             (["docs/ARCHITECTURE.md"], False, False, True),
             (["web/src/main.ts"], True, False, False),
             (["firmware/main/main.cpp"], False, True, False),
@@ -36,6 +38,21 @@ class ChangeImpactClassificationTests(unittest.TestCase):
                 result = ci_change_impact.classify_paths(paths)
                 self.assert_heavy(result, web=web, firmware=firmware)
                 self.assertEqual(result["process_docs_only"], process_docs_only)
+
+    def test_retired_agent_and_project_paths_fail_safe_heavy(self) -> None:
+        retired_paths = (
+            "agent" + "/" + "WORK-TRACKING.md",
+            "PROJECT" + ".md",
+        )
+        for path in retired_paths:
+            with self.subTest(path=path):
+                result = ci_change_impact.classify_paths([path])
+                self.assertFalse(result["process_docs_only"])
+                self.assertTrue(result["web"])
+                self.assertTrue(result["firmware"])
+                self.assertTrue(result["pages"])
+                self.assertTrue(result["security_release_shared"])
+                self.assertFalse(result["uncertain"])
 
     def test_web_and_shared_paths_drive_pages_semantics(self) -> None:
         web = ci_change_impact.classify_paths(["web/src/main.ts"])
@@ -162,6 +179,66 @@ class ChangeImpactClassificationTests(unittest.TestCase):
         self.assertEqual(paths, [])
         self.assertIsInstance(reason, str)
 
+
+class AgentDocumentationMigrationTests(unittest.TestCase):
+    TRANSLATED = (
+        "AGENTS.md",
+        ".agent/PROJECT.md",
+        ".agent/PARALLEL-WORK-CHECKLIST.md",
+        ".agent/PARALLEL-WORK.md",
+        ".agent/WORK-TRACKING.md",
+    )
+    CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+
+    def tracked_text(self) -> dict[str, str]:
+        output = subprocess.check_output(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+        )
+        result: dict[str, str] = {}
+        for raw in output.split(b"\0"):
+            if not raw:
+                continue
+            path = raw.decode("utf-8")
+            try:
+                result[path] = (REPO_ROOT / path).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+        return result
+
+    def test_agent_layout_and_language_are_canonical(self) -> None:
+        self.assertTrue((REPO_ROOT / "AGENTS.md").is_file())
+        self.assertTrue((REPO_ROOT / "SECURITY.md").is_file())
+        self.assertFalse((REPO_ROOT / ("PROJECT" + ".md")).exists())
+        self.assertFalse((REPO_ROOT / "agent").exists())
+        for path in self.TRANSLATED[1:]:
+            self.assertTrue((REPO_ROOT / path).is_file(), path)
+        self.assertTrue((REPO_ROOT / ".agents" / "skills").is_dir())
+
+        for path in self.TRANSLATED:
+            text = (REPO_ROOT / path).read_text(encoding="utf-8")
+            match = self.CJK.search(text)
+            self.assertIsNone(
+                match,
+                f"Japanese/CJK normative prose remains in {path} at offset "
+                f"{match.start() if match else 'n/a'}",
+            )
+
+    def test_tracked_files_have_no_retired_canonical_references(self) -> None:
+        tracked = self.tracked_text()
+        retired_root = "agent" + "/"
+        retired_root_pattern = re.compile(
+            r"(?<![A-Za-z0-9_.-])" + re.escape(retired_root)
+        )
+        failures: list[str] = []
+        for path, text in tracked.items():
+            for match in retired_root_pattern.finditer(text):
+                failures.append(
+                    f"{path}: retired root Agent directory reference at {match.start()}"
+                )
+            for match in re.finditer(r"(?<!\.agent/)PROJECT\.md", text):
+                failures.append(f"{path}: retired root project reference at {match.start()}")
+        self.assertEqual(failures, [])
 
 class ChangeImpactWorkflowContractTests(unittest.TestCase):
     FOUNDATION = REPO_ROOT / ".github" / "workflows" / "foundation.yml"

@@ -15,9 +15,9 @@ Determine the exact diff, then read:
 
 - explicit user instruction
 - selected `[Task]` and Parent `[Spec]`
-- `PROJECT.md`
+- `.agent/PROJECT.md`
 - `SECURITY.md`
-- applicable `AGENTS.md` / `agent/` rules
+- applicable `AGENTS.md` / `.agent/` rules
 - relevant tests and current public behavior
 
 ## 2. Review behavior/spec compliance

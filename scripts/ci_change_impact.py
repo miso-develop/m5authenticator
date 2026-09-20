@@ -33,7 +33,6 @@ PROCESS_DOC_PREFIXES = (
     "docs/",
     ".agent/",
     ".agents/",
-    "agent/",
 )
 
 SHARED_EXACT = {

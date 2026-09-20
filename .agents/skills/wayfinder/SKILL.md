@@ -15,7 +15,7 @@ State what must be decided or specified when the map is complete. The destinatio
 
 ## 2. Create the map
 
-Create one GitHub Issue titled `[Map] <name>` using `agent/WORK-TRACKING.md`.
+Create one GitHub Issue titled `[Map] <name>` using `.agent/WORK-TRACKING.md`.
 
 Record Destination, Decisions so far, Not yet specified, and Out of scope. Treat this Issue as an exploration map, not an Epic or implementation backlog.
 
