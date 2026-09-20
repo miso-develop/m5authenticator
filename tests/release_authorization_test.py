@@ -131,6 +131,18 @@ def failed_jobs() -> dict[str, object]:
     }
 
 
+def legacy_workflow_metadata(
+    *,
+    state: str = release_authorization.LEGACY_WORKFLOW_DISABLED_STATE,
+) -> dict[str, object]:
+    return {
+        "id": 123456,
+        "name": release_authorization.LEGACY_WORKFLOW_NAME,
+        "path": release_authorization.LEGACY_WORKFLOW_PATH,
+        "state": state,
+    }
+
+
 def tag_immutability_ruleset() -> dict[str, object]:
     return {
         "name": "SemVer tag immutability",
@@ -172,6 +184,7 @@ def recovery_authorize(**overrides: object) -> tuple[str, str, bool]:
         "tag_immutability_ruleset_payload": tag_immutability_ruleset(),
         "release_state": "absent",
         "legacy_workflow_text": release_authorization.EXPECTED_LEGACY_RELEASE_WORKFLOW,
+        "legacy_workflow_metadata_payload": legacy_workflow_metadata(),
         "repo_root": ROOT,
     }
     arguments.update(overrides)
@@ -408,8 +421,25 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not active"):
             recovery_authorize(tag_immutability_ruleset_payload=bad_ruleset)
 
+        excluded_ruleset = tag_immutability_ruleset()
+        excluded_ruleset["conditions"]["ref_name"]["exclude"] = ["refs/tags/v1.0.0"]
+        with self.assertRaisesRegex(ValueError, "no ref exclusions"):
+            recovery_authorize(tag_immutability_ruleset_payload=excluded_ruleset)
+
         with self.assertRaisesRegex(ValueError, "retired tombstone"):
             recovery_authorize(legacy_workflow_text="name: Release\n")
+
+        with self.assertRaisesRegex(ValueError, "metadata mismatch: state"):
+            recovery_authorize(
+                legacy_workflow_metadata_payload=legacy_workflow_metadata(state="active")
+            )
+
+        bad_legacy_identity = legacy_workflow_metadata()
+        bad_legacy_identity["path"] = ".github/workflows/other.yml"
+        with self.assertRaisesRegex(ValueError, "metadata mismatch: path"):
+            recovery_authorize(
+                legacy_workflow_metadata_payload=bad_legacy_identity
+            )
 
     def test_recovery_ancestry_and_delta_failures_are_not_bypassed(self) -> None:
         arguments = {
@@ -432,6 +462,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             "tag_immutability_ruleset_payload": tag_immutability_ruleset(),
             "release_state": "absent",
             "legacy_workflow_text": release_authorization.EXPECTED_LEGACY_RELEASE_WORKFLOW,
+            "legacy_workflow_metadata_payload": legacy_workflow_metadata(),
             "repo_root": ROOT,
         }
         with (
