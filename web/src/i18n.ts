@@ -34,7 +34,6 @@ const ja: Record<string, string> = {
   "Confirm Recovery Passphrase": "Recovery Passphraseを確認",
   "Apply imported accounts": "インポートしたアカウントを適用",
   "Clear import session": "インポートセッションを消去",
-  "Accounts": "アカウント",
   "Account metadata is decrypted from this Trusted Browser's encrypted Vault only while the Device is UNLOCKED. TOTP secrets remain inside transient Vault plaintext and are never returned by Device status.": "アカウントメタデータはDeviceがUNLOCKEDの間だけ、このTrusted Browserの暗号化Vaultから復号されます。TOTP秘密情報は一時的なVault平文内だけに存在し、Device statusから返されることはありません。",
   "Connect a device to load account data.": "アカウント情報を読み込むにはデバイスへ接続してください。",
   "Wi-Fi for NTP": "NTP用Wi-Fi",
