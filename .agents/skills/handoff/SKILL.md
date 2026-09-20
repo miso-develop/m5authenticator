@@ -33,6 +33,6 @@ Never include credentials, secrets, TOTP/otpauth/migration payloads, QR screensh
 
 Do not paste raw logs if they may contain sensitive data; summarize/redact instead.
 
-A resuming agent must re-read the Issue/PR, Parent Spec, linked Decisions, current HEAD, `PROJECT.md`, `SECURITY.md`, and relevant repository truth before editing.
+A resuming agent must re-read the Issue/PR, Parent Spec, linked Decisions, current HEAD, `.agent/PROJECT.md`, `SECURITY.md`, and relevant repository truth before editing.
 
 Adapted from `mattpocock/skills` `handoff` for GitHub-backed Loop Engineering.
