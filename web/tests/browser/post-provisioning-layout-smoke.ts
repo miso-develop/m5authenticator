@@ -189,7 +189,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     provision.click();
     await waitUntil(
       () => deviceStatus.textContent?.includes("unlocked") === true &&
-        deviceNotice.textContent === "Canonical Vault update completed.",
+        deviceNotice.textContent === "Account update completed.",
       "Successful initial provisioning must replace the busy notice with a stable terminal success message",
     );
 
@@ -198,7 +198,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await waitUntil(
       () => deviceStatus.textContent?.includes("unlocked") === true &&
         passphrase.disabled &&
-        deviceNotice.textContent === "Canonical status refreshed.",
+        deviceNotice.textContent === "Device status refreshed.",
       "Production Provisioning route did not reach the provisioned snapshot state with a terminal refresh notice",
     );
     flushLayout();
@@ -255,7 +255,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await waitUntil(
       () => !resetConfirmation.disabled &&
         factoryResetHint.textContent?.includes("fresh confirmation on M5StickS3") === true &&
-        deviceNotice.textContent === "Canonical status refreshed.",
+        deviceNotice.textContent === "Device status refreshed.",
       "Capable production UI did not enable secure Factory Reset controls with a stable terminal refresh notice",
     );
     resetConfirmation.value = "RESET";
@@ -296,7 +296,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     const requiredHeadings = [
       "Device",
       "Import accounts",
-      "Canonical accounts",
+      "Accounts",
       "Wi-Fi for NTP",
       "Rotate Vault Master Key",
       "Factory Reset",
