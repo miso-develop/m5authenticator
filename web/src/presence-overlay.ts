@@ -24,8 +24,8 @@ export function shouldDismissInitialProvisioningPresenceOverlay(
   observation: PresenceOverlayObservation,
 ): boolean {
   if (observation.connectionState === "Disconnected") return true;
-  if (observation.importStatus.includes("committed to the encrypted canonical Vault")) return true;
-  return observation.deviceNotice.length > 0 && observation.deviceNotice !== "Updating canonical Vault…";
+  if (observation.importStatus.includes("committed to the encrypted Vault")) return true;
+  return observation.deviceNotice.length > 0 && observation.deviceNotice !== "Updating accounts…";
 }
 
 export function installInitialProvisioningPresenceOverlay(root: Document = document): HTMLElement | null {
