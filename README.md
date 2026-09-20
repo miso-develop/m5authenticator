@@ -90,6 +90,6 @@ Other M5Stack targets should not be assumed to be supported unless they are expl
 
 The firmware is built with ESP-IDF/CMake and the Web app uses TypeScript/Vite. Developer setup, pinned toolchains, and reproducible commands are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Repository contribution and work-tracking rules are documented in [AGENTS.md](AGENTS.md) and [agent/WORK-TRACKING.md](agent/WORK-TRACKING.md). These development-process documents are separate from the product usage and security contracts above.
+Repository contribution and work-tracking rules are documented in [AGENTS.md](AGENTS.md) and [.agent/WORK-TRACKING.md](.agent/WORK-TRACKING.md). These development-process documents are separate from the product usage and security contracts above.
 
 Before submitting repository changes, keep all examples and test material synthetic and follow [SECURITY.md](SECURITY.md).
