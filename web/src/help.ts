@@ -129,7 +129,6 @@ function render(): void {
   const diagrams = renderHelpDiagrams(helpDiagramCopy(language));
   root.innerHTML = `
     <article class="shell help-shell">
-      <p class="eyebrow">M5Authenticator</p>
       <h1>${escapeHtml(copy.title)}</h1>
       <p class="description">${escapeHtml(copy.intro)}</p>
       <section class="panel"><h2>${escapeHtml(copy.quickStartTitle)}</h2>${list(copy.quickStart)}${diagrams.setup}</section>
