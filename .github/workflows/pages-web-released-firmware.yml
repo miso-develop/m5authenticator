@@ -1,0 +1,266 @@
+name: Pages Web-only / Released Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_sha:
+        description: "Exact 40-character current protected-main SHA for Web/static content"
+        required: true
+        type: string
+      firmware_release_tag:
+        description: "Existing immutable production firmware Release tag (vX.Y.Z)"
+        required: true
+        type: string
+      deployment_ack:
+        description: "I understand this deploys exact current-main Web with an existing immutable released firmware package and overwrites the public Pages site"
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-web-with-released-firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      attestations: read
+    outputs:
+      pages-artifact-id: ${{ steps.upload.outputs.artifact_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Authorize exact current-main Web source
+        shell: bash
+        env:
+          REQUESTED_WEB_SHA: ${{ inputs.web_sha }}
+          DEPLOYMENT_ACK: ${{ inputs.deployment_ack }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Web-only Pages deployment must be invoked from refs/heads/main."
+            exit 1
+          fi
+          if [ "$DEPLOYMENT_ACK" != "true" ]; then
+            echo "Web-only Pages deployment requires explicit acknowledgement."
+            exit 1
+          fi
+          if ! [[ "$REQUESTED_WEB_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "web_sha must be an exact 40-character commit SHA."
+            exit 1
+          fi
+
+          git fetch --force --no-tags origin main
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          python scripts/validate_release.py --require-production
+
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100"             > "$RUNNER_TEMP/main-rules.json"
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$MAIN_SHA/check-runs?filter=latest&per_page=100"             > "$RUNNER_TEMP/main-check-runs.json"
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/commits/$MAIN_SHA/status"             > "$RUNNER_TEMP/main-statuses.json"
+
+          python scripts/ci_pages_released_firmware.py authorize-web             --source-ref "$GITHUB_REF"             --workflow-sha "$GITHUB_SHA"             --web-sha "$REQUESTED_WEB_SHA"             --current-main "$MAIN_SHA"             --deployment-ack "$DEPLOYMENT_ACK"             --main-rules "$RUNNER_TEMP/main-rules.json"             --check-runs "$RUNNER_TEMP/main-check-runs.json"             --statuses "$RUNNER_TEMP/main-statuses.json"
+
+          WEB_VERSION="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path("firmware/release-profile.json").read_text(encoding="utf-8"))["firmware_version"])
+          PY
+          )"
+          {
+            echo "M5AUTH_WEB_SHA=$MAIN_SHA"
+            echo "M5AUTH_WEB_VERSION=$WEB_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Authorize immutable firmware Release and source
+        shell: bash
+        env:
+          FIRMWARE_RELEASE_TAG: ${{ inputs.firmware_release_tag }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$FIRMWARE_RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "firmware_release_tag must use canonical vX.Y.Z syntax."
+            exit 1
+          fi
+
+          git fetch --force --no-tags origin             "refs/tags/$FIRMWARE_RELEASE_TAG:refs/tags/$FIRMWARE_RELEASE_TAG"
+          FIRMWARE_SOURCE_SHA="$(git rev-parse "refs/tags/$FIRMWARE_RELEASE_TAG^{commit}")"
+
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/releases/tags/$FIRMWARE_RELEASE_TAG"             > "$RUNNER_TEMP/firmware-release.json"
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true"             > "$RUNNER_TEMP/rulesets.json"
+
+          RULESET_ID="$(python scripts/ci_pages_released_firmware.py select-tag-ruleset             --rulesets "$RUNNER_TEMP/rulesets.json")"
+          gh api             -H "Accept: application/vnd.github+json"             -H "X-GitHub-Api-Version: 2026-03-10"             "/repos/$GITHUB_REPOSITORY/rulesets/$RULESET_ID"             > "$RUNNER_TEMP/tag-immutability-ruleset.json"
+
+          python scripts/ci_pages_released_firmware.py authorize-release             --repo-root "$GITHUB_WORKSPACE"             --web-sha "$M5AUTH_WEB_SHA"             --release-tag "$FIRMWARE_RELEASE_TAG"             --tag-sha "$FIRMWARE_SOURCE_SHA"             --release-json "$RUNNER_TEMP/firmware-release.json"             --tag-ruleset "$RUNNER_TEMP/tag-immutability-ruleset.json"             --current-profile "firmware/release-profile.json"             --result-json "$RUNNER_TEMP/released-firmware-source-validation.json"
+
+          {
+            echo "M5AUTH_FIRMWARE_RELEASE_TAG=$FIRMWARE_RELEASE_TAG"
+            echo "M5AUTH_FIRMWARE_SOURCE_SHA=$FIRMWARE_SOURCE_SHA"
+          } >> "$GITHUB_ENV"
+
+      - name: Preflight immutable Release asset metadata
+        run: |
+          python scripts/ci_pages_released_firmware.py preflight-assets \
+            --release-json "$RUNNER_TEMP/firmware-release.json"
+
+      - name: Download exact immutable Release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="$RUNNER_TEMP/released-firmware"
+          rm -rf "$RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+          gh release download "$M5AUTH_FIRMWARE_RELEASE_TAG"             --repo "$GITHUB_REPOSITORY"             --dir "$RELEASE_DIR"
+          echo "M5AUTH_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify Release asset metadata, checksums, and Web Flasher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci_pages_released_firmware.py verify-package             --package-dir "$M5AUTH_RELEASE_DIR"             --release-json "$RUNNER_TEMP/firmware-release.json"             --release-tag "$M5AUTH_FIRMWARE_RELEASE_TAG"             --source-sha "$M5AUTH_FIRMWARE_SOURCE_SHA"             --source-validation "$RUNNER_TEMP/released-firmware-source-validation.json"             --result-json "$RUNNER_TEMP/released-firmware-package.json"
+
+      - name: Verify standard and custom signed provenance for every Release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          STANDARD_DIR="$RUNNER_TEMP/standard-attestations"
+          CUSTOM_DIR="$RUNNER_TEMP/custom-attestations"
+          mkdir -p "$STANDARD_DIR" "$CUSTOM_DIR"
+
+          while IFS= read -r -d '' asset; do
+            name="$(basename "$asset")"
+            gh attestation verify "$asset"               --repo "$GITHUB_REPOSITORY"               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-authorized.yml"               --format json               > "$STANDARD_DIR/$name.json"
+            gh attestation verify "$asset"               --repo "$GITHUB_REPOSITORY"               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-authorized.yml"               --predicate-type "https://miso-develop.github.io/m5authenticator/attestations/release-provenance/v1"               --format json               > "$CUSTOM_DIR/$name.json"
+          done < <(find "$M5AUTH_RELEASE_DIR" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+
+          python scripts/ci_pages_released_firmware.py verify-attestations             --package-dir "$M5AUTH_RELEASE_DIR"             --standard-dir "$STANDARD_DIR"             --custom-dir "$CUSTOM_DIR"             --source-sha "$M5AUTH_FIRMWARE_SOURCE_SHA"             --package-result "$RUNNER_TEMP/released-firmware-package.json"             --result-json "$RUNNER_TEMP/released-firmware-provenance.json"
+
+      - name: Verify canonical current-main third-party notice
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f THIRD_PARTY_NOTICES.md ] || [ -L THIRD_PARTY_NOTICES.md ] || [ ! -s THIRD_PARTY_NOTICES.md ]; then
+            echo "Current-main product THIRD_PARTY_NOTICES.md is missing, non-regular, or empty."
+            exit 1
+          fi
+          python scripts/verify_third_party_notices.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Install exact Web dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build exact current-main production Web
+        working-directory: web
+        env:
+          VITE_M5AUTH_WEB_VERSION: ${{ env.M5AUTH_WEB_VERSION }}
+          VITE_M5AUTH_WEB_BUILD_COMMIT: ${{ env.M5AUTH_WEB_SHA }}
+          VITE_M5AUTH_WEB_EXACT_RELEASE: "false"
+          VITE_M5AUTH_FLASH_ENABLED: "true"
+        run: npm run build
+
+      - name: Assemble verified immutable Release bytes after Web build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci_pages_released_firmware.py assemble             --package-dir "$M5AUTH_RELEASE_DIR"             --dist-dir "web/dist"             --notice "THIRD_PARTY_NOTICES.md"
+          test -f web/dist/index.html
+          test -f web/dist/flash.html
+          test -f web/dist/help.html
+          test -f web/dist/firmware/firmware-target.json
+          test -f web/dist/THIRD_PARTY_NOTICES.md
+
+      - name: Verify Web lockfile remains unchanged
+        run: git diff --exit-code -- web/package-lock.json
+
+      - name: Record mixed Web and firmware identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_ID="$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = json.loads((Path(os.environ["RUNNER_TEMP"]) / "firmware-release.json").read_text(encoding="utf-8"))
+          print(payload["id"])
+          PY
+          )"
+          SHA256SUMS_SHA256="$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = json.loads((Path(os.environ["RUNNER_TEMP"]) / "released-firmware-package.json").read_text(encoding="utf-8"))
+          print(payload["sha256sums_sha256"])
+          PY
+          )"
+          read -r PUBLISHER_WORKFLOW_SHA PUBLISHER_RUN_ID PUBLISHER_RUN_ATTEMPT < <(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = json.loads((Path(os.environ["RUNNER_TEMP"]) / "released-firmware-provenance.json").read_text(encoding="utf-8"))
+          print(payload["publisher_workflow_sha"], payload["publisher_run_id"], payload["publisher_run_attempt"])
+          PY
+          )
+
+          python scripts/ci_pages_summary.py web-released-firmware             --summary-path "$GITHUB_STEP_SUMMARY"             --web-version "$M5AUTH_WEB_VERSION"             --web-sha "$M5AUTH_WEB_SHA"             --firmware-release-tag "$M5AUTH_FIRMWARE_RELEASE_TAG"             --release-id "$RELEASE_ID"             --firmware-source-sha "$M5AUTH_FIRMWARE_SOURCE_SHA"             --sha256sums-sha256 "$SHA256SUMS_SHA256"             --publisher-workflow-sha "$PUBLISHER_WORKFLOW_SHA"             --publisher-run-id "$PUBLISHER_RUN_ID"             --publisher-run-attempt "$PUBLISHER_RUN_ATTEMPT"
+
+      - name: Upload one Pages staging artifact
+        id: upload
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: web/dist
+          retention-days: 1
+
+  deploy:
+    name: deploy-pages-web-released-firmware
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+      actions: write
+    steps:
+      - name: Deploy preassembled Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+      - name: Delete consumed Pages staging artifact by exact artifact ID
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_ARTIFACT_ID: ${{ needs.build.outputs.pages-artifact-id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PAGES_ARTIFACT_ID" ]; then
+            echo "Pages staging artifact ID is missing."
+            exit 1
+          fi
+          gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$PAGES_ARTIFACT_ID"
