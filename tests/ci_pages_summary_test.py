@@ -1042,7 +1042,9 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
                     release_metadata=package_result["release_metadata"],
                 )
 
-            standard, custom = synthetic_attestation_outputs(root / "retry", package, package_result)
+            retry = root / "retry"
+            retry.mkdir()
+            standard, custom = synthetic_attestation_outputs(retry, package, package_result)
             pinned_custom = json.loads(
                 (custom / f"{pinned_name}.json").read_text(encoding="utf-8")
             )
