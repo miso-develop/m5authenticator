@@ -214,4 +214,4 @@ For an exposed BUK/BRK/browser profile, replace the active Trusted Browser regis
 
 This project aims to prevent accidental disclosure, common powered-off/rebooted-device loss/theft scenarios, Flash copying/dumping from directly revealing credentials, release-interface secret export, plaintext browser persistence, and passive/replayed unlock-material reuse.
 
-It does not claim resistance to sophisticated physical extraction, RAM probing while unlocked, compromised endpoint OS/browser code, malicious extensions/XSS, active fake-device/Evil-Maid firmware replacement, hardware-backed rollback attacks, BLE relay, simultaneous source/device compromise, or realtime TOTP phishing. See `PROJECT.md` and `docs/SECRET_VAULT.md`.
+It does not claim resistance to sophisticated physical extraction, RAM probing while unlocked, compromised endpoint OS/browser code, malicious extensions/XSS, active fake-device/Evil-Maid firmware replacement, hardware-backed rollback attacks, BLE relay, simultaneous source/device compromise, or realtime TOTP phishing. See `.agent/PROJECT.md` and `docs/SECRET_VAULT.md`.
