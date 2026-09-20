@@ -753,16 +753,25 @@ def _load_verification_statements(
     return statements
 
 
-def _subject_has_digest(statement: dict[str, Any], digest: str) -> bool:
+def _subject_has_identity(
+    statement: dict[str, Any],
+    name: str,
+    digest: str,
+) -> bool:
     subjects = statement.get("subject")
     if not isinstance(subjects, list):
         raise ValueError("attestation statement subject is invalid")
     for subject in subjects:
         if not isinstance(subject, dict):
             continue
+        subject_name = subject.get("name")
         digest_map = subject.get("digest")
         actual = digest_map.get("sha256") if isinstance(digest_map, dict) else None
-        if isinstance(actual, str) and actual.lower() == digest:
+        if (
+            subject_name == name
+            and isinstance(actual, str)
+            and actual.lower() == digest
+        ):
             return True
     return False
 
@@ -783,6 +792,61 @@ def _predicate_artifacts(predicate: dict[str, Any]) -> dict[str, str]:
             raise ValueError(f"duplicate custom provenance artifact: {name}")
         result[name] = digest
     return result
+
+
+def _validate_custom_provenance_statement(
+    statement: dict[str, Any],
+    *,
+    asset_name: str,
+    source: str,
+    sha256sums_sha256: str,
+    checksums: dict[str, str],
+    expected_esp_idf: dict[str, Any],
+) -> tuple[tuple[str, int, int], dict[str, Any]]:
+    predicate = statement.get("predicate")
+    if not isinstance(predicate, dict):
+        raise ValueError(f"custom provenance predicate is missing: {asset_name}")
+    if predicate.get("format") != 1 or predicate.get("predicate_type") != CUSTOM_PREDICATE_TYPE:
+        raise ValueError(f"custom provenance format/type mismatch: {asset_name}")
+    if predicate.get("source_commit") != source:
+        raise ValueError(f"custom provenance source_commit mismatch: {asset_name}")
+
+    workflow = predicate.get("workflow")
+    if not isinstance(workflow, dict):
+        raise ValueError(f"custom provenance workflow identity is missing: {asset_name}")
+    if workflow.get("repository") != REPOSITORY:
+        raise ValueError(f"custom provenance repository mismatch: {asset_name}")
+    if workflow.get("workflow_ref") != AUTHORIZED_RELEASE_WORKFLOW_REF:
+        raise ValueError(f"custom provenance workflow_ref mismatch: {asset_name}")
+    workflow_sha = workflow.get("workflow_sha")
+    if not isinstance(workflow_sha, str):
+        raise ValueError(f"custom provenance workflow_sha is missing: {asset_name}")
+    workflow_sha = release_authorization.normalize_sha(
+        workflow_sha,
+        "custom provenance workflow SHA",
+    )
+    run_id = workflow.get("run_id")
+    run_attempt = workflow.get("run_attempt")
+    if (
+        not isinstance(run_id, int)
+        or run_id <= 0
+        or not isinstance(run_attempt, int)
+        or run_attempt <= 0
+    ):
+        raise ValueError(f"custom provenance run identity is invalid: {asset_name}")
+
+    if predicate.get("sha256sums_sha256") != sha256sums_sha256:
+        raise ValueError(f"custom provenance SHA256SUMS digest mismatch: {asset_name}")
+    if _predicate_artifacts(predicate) != checksums:
+        raise ValueError(f"custom provenance artifact map mismatch: {asset_name}")
+    build_environment = predicate.get("build_environment")
+    if (
+        not isinstance(build_environment, dict)
+        or build_environment.get("esp_idf") != expected_esp_idf
+    ):
+        raise ValueError(f"custom provenance build environment mismatch: {asset_name}")
+
+    return (workflow_sha, run_id, run_attempt), predicate
 
 
 def verify_attestations(
@@ -827,65 +891,48 @@ def verify_attestations(
             standard_files[f"{name}.json"],
             STANDARD_PREDICATE_TYPE,
         )
-        if not any(_subject_has_digest(statement, digest) for statement in standard_statements):
-            raise ValueError(f"standard attestation subject digest mismatch: {name}")
+        if not any(
+            _subject_has_identity(statement, name, digest)
+            for statement in standard_statements
+        ):
+            raise ValueError(f"standard attestation subject identity mismatch: {name}")
 
         custom_statements = _load_verification_statements(
             custom_files[f"{name}.json"],
             CUSTOM_PREDICATE_TYPE,
         )
         matching = [
-            statement for statement in custom_statements if _subject_has_digest(statement, digest)
+            statement
+            for statement in custom_statements
+            if _subject_has_identity(statement, name, digest)
         ]
-        if len(matching) != 1:
-            raise ValueError(f"custom attestation is missing or ambiguous for asset: {name}")
-        predicate = matching[0].get("predicate")
-        if not isinstance(predicate, dict):
-            raise ValueError(f"custom provenance predicate is missing: {name}")
-        if predicate.get("format") != 1 or predicate.get("predicate_type") != CUSTOM_PREDICATE_TYPE:
-            raise ValueError(f"custom provenance format/type mismatch: {name}")
-        if predicate.get("source_commit") != source:
-            raise ValueError(f"custom provenance source_commit mismatch: {name}")
+        if not matching:
+            raise ValueError(f"custom attestation is missing for exact asset identity: {name}")
 
-        workflow = predicate.get("workflow")
-        if not isinstance(workflow, dict):
-            raise ValueError(f"custom provenance workflow identity is missing: {name}")
-        if workflow.get("repository") != REPOSITORY:
-            raise ValueError(f"custom provenance repository mismatch: {name}")
-        if workflow.get("workflow_ref") != AUTHORIZED_RELEASE_WORKFLOW_REF:
-            raise ValueError(f"custom provenance workflow_ref mismatch: {name}")
-        workflow_sha = workflow.get("workflow_sha")
-        if not isinstance(workflow_sha, str):
-            raise ValueError(f"custom provenance workflow_sha is missing: {name}")
-        workflow_sha = release_authorization.normalize_sha(
-            workflow_sha,
-            "custom provenance workflow SHA",
-        )
-        run_id = workflow.get("run_id")
-        run_attempt = workflow.get("run_attempt")
-        if (
-            not isinstance(run_id, int)
-            or run_id <= 0
-            or not isinstance(run_attempt, int)
-            or run_attempt <= 0
-        ):
-            raise ValueError(f"custom provenance run identity is invalid: {name}")
-        identity = (workflow_sha, run_id, run_attempt)
+        identities: set[tuple[str, int, int]] = set()
+        predicates: list[dict[str, Any]] = []
+        for statement in matching:
+            identity, predicate = _validate_custom_provenance_statement(
+                statement,
+                asset_name=name,
+                source=source,
+                sha256sums_sha256=sha256sums_sha256,
+                checksums=checksums,
+                expected_esp_idf=expected_esp_idf,
+            )
+            identities.add(identity)
+            predicates.append(predicate)
+
+        if len(identities) != 1:
+            raise ValueError(f"conflicting custom provenance publisher identities: {name}")
+        if any(predicate != predicates[0] for predicate in predicates[1:]):
+            raise ValueError(f"conflicting custom provenance statements: {name}")
+
+        identity = next(iter(identities))
         if publisher_identity is None:
             publisher_identity = identity
         elif publisher_identity != identity:
             raise ValueError("custom provenance publisher identity differs across Release assets")
-
-        if predicate.get("sha256sums_sha256") != sha256sums_sha256:
-            raise ValueError(f"custom provenance SHA256SUMS digest mismatch: {name}")
-        if _predicate_artifacts(predicate) != checksums:
-            raise ValueError(f"custom provenance artifact map mismatch: {name}")
-        build_environment = predicate.get("build_environment")
-        if (
-            not isinstance(build_environment, dict)
-            or build_environment.get("esp_idf") != expected_esp_idf
-        ):
-            raise ValueError(f"custom provenance build environment mismatch: {name}")
 
     if publisher_identity is None:
         raise ValueError("no custom provenance publisher identity was verified")
