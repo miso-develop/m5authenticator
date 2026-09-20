@@ -2,7 +2,7 @@
 
 namespace m5auth::core {
 
-inline constexpr char kFirmwareVersion[] = "1.0.0";
+inline constexpr char kFirmwareVersion[] = "1.0.1";
 inline constexpr int kProtocolVersion = 2;
 inline constexpr int kStorageSchemaVersion = 2;
 inline constexpr int kVaultFormatVersion = 1;
