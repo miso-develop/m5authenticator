@@ -17,7 +17,6 @@ const targetMetadataPath = `${base}firmware/firmware-target.json`;
 
 app.innerHTML = `
   <section class="shell">
-    <p class="eyebrow">M5Authenticator</p>
     <h1>Firmware Flash</h1>
     <p class="description">
       Flash the CI-built M5StickS3 firmware directly from this site. Firmware images are same-origin static files; authenticator credentials are never part of a firmware package.
