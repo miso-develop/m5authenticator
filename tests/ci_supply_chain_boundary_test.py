@@ -478,6 +478,9 @@ jobs:
         self.assertIn("EXPECTED_SHA256SUMS", publish)
         self.assertIn("sha256sum -c SHA256SUMS", publish)
         self.assertIn("gh release create", publish)
+        self.assertIn("THIRD_PARTY_NOTICES.md", publish)
+        self.assertNotIn("cp THIRD_PARTY_NOTICES.md", publish)
+        self.assertNotIn("cat THIRD_PARTY_NOTICES.md", publish)
 
     def test_foundation_pages_release_do_not_mount_authoritative_checkout(self) -> None:
         for path in (FOUNDATION_WORKFLOW, PAGES_WORKFLOW, RELEASE_WORKFLOW):
@@ -494,6 +497,8 @@ jobs:
         self.assertIn("tests/ci_supply_chain_boundary_test.py", text)
         self.assertIn("tests/release_authorization_test.py", text)
         self.assertIn("tests/release_attestation_test.py", text)
+        self.assertIn("scripts/verify_third_party_notices.py", text)
+        self.assertIn("tests/third_party_notices_test.py", text)
 
 
 if __name__ == "__main__":

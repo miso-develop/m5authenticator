@@ -337,6 +337,11 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertIn("update-manifest-abcdef123456.json", names)
             self.assertIn("firmware-target.json", names)
             self.assertIn("SHA256SUMS", names)
+            self.assertIn("THIRD_PARTY_NOTICES.md", names)
+            self.assertEqual(
+                (root / "out" / "THIRD_PARTY_NOTICES.md").read_bytes(),
+                (REPO_ROOT / "THIRD_PARTY_NOTICES.md").read_bytes(),
+            )
             self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3.bin", names)
             self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-bootloader.bin", names)
             self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-partition-table.bin", names)
@@ -437,6 +442,68 @@ class ReleasePackagingTest(unittest.TestCase):
                 value = json.loads((root / "out" / filename).read_text())
                 self.assertEqual(value["build_commit"], commit)
                 self.assertTrue(value["exact_release"])
+
+    def test_package_copies_notice_byte_for_byte_and_checksums_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            merged, bootloader, partition_table, app = self.make_test_binaries(root)
+            notice = root / "source-notice.md"
+            notice_bytes = b"# exact notice\n\x00not-normalized\n"
+            notice.write_bytes(notice_bytes)
+
+            outputs = package_firmware.package_firmware(
+                merged,
+                bootloader,
+                partition_table,
+                app,
+                root / "out",
+                "abcdef123456",
+                third_party_notices=notice,
+            )
+
+            packaged_notice = root / "out" / "THIRD_PARTY_NOTICES.md"
+            self.assertIn(packaged_notice, outputs)
+            self.assertEqual(packaged_notice.read_bytes(), notice_bytes)
+
+            checksums = {}
+            for line in (root / "out" / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+                digest, name = line.split("  ", 1)
+                checksums[name] = digest
+            self.assertEqual(
+                checksums["THIRD_PARTY_NOTICES.md"],
+                package_firmware.sha256(packaged_notice),
+            )
+
+    def test_package_rejects_missing_or_symlink_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            merged, bootloader, partition_table, app = self.make_test_binaries(root)
+            missing = root / "missing-notice.md"
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                package_firmware.package_firmware(
+                    merged,
+                    bootloader,
+                    partition_table,
+                    app,
+                    root / "out",
+                    "abcdef123456",
+                    third_party_notices=missing,
+                )
+
+            target = root / "target-notice.md"
+            target.write_text("notice\n", encoding="utf-8")
+            symlink = root / "notice-link.md"
+            symlink.symlink_to(target)
+            with self.assertRaises(validate_release.ReleaseValidationError):
+                package_firmware.package_firmware(
+                    merged,
+                    bootloader,
+                    partition_table,
+                    app,
+                    root / "out",
+                    "abcdef123456",
+                    third_party_notices=symlink,
+                )
 
     def test_release_workflow_has_no_project_efuse_or_universal_key_dependency(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release-authorized.yml").read_text(encoding="utf-8").lower()

@@ -41,10 +41,13 @@ def synthetic_package(base: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    notice = package / "THIRD_PARTY_NOTICES.md"
+    notice.write_text("# synthetic third-party notices\n", encoding="utf-8")
     checksums = package / "SHA256SUMS"
     checksums.write_text(
         f"{sha256(firmware)}  {firmware.name}\n"
-        f"{sha256(metadata)}  {metadata.name}\n",
+        f"{sha256(metadata)}  {metadata.name}\n"
+        f"{sha256(notice)}  {notice.name}\n",
         encoding="utf-8",
     )
     return package
@@ -82,6 +85,10 @@ class ReleaseAttestationTest(unittest.TestCase):
             self.assertEqual(
                 subjects["release-metadata.json"],
                 sha256(package / "release-metadata.json"),
+            )
+            self.assertEqual(
+                subjects["THIRD_PARTY_NOTICES.md"],
+                sha256(package / "THIRD_PARTY_NOTICES.md"),
             )
 
     def test_asset_tampering_fails_closed(self) -> None:

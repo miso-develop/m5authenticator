@@ -76,6 +76,7 @@ Provisionerの詳細動作、アカウント管理、Recovery、Firmware操作�
 ### Security / Recovery
 
 - [Security Policy](SECURITY.md) — secret handling要件とthreat-model boundary
+- [Third-party notices](THIRD_PARTY_NOTICES.md) — runtime dependencyのライセンス・attribution notice
 - [Secret Vault Architecture](docs/SECRET_VAULT.md) — 暗号化Vault、VMK、Passphrase、Trusted Browser、Lock/Unlock、Recovery Package
 - [Storage](docs/STORAGE.md) — 暗号化永続化とversioning boundary
 

@@ -18,6 +18,7 @@ UPDATE_BOOTLOADER_OFFSET = 0x000000
 UPDATE_PARTITION_TABLE_OFFSET = 0x008000
 UPDATE_APP_OFFSET = 0x030000
 BUILD_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+DEFAULT_THIRD_PARTY_NOTICE = Path(__file__).resolve().parents[1] / "THIRD_PARTY_NOTICES.md"
 
 
 def sha256(path: Path) -> str:
@@ -39,6 +40,15 @@ def require_binary(path: Path, label: str) -> int:
     if size <= 0:
         raise ReleaseValidationError(f"{label} is empty")
     return size
+
+
+def require_notice(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseValidationError(f"third-party notice must be a regular file: {path}")
+    content = path.read_bytes()
+    if not content:
+        raise ReleaseValidationError("third-party notice is empty")
+    return content
 
 
 def ranges_overlap(left_start: int, left_end: int, right_start: int, right_end: int) -> bool:
@@ -125,6 +135,7 @@ def package_firmware(
     build_commit: str,
     require_production: bool = False,
     exact_release: bool = False,
+    third_party_notices: Path = DEFAULT_THIRD_PARTY_NOTICE,
 ) -> list[Path]:
     result = validate_release(require_production=require_production)
     profile = result["profile"]
@@ -137,6 +148,7 @@ def package_firmware(
     if not BUILD_COMMIT_RE.fullmatch(build_commit):
         raise ReleaseValidationError("invalid build commit metadata")
     build_commit = build_commit.lower()
+    notice_bytes = require_notice(third_party_notices)
 
     update_plan = validate_update_write_plan(
         bootloader_binary,
@@ -272,6 +284,9 @@ def package_firmware(
         },
     )
 
+    notice_path = output_dir / "THIRD_PARTY_NOTICES.md"
+    notice_path.write_bytes(notice_bytes)
+
     # M5Burner USER CUSTOM -> Publish uses only the merged image. The separate
     # update parts exist solely for the state-preserving GitHub Pages path.
     checksum_targets = [
@@ -283,6 +298,7 @@ def package_firmware(
         update_manifest,
         target_path,
         metadata_path,
+        notice_path,
     ]
     checksums = output_dir / "SHA256SUMS"
     checksums.write_text(
@@ -302,6 +318,11 @@ def main() -> int:
     parser.add_argument("--build-commit", required=True)
     parser.add_argument("--require-production", action="store_true")
     parser.add_argument("--exact-release", action="store_true")
+    parser.add_argument(
+        "--third-party-notices",
+        type=Path,
+        default=DEFAULT_THIRD_PARTY_NOTICE,
+    )
     args = parser.parse_args()
 
     build_dir = args.merged_binary.parent
@@ -319,6 +340,7 @@ def main() -> int:
             args.build_commit,
             args.require_production,
             args.exact_release,
+            args.third_party_notices,
         )
     except ReleaseValidationError as exc:
         print(f"firmware packaging failed: {exc}")
