@@ -11,13 +11,13 @@ Synthesize what has already been decided. Do not reopen settled choices and do n
 
 ## 1. Gather settled sources
 
-Read `PROJECT.md`, `SECURITY.md`, the current conversation, completed Map/Decision outcomes when present, and repository current truth that materially constrains the feature.
+Read `.agent/PROJECT.md`, `SECURITY.md`, the current conversation, completed Map/Decision outcomes when present, and repository current truth that materially constrains the feature.
 
 If an unresolved choice changes observable behavior, architecture, security, cost, compatibility, or acceptance criteria, route it back through planning rather than guessing.
 
 ## 2. Write one Spec
 
-Create/update one `[Spec] <feature>` Issue using `agent/WORK-TRACKING.md`.
+Create/update one `[Spec] <feature>` Issue using `.agent/WORK-TRACKING.md`.
 
 Include Problem, Outcome, Requirements, Decisions, Verification, Out of scope, References, Repository knowledge, and Implementation tasks.
 
