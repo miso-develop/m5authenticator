@@ -485,6 +485,9 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
     def test_current_release_validator_default_paths_remain_valid(self) -> None:
         result = validate_release.validate_release(require_production=True)
         self.assertTrue(result["profile"]["production_release_allowed"])
+        self.assertEqual(result["project_version"], "1.0.1")
+        self.assertEqual(result["metadata"]["firmware_version"], "1.0.1")
+        self.assertEqual(result["profile"]["firmware_version"], "1.0.1")
 
     def test_historical_source_is_validated_as_data_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -501,13 +504,14 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
             result = ci_pages_released_firmware.validate_historical_release_source(
                 repo_root=historical,
                 source_sha=source_sha,
-                release_tag="v1.0.0",
+                release_tag="v1.0.1",
                 current_profile=current_profile,
                 temp_parent=validation_parent,
             )
             self.assertFalse(sentinel.exists())
             self.assertEqual(result["validated_paths"], list(EXPECTED_HISTORICAL_SOURCE_BLOBS))
             self.assertEqual(result["firmware_source_sha"], source_sha)
+            self.assertEqual(result["firmware_version"], "1.0.1")
             self.assertEqual(set(result), ci_pages_released_firmware.SOURCE_VALIDATION_KEYS)
             self.assertFalse(
                 any(validation_parent.glob("m5auth-release-source-data-*")),
@@ -528,7 +532,7 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
                 ci_pages_released_firmware.validate_historical_release_source(
                     repo_root=historical,
                     source_sha=source_sha,
-                    release_tag="v1.0.0",
+                    release_tag="v1.0.1",
                     current_profile=current_profile,
                     temp_parent=root / "validation",
                 )
@@ -543,7 +547,7 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
                 ci_pages_released_firmware.validate_historical_release_source(
                     repo_root=historical,
                     source_sha=source_sha,
-                    release_tag="v1.0.0",
+                    release_tag="v1.0.1",
                     current_profile=current_profile,
                     temp_parent=root / "validation",
                 )
@@ -565,8 +569,8 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
             ),
             "project-cmake": (
                 "firmware/CMakeLists.txt",
-                b"project(m5authenticator VERSION 1.0.0)",
                 b"project(m5authenticator VERSION 1.0.1)",
+                b"project(m5authenticator VERSION 9.9.9)",
             ),
             "partitions": (
                 "firmware/partitions.csv",
@@ -603,7 +607,7 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
                     ci_pages_released_firmware.validate_historical_release_source(
                         repo_root=historical,
                         source_sha=source_sha,
-                        release_tag="v1.0.0",
+                        release_tag="v1.0.1",
                         current_profile=current_profile,
                         temp_parent=root / "validation",
                     )
