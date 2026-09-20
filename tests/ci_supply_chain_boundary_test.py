@@ -388,6 +388,7 @@ jobs:
         self.assertIn("35454271560", authorize)
         self.assertIn("/actions/runs/$APPROVED_FAILED_RUN_ID", authorize)
         self.assertIn("/actions/runs/$APPROVED_FAILED_RUN_ID/jobs?per_page=100", authorize)
+        self.assertIn("/actions/workflows/release.yml", authorize)
         self.assertIn("/rulesets?includes_parents=true", authorize)
         self.assertIn("/releases/tags/$REQUESTED_TAG", authorize)
         self.assertIn("--recovery-manifest \".github/release-recovery.json\"", authorize)
@@ -396,6 +397,7 @@ jobs:
         self.assertIn("--failed-run", authorize)
         self.assertIn("--failed-run-jobs", authorize)
         self.assertIn("--tag-immutability-ruleset", authorize)
+        self.assertIn("--legacy-workflow-metadata", authorize)
         self.assertIn('git worktree add --detach "$RECOVERY_SOURCE_ROOT" "$SOURCE_SHA"', authorize)
         self.assertIn('python "$RECOVERY_SOURCE_ROOT/scripts/validate_release.py" --require-production', authorize)
 
