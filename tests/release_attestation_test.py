@@ -15,7 +15,7 @@ import esp_idf_build_image
 import release_attestation
 
 
-SOURCE_SHA = "996378b07d8587c0d11e43362590e5d1062ad8c2
+SOURCE_SHA = "996378b07d8587c0d11e43362590e5d1062ad8c2"
 WORKFLOW_SHA = "b" * 40
 
 
