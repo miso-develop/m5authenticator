@@ -424,6 +424,7 @@ jobs:
             "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json \
             "$RUNNER_TEMP"/m5auth-release/firmware-target.json \
             "$RUNNER_TEMP"/m5auth-release/release-metadata.json \
+            "$RUNNER_TEMP"/m5auth-release/THIRD_PARTY_NOTICES.md \
             "$RUNNER_TEMP"/m5auth-release/SHA256SUMS \
             --verify-tag \
             --title "M5Authenticator $REQUESTED_TAG" \

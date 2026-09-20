@@ -76,6 +76,7 @@ Other M5Stack targets should not be assumed to be supported unless they are expl
 ### Security / Recovery
 
 - [Security Policy](SECURITY.md) — secret-handling requirements and threat-model boundary
+- [Third-party notices](THIRD_PARTY_NOTICES.md) — runtime dependency licenses and attribution notices
 - [Secret Vault Architecture](docs/SECRET_VAULT.md) — encrypted Vault, VMK, Passphrase, Trusted Browser, Lock/Unlock, and Recovery Package semantics
 - [Storage](docs/STORAGE.md) — encrypted persistence and versioning boundaries
 
