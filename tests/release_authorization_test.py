@@ -136,7 +136,7 @@ def legacy_workflow_metadata(
     state: str = release_authorization.LEGACY_WORKFLOW_DISABLED_STATE,
 ) -> dict[str, object]:
     return {
-        "id": 123456,
+        "id": release_authorization.LEGACY_WORKFLOW_ID,
         "name": release_authorization.LEGACY_WORKFLOW_NAME,
         "path": release_authorization.LEGACY_WORKFLOW_PATH,
         "state": state,
@@ -432,6 +432,13 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metadata mismatch: state"):
             recovery_authorize(
                 legacy_workflow_metadata_payload=legacy_workflow_metadata(state="active")
+            )
+
+        bad_legacy_id = legacy_workflow_metadata()
+        bad_legacy_id["id"] = release_authorization.LEGACY_WORKFLOW_ID + 1
+        with self.assertRaisesRegex(ValueError, "metadata mismatch: id"):
+            recovery_authorize(
+                legacy_workflow_metadata_payload=bad_legacy_id
             )
 
         bad_legacy_identity = legacy_workflow_metadata()
