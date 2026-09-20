@@ -29,9 +29,9 @@ section.setAttribute("aria-labelledby", "browser-security-heading");
 section.innerHTML = `
   <div class="panel-heading">
     <h2 id="browser-security-heading">Security &amp; Recovery</h2>
-    <span id="browser-trust-state" class="badge">No canonical Vault</span>
+    <span id="browser-trust-state" class="badge">No encrypted Vault</span>
   </div>
-  <p class="hint">The browser canonical state is encrypted locally in IndexedDB. Plaintext credentials, Passphrases, VMKs, BUKs, and BRK private key material are never exported in a Recovery Package.</p>
+  <p class="hint">This browser's encrypted Vault state is stored locally in IndexedDB. Plaintext credentials, Passphrases, VMKs, BUKs, and BRK private key material are never exported in a Recovery Package.</p>
   <label for="browser-vault-select">Browser Vault</label>
   <select id="browser-vault-select"></select>
   <dl id="browser-security-status" class="status" aria-live="polite"></dl>
@@ -252,9 +252,9 @@ function render(): void {
   importButton.disabled = busy;
 
   if (!current) {
-    trustState.textContent = "No canonical Vault";
+    trustState.textContent = "No encrypted Vault";
     appendStatus("Browser state", "None");
-    appendStatus("Initial setup", "Create the Protocol 2 canonical Vault from the Import accounts section after connecting an unprovisioned Device");
+    appendStatus("Initial setup", "Create the encrypted Vault from the Import accounts section after connecting an unprovisioned Device");
     return;
   }
 

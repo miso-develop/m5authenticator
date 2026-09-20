@@ -12,10 +12,10 @@ describe("initial provisioning presence overlay", () => {
     expect(shouldShowInitialProvisioningPresenceOverlay(false, true)).toBe(false);
   });
 
-  it("stays visible while the canonical Vault update is waiting for Device confirmation", () => {
+  it("stays visible while the account update is waiting for Device confirmation", () => {
     expect(shouldDismissInitialProvisioningPresenceOverlay({
       connectionState: "Connected",
-      deviceNotice: "Updating canonical Vault…",
+      deviceNotice: "Updating accounts…",
       importStatus: "1 account ready for review.",
     })).toBe(false);
   });
@@ -23,8 +23,8 @@ describe("initial provisioning presence overlay", () => {
   it("dismisses on success, failure, or disconnect", () => {
     expect(shouldDismissInitialProvisioningPresenceOverlay({
       connectionState: "Connected",
-      deviceNotice: "Updating canonical Vault…",
-      importStatus: "1 account committed to the encrypted canonical Vault. Import secrets cleared from the browser session.",
+      deviceNotice: "Updating accounts…",
+      importStatus: "1 account committed to the encrypted Vault. Import secrets cleared from the browser session.",
     })).toBe(true);
 
     expect(shouldDismissInitialProvisioningPresenceOverlay({
@@ -35,7 +35,7 @@ describe("initial provisioning presence overlay", () => {
 
     expect(shouldDismissInitialProvisioningPresenceOverlay({
       connectionState: "Disconnected",
-      deviceNotice: "Updating canonical Vault…",
+      deviceNotice: "Updating accounts…",
       importStatus: "1 account ready for review.",
     })).toBe(true);
   });

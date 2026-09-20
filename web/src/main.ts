@@ -19,8 +19,8 @@ const app = queryRequired<HTMLElement>("#app", "Application root is missing");
 app.innerHTML = `
   <main class="shell">
     <p class="eyebrow">M5 Authenticator</p>
-    <h1>Local canonical Vault manager</h1>
-    <p class="description">All QR, secret, Wi-Fi, recovery, and device-management data stays between this browser and the connected M5StickS3. Protocol 2 writes only authenticated encrypted Vault generations to the Device.</p>
+    <h1>Set up and manage M5Authenticator</h1>
+    <p class="description">QR images, account secrets, Wi-Fi credentials, recovery data, and device-management data are processed locally in this browser and on the connected M5StickS3. M5Authenticator does not upload credential-bearing data to a service.</p>
 
     <section class="panel" aria-labelledby="device-heading">
       <div class="panel-heading"><h2 id="device-heading">Device</h2><span id="connection-state" class="badge">Disconnected</span></div>
@@ -38,7 +38,7 @@ app.innerHTML = `
 
     <section class="panel" aria-labelledby="import-heading">
       <h2 id="import-heading">Import accounts</h2>
-      <p class="hint">Supports standard TOTP QR codes and Google Authenticator exports. Images and secrets are processed locally and are cleared from the import session after a successful canonical Vault update.</p>
+      <p class="hint">Supports standard TOTP QR codes and Google Authenticator exports. Images and secrets are processed locally and are cleared from the import session after a successful account update.</p>
       <label class="file-label" for="qr-file">QR screenshot image</label>
       <input id="qr-file" type="file" accept="image/*" />
       <p id="import-status" class="notice" aria-live="polite">No accounts imported.</p>
@@ -57,10 +57,10 @@ app.innerHTML = `
     </section>
 
     <section class="panel" aria-labelledby="accounts-heading">
-      <h2 id="accounts-heading">Canonical accounts</h2>
-      <p class="hint">Account metadata is decrypted from this Trusted Browser's canonical Vault only while the Device is UNLOCKED. TOTP secrets remain inside transient Vault plaintext and are never returned by Device status.</p>
+      <h2 id="accounts-heading">Accounts</h2>
+      <p class="hint">Account metadata is decrypted from this Trusted Browser's encrypted Vault only while the Device is UNLOCKED. TOTP secrets remain inside transient Vault plaintext and are never returned by Device status.</p>
       <ol id="stored-account-list" class="account-list"></ol>
-      <p id="accounts-empty" class="notice">Connect a device to load canonical Vault state.</p>
+      <p id="accounts-empty" class="notice">Connect a device to load account data.</p>
     </section>
 
     <section class="panel" aria-labelledby="wifi-heading">
@@ -80,7 +80,7 @@ app.innerHTML = `
 
     <section class="panel" aria-labelledby="rekey-heading">
       <h2 id="rekey-heading">Rotate Vault Master Key</h2>
-      <p class="hint">Security-sensitive recovery operation. Re-encrypts the canonical Vault under a fresh VMK, re-wraps recovery material with the current Recovery Passphrase, and requires a fresh confirmation on M5StickS3. Trusted Browser registration is preserved.</p>
+      <p class="hint">Security-sensitive recovery operation. Re-encrypts the encrypted Vault under a fresh VMK, re-wraps recovery material with the current Recovery Passphrase, and requires a fresh confirmation on M5StickS3. Trusted Browser registration is preserved.</p>
       <label for="rekey-recovery-passphrase">Current Recovery Passphrase</label>
       <input id="rekey-recovery-passphrase" type="password" autocomplete="current-password" disabled />
       <div class="actions">
@@ -90,7 +90,7 @@ app.innerHTML = `
 
     <section class="panel danger" aria-labelledby="reset-heading">
       <h2 id="reset-heading">Factory Reset</h2>
-      <p class="hint">Deletes the encrypted canonical Vault and active Trusted Browser registration from the Device and removes this browser's matching canonical state. The stable non-secret Device ID is preserved.</p>
+      <p class="hint">Deletes the encrypted Vault and active Trusted Browser registration from the Device and removes this browser's matching local state. The stable non-secret Device ID is preserved.</p>
       <p id="factory-reset-hint" class="hint">Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.</p>
       <label for="reset-confirmation">Type RESET to enable</label>
       <input id="reset-confirmation" type="text" autocomplete="off" disabled />
@@ -148,7 +148,7 @@ let factoryResetPending = false;
 
 const autoLockSettings = createAutoLockSettingsController(async (days) => {
   if (deviceActionInProgress || recoveryReset || !management) {
-    throw new Error("Automatic LOCK settings require an active canonical Device connection");
+    throw new Error("Automatic LOCK settings require an active Device connection");
   }
   setDeviceBusy(true);
   try {
@@ -210,8 +210,8 @@ connectButton.addEventListener("click", async () => {
 
     management = new CanonicalDeviceManagement(connected.session, connected.hello);
     deviceNotice.textContent = connected.hello.vaultPresent
-      ? "Canonical Device found. Confirm the Trusted Browser request on M5StickS3 if prompted."
-      : "Unprovisioned canonical Protocol 2 Device connected.";
+      ? "M5Authenticator Device connected. Confirm the Trusted Browser request on M5StickS3 if prompted."
+      : "Unprovisioned M5Authenticator Device connected.";
     await management.initialize();
     await refreshDevice();
     const automaticTimeHandled = await maybeSynchronizePcTimeAutomatically(
@@ -257,10 +257,10 @@ unlockButton.addEventListener("click", () => runDeviceAction("UNLOCK REQUEST —
 
 restoreRecoveryButton.addEventListener("click", () => {
   if (!snapshot?.recoveryProvisioningAvailable) return;
-  if (!window.confirm("Restore the imported encrypted canonical Vault onto this clean replacement M5StickS3? This creates a new Device registration and requires a fresh physical confirmation.")) return;
-  void runDeviceAction("RECOVERY PROVISIONING — confirm on M5StickS3…", "Recovery provisioning completed. The imported canonical Vault is now active on this replacement Device with a fresh registration.", async () => {
+  if (!window.confirm("Restore the imported encrypted Vault onto this clean replacement M5StickS3? This creates a new Device registration and requires a fresh physical confirmation.")) return;
+  void runDeviceAction("RECOVERY PROVISIONING — confirm on M5StickS3…", "Recovery provisioning completed. The imported encrypted Vault is now active on this replacement Device with a fresh registration.", async () => {
     await requireManagement().recoverImportedVaultToCleanDevice();
-    deviceNotice.textContent = "Recovery provisioning completed. The imported canonical Vault is now active on this replacement Device with a fresh registration.";
+    deviceNotice.textContent = "Recovery provisioning completed. The imported encrypted Vault is now active on this replacement Device with a fresh registration.";
     await refreshDevice();
   });
 });
@@ -275,14 +275,14 @@ disconnectButton.addEventListener("click", async () => {
   setDeviceBusy(false);
 });
 
-refreshButton.addEventListener("click", () => runDeviceAction("Refreshing canonical status…", "Canonical status refreshed.", refreshDevice));
+refreshButton.addEventListener("click", () => runDeviceAction("Refreshing Device status…", "Device status refreshed.", refreshDevice));
 syncTimeButton.addEventListener("click", () => runDeviceAction("Synchronizing PC time…", "Trusted time synchronized from this PC while Device was UNLOCKED.", async () => {
   await requireManagement().syncTime();
   deviceNotice.textContent = "Trusted time synchronized from this PC while Device was UNLOCKED.";
   await refreshDevice();
 }));
 
-provisionButton.addEventListener("click", () => runDeviceAction("Updating canonical Vault…", "Canonical Vault update completed.", async () => {
+provisionButton.addEventListener("click", () => runDeviceAction("Updating accounts…", "Account update completed.", async () => {
   let passphrase: string | undefined;
   if (snapshot && !snapshot.hello.vaultPresent) {
     if (initialPassphrase.value !== initialPassphraseConfirm.value) {
@@ -294,7 +294,7 @@ provisionButton.addEventListener("click", () => runDeviceAction("Updating canoni
   importSession.clear();
   renderImportedAccounts([]);
   clearInitialPassphrase();
-  importStatus.textContent = `${count} account${count === 1 ? "" : "s"} committed to the encrypted canonical Vault. Import secrets cleared from the browser session.`;
+  importStatus.textContent = `${count} account${count === 1 ? "" : "s"} committed to the encrypted Vault. Import secrets cleared from the browser session.`;
   await refreshDevice();
 }));
 
@@ -303,17 +303,17 @@ wifiForm.addEventListener("submit", (event) => {
   const ssid = wifiSsid.value;
   const password = wifiPassword.value;
   wifiPassword.value = "";
-  void runDeviceAction("Updating encrypted Wi-Fi state…", "Wi-Fi credentials committed inside the next encrypted Vault generation.", async () => {
+  void runDeviceAction("Updating encrypted Wi-Fi settings…", "Wi-Fi credentials saved in the encrypted Vault.", async () => {
     await requireManagement().setWifi(ssid, password);
-    deviceNotice.textContent = "Wi-Fi credentials committed inside the next encrypted Vault generation.";
+    deviceNotice.textContent = "Wi-Fi credentials saved in the encrypted Vault.";
     await refreshDevice();
   });
 });
 
-clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi from canonical Vault…", "Wi-Fi credentials removed in the next encrypted Vault generation.", async () => {
+clearWifiButton.addEventListener("click", () => runDeviceAction("Clearing Wi-Fi settings…", "Wi-Fi credentials removed from the encrypted Vault.", async () => {
   await requireManagement().clearWifi();
   wifiPassword.value = "";
-  deviceNotice.textContent = "Wi-Fi credentials removed in the next encrypted Vault generation.";
+  deviceNotice.textContent = "Wi-Fi credentials removed from the encrypted Vault.";
   await refreshDevice();
 }));
 
@@ -398,7 +398,7 @@ recoveryFactoryResetButton.addEventListener("click", () => {
 window.addEventListener(CANONICAL_BROWSER_STATE_CHANGED_EVENT, () => {
   if (!management || recoveryReset || deviceActionInProgress) return;
   void refreshDevice().catch((error: unknown) => {
-    deviceNotice.textContent = userFacingError(error, "Canonical browser state changed; refresh the Device status.");
+    deviceNotice.textContent = userFacingError(error, "Browser state changed; refresh the Device status.");
   });
 });
 
@@ -599,10 +599,10 @@ function renderDevice(): void {
 
   if (!snapshot) {
     factoryResetHint.textContent = "Secure Factory Reset requires updated firmware with fresh M5StickS3 confirmation. Update firmware before resetting; this Web app will not use the legacy one-shot reset.";
-    appendStatus("Status", connected ? "Connected; canonical status not loaded" : "Not connected");
+    appendStatus("Status", connected ? "Connected; Device status not loaded" : "Not connected");
     storedAccountList.replaceChildren();
-    accountsEmpty.textContent = connected ? "Refresh canonical status to load Browser Vault metadata." : "Connect a device to load canonical Vault state.";
-    wifiStatus.textContent = connected ? "Canonical status not loaded." : "Connect and unlock a Trusted Browser to view Wi-Fi status.";
+    accountsEmpty.textContent = connected ? "Refresh Device status to load account metadata." : "Connect a device to load account data.";
+    wifiStatus.textContent = connected ? "Device status not loaded." : "Connect and unlock a Trusted Browser to view Wi-Fi status.";
     wifiSsid.value = "";
     updateControls();
     return;
@@ -636,11 +636,11 @@ function renderDevice(): void {
   } else if (!hello.vaultPresent) {
     accountsEmpty.textContent = snapshot.recoveryProvisioningAvailable
       ? "A Recovery Package is ready for explicit restore to this clean Device. Vault-private metadata remains hidden until restore and unlock complete."
-      : "No canonical Vault is installed on this Device.";
-    wifiStatus.textContent = "No canonical Vault is installed on this Device.";
+      : "No encrypted Vault is installed on this Device.";
+    wifiStatus.textContent = "No encrypted Vault is installed on this Device.";
     wifiSsid.value = "";
   } else {
-    wifiStatus.textContent = snapshot.wifi.configured ? `Configured SSID: ${snapshot.wifi.ssid}` : "Wi-Fi is not configured in the canonical Vault.";
+    wifiStatus.textContent = snapshot.wifi.configured ? `Configured SSID: ${snapshot.wifi.ssid}` : "Wi-Fi is not configured in the encrypted Vault.";
     wifiSsid.value = snapshot.wifi.ssid;
   }
   updateControls();
@@ -670,7 +670,7 @@ function timeSourceLabel(time: CanonicalDeviceSnapshot["time"]): string {
 
 function renderStoredAccounts(accounts: CanonicalDeviceSnapshot["accounts"]): void {
   storedAccountList.replaceChildren();
-  accountsEmpty.textContent = accounts.length === 0 ? "No accounts in this browser's canonical Vault." : "";
+  accountsEmpty.textContent = accounts.length === 0 ? "No accounts in this browser's encrypted Vault." : "";
 
   accounts.forEach((account, index) => {
     const item = document.createElement("li");
@@ -685,15 +685,15 @@ function renderStoredAccounts(accounts: CanonicalDeviceSnapshot["accounts"]): vo
 
     const actions = document.createElement("div");
     actions.className = "actions compact";
-    const rename = actionButton("Rename", () => runDeviceAction("Renaming account in canonical Vault…", "Account renamed in the canonical Vault.", async () => {
+    const rename = actionButton("Rename", () => runDeviceAction("Renaming account…", "Account renamed.", async () => {
       await requireManagement().renameAccount(account.id, input.value);
       await refreshDevice();
     }));
     const up = actionButton("↑", () => reorderStoredAccount(index, -1));
     const down = actionButton("↓", () => reorderStoredAccount(index, 1));
     const remove = actionButton("Delete", () => {
-      if (!window.confirm(`Delete ${account.account} from the canonical Vault?`)) return Promise.resolve();
-      return runDeviceAction("Deleting account from canonical Vault…", "Account deleted from the canonical Vault.", async () => {
+      if (!window.confirm(`Delete ${account.account} from M5Authenticator?`)) return Promise.resolve();
+      return runDeviceAction("Deleting account…", "Account deleted.", async () => {
         await requireManagement().deleteAccount(account.id);
         await refreshDevice();
       });
@@ -716,7 +716,7 @@ async function reorderStoredAccount(index: number, offset: -1 | 1): Promise<void
   if (target < 0 || target >= snapshot.accounts.length) return;
   const ids = snapshot.accounts.map((account) => account.id);
   [ids[index], ids[target]] = [ids[target]!, ids[index]!];
-  await runDeviceAction("Reordering canonical accounts…", "Canonical account order updated.", async () => {
+  await runDeviceAction("Reordering accounts…", "Account order updated.", async () => {
     await requireManagement().reorderAccounts(ids);
     await refreshDevice();
   });

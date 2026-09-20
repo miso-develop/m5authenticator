@@ -1,7 +1,7 @@
 import { sourceTextOf } from "./ui-localization";
 
-const PROVISIONING_PROGRESS = "Updating canonical Vault…";
-const PROVISIONING_SUCCESS_MARKER = "committed to the encrypted canonical Vault";
+const PROVISIONING_PROGRESS = "Updating accounts…";
+const PROVISIONING_SUCCESS_MARKER = "committed to the encrypted Vault";
 
 export function installProvisioningErrorUi(root: Document = document): HTMLElement | null {
   const provisionButton = root.querySelector<HTMLButtonElement>("#provision-import");

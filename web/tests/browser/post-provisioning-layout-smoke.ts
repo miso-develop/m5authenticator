@@ -189,7 +189,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     provision.click();
     await waitUntil(
       () => deviceStatus.textContent?.includes("unlocked") === true &&
-        deviceNotice.textContent === "Canonical Vault update completed.",
+        deviceNotice.textContent === "Account update completed.",
       "Successful initial provisioning must replace the busy notice with a stable terminal success message",
     );
 
@@ -198,7 +198,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await waitUntil(
       () => deviceStatus.textContent?.includes("unlocked") === true &&
         passphrase.disabled &&
-        deviceNotice.textContent === "Canonical status refreshed.",
+        deviceNotice.textContent === "Device status refreshed.",
       "Production Provisioning route did not reach the provisioned snapshot state with a terminal refresh notice",
     );
     flushLayout();
@@ -255,7 +255,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     await waitUntil(
       () => !resetConfirmation.disabled &&
         factoryResetHint.textContent?.includes("fresh confirmation on M5StickS3") === true &&
-        deviceNotice.textContent === "Canonical status refreshed.",
+        deviceNotice.textContent === "Device status refreshed.",
       "Capable production UI did not enable secure Factory Reset controls with a stable terminal refresh notice",
     );
     resetConfirmation.value = "RESET";
@@ -296,7 +296,7 @@ async function verifyProductionProvisioningLifecycle(): Promise<void> {
     const requiredHeadings = [
       "Device",
       "Import accounts",
-      "Canonical accounts",
+      "Accounts",
       "Wi-Fi for NTP",
       "Rotate Vault Master Key",
       "Factory Reset",
@@ -616,6 +616,43 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
 
     const provisioningDoc = requiredFrameDocument(frames[0]!);
     const provisioningShell = required<HTMLElement>(provisioningDoc, "#app > .shell");
+    const provisioningLanguage = provisioningDoc.documentElement.lang;
+    const provisioningHeading = required<HTMLElement>(provisioningShell, ":scope > h1");
+    const provisioningDescription = required<HTMLElement>(provisioningShell, ":scope > .description");
+    const accountsHeading = required<HTMLElement>(provisioningShell, "#accounts-heading");
+    assert(
+      provisioningHeading.textContent ===
+        (provisioningLanguage === "ja" ? "M5Authenticator のセットアップと管理" : "Set up and manage M5Authenticator"),
+      "Provisioning primary heading must use task-oriented user-facing terminology",
+    );
+    assert(
+      provisioningDescription.textContent ===
+        (provisioningLanguage === "ja"
+          ? "QR画像、アカウントの秘密情報、Wi-Fi認証情報、Recoveryデータ、デバイス管理データは、このブラウザと接続中のM5StickS3でローカルに処理されます。M5Authenticatorは認証情報を含むデータをサービスへアップロードしません。"
+          : "QR images, account secrets, Wi-Fi credentials, recovery data, and device-management data are processed locally in this browser and on the connected M5StickS3. M5Authenticator does not upload credential-bearing data to a service."),
+      "Provisioning lead copy must state local processing and no credential-bearing service upload",
+    );
+    assert(
+      accountsHeading.textContent === (provisioningLanguage === "ja" ? "アカウント" : "Accounts"),
+      "Provisioning account section must use the user-facing Accounts label",
+    );
+    const provisioningText = provisioningShell.textContent ?? "";
+    assert(!provisioningText.includes("Local canonical Vault manager"), "Provisioning must not restore the old internal primary heading");
+    assert(!provisioningText.includes("Canonical accounts"), "Provisioning must not restore the old internal account heading");
+    assert(!provisioningText.includes("No canonical Vault"), "Provisioning must not restore the old internal empty-Vault label");
+    assert(!provisioningText.includes("Protocol 2 canonical Vault"), "Provisioning must not expose Protocol 2 canonical Vault as first-use guidance");
+
+    const helpDoc = requiredFrameDocument(frames[2]!);
+    const helpLanguage = helpDoc.documentElement.lang;
+    const helpIntro = required<HTMLElement>(helpDoc, "#help-app .description");
+    assert(
+      helpIntro.textContent ===
+        (helpLanguage === "ja"
+          ? "M5AuthenticatorはTOTPアカウントを暗号化Vaultに保存し、M5StickS3でOTPコードを表示します。通常の操作はこのページの案内に沿って行ってください。"
+          : "M5Authenticator stores TOTP accounts in an encrypted Vault and uses M5StickS3 to display OTP codes. Use this page as the normal operating guide."),
+      "Help intro must lead with user behavior rather than canonical replica terminology",
+    );
+
     const productionBuildSection = required<HTMLElement>(provisioningDoc, "#web-build-info-section");
     const productionPanels = Array.from(provisioningShell.querySelectorAll<HTMLElement>(":scope > section.panel"));
     assert(productionPanels.length >= 7, "Production Provisioning route must keep all major peer sections on the shared panel contract");
