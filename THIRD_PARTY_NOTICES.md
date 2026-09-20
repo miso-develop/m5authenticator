@@ -67,7 +67,7 @@ Production closure is derived from `web/package.json` and exact resolved non-dev
 | `atob-lite` | `2.0.0` | MIT | atob-lite | https://github.com/hughsk/atob-lite/tree/v2.0.0 |
 | `esp-web-tools` | `10.4.0` | Apache-2.0 | ESP Web Tools | https://github.com/esphome/esp-web-tools/tree/10.4.0 |
 | `esptool-js` | `0.6.1` | Apache-2.0 | esptool-js | https://github.com/espressif/esptool-js/tree/v0.6.1 |
-| `hash-wasm` | `4.12.0` | MIT plus embedded algorithm attributions | hash-wasm | https://github.com/Daninet/hash-wasm/tree/v4.12.0 |
+| `hash-wasm` | `4.12.0` | MIT plus embedded algorithm attributions | browser bundle imports Argon2id; exact `src/argon2.c` states it is based on Go crypto Argon2 | https://github.com/Daninet/hash-wasm/tree/v4.12.0 |
 | `improv-wifi-serial-sdk` | `2.8.0` | Apache-2.0 | Improv Wi-Fi Serial SDK | https://github.com/improv-wifi/sdk-serial-js/tree/2.8.0 |
 | `@material/web` | `2.5.0` | Apache-2.0 | nested Improv dependency | https://github.com/material-components/material-web/tree/v2.5.0 |
 | `lit` | `3.3.3` | BSD-3-Clause | Lit family | https://github.com/lit/lit/tree/lit@3.3.3 |
@@ -476,6 +476,40 @@ Special thank you to the authors of original C algorithms:
 - Yanbo Li dreamfly281@gmail.com, goldboar@163.comYanbo Li
 - Mark Adler
 - Yann Collet
+```
+
+### hash-wasm Argon2id upstream basis — Go crypto BSD notice
+
+M5Authenticator imports only `argon2id` from hash-wasm. The exact hash-wasm v4.12.0 `src/argon2.c` states that it is based on Go's crypto Argon2 implementation. The matching Go crypto Argon2 source identifies the following BSD-style license.
+
+```text
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ### pako — MIT
