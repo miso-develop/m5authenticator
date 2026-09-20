@@ -142,7 +142,7 @@ class ReleasePackagingTest(unittest.TestCase):
             cmake_path = root / "CMakeLists.txt"
             cmake_path.write_text(
                 validate_release.DEFAULT_PROJECT_CMAKE.read_text(encoding="utf-8").replace(
-                    "VERSION 1.0.0",
+                    "VERSION 1.0.1",
                     "VERSION 9.9.9",
                 ),
                 encoding="utf-8",
@@ -156,7 +156,7 @@ class ReleasePackagingTest(unittest.TestCase):
             metadata_path = root / "metadata.hpp"
             metadata_path.write_text(
                 validate_release.DEFAULT_METADATA.read_text(encoding="utf-8").replace(
-                    'kFirmwareVersion[] = "1.0.0"',
+                    'kFirmwareVersion[] = "1.0.1"',
                     'kFirmwareVersion[] = "9.9.9"',
                 ),
                 encoding="utf-8",
