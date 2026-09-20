@@ -12,111 +12,111 @@ If a task would require exposing real secret material to complete, stop and rede
 
 ## Source of truth
 
-- ユーザーの最新かつ明示的な指示を最優先する。
-- project全体の目的・scope・制約・不変条件は `PROJECT.md` を正とする。
-- security handling rulesは `SECURITY.md` を正とし、`PROJECT.md` と矛盾する場合はより厳しい方を適用する。
-- feature / work itemのplanning・decision・implementation stateと変更履歴はGitHub Issues / Pull Requestsを正とし、`[Map]` / `[Decision]` / `[Spec]` / `[Task]` の順に具体化する。
-- repositoryは現在のsystem stateのsource of truthとし、必要に応じてcode、configuration、durable documentation、executable tests/checksで表現する。closed Issueだけを現在仕様の参照元にしない。
-- Map / Decision / Specから得た知識のうち将来もcurrent truthとして必要なものは、`agent/WORK-TRACKING.md` のrepository knowledge lifecycleに従ってrepositoryへ反映する。
-- Specは満たすべきcontractであり、test・static check・runtime check・reviewはverification evidenceである。verification artifactだけを理由にSpecの意味・意図・境界を省略しない。
-- `AGENTS.md` には開発プロセスと横断的な制約だけを置く。
-- 既存コードやテストは重要な根拠だが、明示された要件と矛盾する場合に要件を黙って変更しない。
+- Prioritize the user's latest explicit instructions.
+- `.agent/PROJECT.md` is authoritative for project-wide purpose, scope, constraints, and invariants.
+- `SECURITY.md` is authoritative for security-handling rules. If it conflicts with `.agent/PROJECT.md`, apply the stricter rule.
+- GitHub Issues / Pull Requests are authoritative for feature/work-item planning, decisions, implementation state, and change history, refined in the order `[Map]` / `[Decision]` / `[Spec]` / `[Task]`.
+- The repository is the source of truth for current system state and should express that state through code, configuration, durable documentation, and executable tests/checks as appropriate. Do not rely on closed Issues alone as the source for current specifications.
+- Knowledge from Maps / Decisions / Specs that must remain current truth for future work must be promoted into the repository according to the repository knowledge lifecycle in `.agent/WORK-TRACKING.md`.
+- A Spec is the contract that must be satisfied; tests, static checks, runtime checks, and reviews are verification evidence. Do not omit the Spec's meaning, intent, or boundaries merely because a verification artifact exists.
+- Keep only development process and cross-cutting constraints in `AGENTS.md`.
+- Existing code and tests are important evidence, but do not silently change explicit requirements when they conflict with existing implementation.
 
 ## Work items
 
-production codeの実装対象として選択できるのは、GitHub上に実在するopenな `[Task]` Issueだけとする。
+Only an open `[Task]` Issue that actually exists on GitHub may be selected for production-code implementation.
 
-選択する `[Task]` は次を満たす必要がある。
+The selected `[Task]` must satisfy all of the following:
 
-- `Parent spec` が明示されている。
-- `Blocked by` に記載されたIssueがすべてclosedである。
-- Acceptance Criteriaが外部から判定可能な粒度である。
-- 同じTaskを扱う未完了PRがある場合は、新規branchを作らずそのPR / branchを継続する。
+- `Parent spec` is explicit.
+- Every Issue listed under `Blocked by` is closed.
+- Acceptance Criteria are externally observable and assessable.
+- If an unfinished PR already handles the same Task, continue that PR/branch rather than creating a new branch.
 
-実装可能な `[Task]` がない場合はtaskを推測してproduction codeを変更しない。新しいworkを具体化する必要がある場合は、規模と不確実性に応じて `wayfinder`、`to-spec`、`to-tickets` を使用する。
+If no implementable `[Task]` exists, do not infer a task and modify production code. When new work needs to be clarified, use `wayfinder`, `to-spec`, or `to-tickets` according to its size and uncertainty.
 
-Issueの形式・関係・handoff規則は `agent/WORK-TRACKING.md` を参照する。
+See `.agent/WORK-TRACKING.md` for Issue formats, relationships, and handoff rules.
 
 ## One implementation iteration
 
-各implementation iterationでは次を順に行う。
+Perform each implementation iteration in this order:
 
-1. `PROJECT.md`、`SECURITY.md`、対象 `[Task]`、親 `[Spec]`、参照された `[Decision]` / artifact / comments、関連コードとテストを確認する。
-2. readyな `[Task]` を正確に1つだけ選び、titleとissue URL / `owner/repo#number` を確定する。
-3. 未完了PR / branchがなければ最新 `main` から作業branchを作る。通常の実装を `main` へ直接commitしない。
-4. 選択taskと既存挙動維持に必要な最小限だけ変更する。設計判断がある場合は `codebase-design`、test-firstが適切な場合は `tdd` を使用する。
-5. secret handling / trust boundary / logging / artifact / network behaviorへの影響を明示的に確認する。security-sensitive changeは `SECURITY.md` のreview対象とする。
-6. 外部から観測可能な挙動を優先してテストを追加・更新し、repositoryで定義されたrequired checksを実行する。Verifier固有のcontractや外部Verifier repositoryを前提にしない。
-7. `code-review` で要件適合、security policy適合、engineering qualityを確認し、有効なblocking findingだけを修正して影響範囲を再検証する。
-8. greenであればcommit / pushし、PR本文に親Specへの参照と `Closes #<task-number>` を入れる。
-9. repositoryでrequiredと定義されたCI/checkがある場合はsuccessを確認する。未導入のcheckを成功したものとして扱わない。
-10. taskはPR mergeによってcloseされて初めて完了とする。同じiterationで次のtaskへ進まない。
+1. Read `.agent/PROJECT.md`, `SECURITY.md`, the target `[Task]`, its parent `[Spec]`, referenced `[Decision]` items/artifacts/comments, and relevant code/tests.
+2. Select exactly one ready `[Task]` and establish its title and Issue URL / `owner/repo#number`.
+3. If there is no unfinished PR/branch, create a work branch from the latest `main`. Do not commit normal implementation work directly to `main`.
+4. Change only the minimum needed for the selected Task and to preserve existing behavior. Use `codebase-design` when a design decision is required and `tdd` when test-first development is appropriate.
+5. Explicitly assess impact on secret handling, trust boundaries, logging, artifacts, and network behavior. Security-sensitive changes are subject to the review rules in `SECURITY.md`.
+6. Add/update tests with priority on externally observable behavior and run repository-defined required checks. Do not assume verifier-specific contracts or external verifier repositories.
+7. Use `code-review` to check requirement compliance, security-policy compliance, and engineering quality. Fix only valid blocking findings and revalidate the affected scope.
+8. When green, commit/push and include the parent Spec reference and `Closes #<task-number>` in the PR body.
+9. If the repository defines required CI/checks, verify they succeed. Do not claim a check succeeded if it has not been introduced.
+10. A Task is complete only after its PR is merged and closes the Task. Do not begin the next Task in the same iteration.
 
 ## Security-sensitive implementation constraints
 
-- Real secretsを使うmanual testをPublic Issue/PR上で指示・記録しない。
-- Production/user QR screenshotをfixtureとして保存しない。
-- Secretをbase64/hex/URL encodeしただけの値もsecretとして扱う。
-- `Serial.print`, browser console, exception, assertion, trace, telemetry等にsecret-bearing valueを出さない。
-- Web Provisionerのcredential-bearing pathからanalytics / remote error reporting / external API送信を行わない。
-- Release firmwareにuniversal encryption key、default user credential、real service credentialを埋め込まない。
-- Release modeで保存済みTOTP secretをExportするcommand/API/UIを追加しない。
-- Secret storage、eFuse、QR import、Web Serial、Factory Reset、firmware update、Wi-Fi credentials、BLE authentication、release/signing pipelineの変更はsecurity-sensitiveとしてreviewする。
-- Security controlを一時的に無効化する実装をcommitしない。必要なtest seamはsynthetic key/materialで設計する。
+- Do not instruct or record manual tests using real secrets in Public Issues/PRs.
+- Do not store production/user QR screenshots as fixtures.
+- Treat a secret that is merely base64/hex/URL encoded as still secret.
+- Do not emit secret-bearing values through `Serial.print`, browser console, exceptions, assertions, traces, telemetry, or similar outputs.
+- Do not send analytics, remote error reports, or external API requests from credential-bearing paths in the Web Provisioner.
+- Do not embed a universal encryption key, default user credential, or real service credential in release firmware.
+- Do not add a release-mode command/API/UI that exports stored TOTP secrets.
+- Changes to secret storage, eFuse, QR import, Web Serial, Factory Reset, firmware update, Wi-Fi credentials, BLE authentication, or the release/signing pipeline are security-sensitive and require review as such.
+- Do not commit implementations that temporarily disable security controls. Design required test seams using synthetic keys/material.
 
 ## Incomplete / blocked iteration
 
-現在のiterationを完了できない場合は、新しいproduction changeを増やすのを止め、`handoff` を使用して対象 `[Task]` IssueまたはPRへ再開checkpointを残す。
+If the current iteration cannot be completed, stop adding new production changes and use `handoff` to leave a resumable checkpoint on the target `[Task]` Issue or PR.
 
-checkpointにはsecretやcredential-bearing payloadを含めず、少なくともbranch / HEAD、PR、完了済み範囲、検証結果、blocker、次の具体的操作を記録する。
+The checkpoint must not contain secrets or credential-bearing payloads and must include at least the branch/HEAD, PR, completed scope, verification results, blocker, and next concrete action.
 
 ## Engineering constraints
 
-- 要件にない機能、依存関係、抽象化、大規模refactorを追加しない。
-- 選択task外の既存挙動を意図せず変更しない。
-- 一時debug code、不要log、生成物、credentialをcommitしない。
-- secret、PAT、private key、webhook secret等をrepository、Issue、PR、handoffへ記録しない。
-- テスト失敗中のmergeを行わない。
-- 検証を通す目的だけで既存testやAcceptance Criteriaを削除・弱体化しない。contract変更には明示された `[Spec]` / `[Task]` またはユーザー指示を必要とする。
-- `.cmd` を追加する場合はCRLFを維持する。
-- Windows command entrypointは `.cmd` に統一し、`.bat` は新規導入しない。
+- Do not add features, dependencies, abstractions, or large refactors that are not required.
+- Do not unintentionally change existing behavior outside the selected Task.
+- Do not commit temporary debug code, unnecessary logs, generated output, or credentials.
+- Do not record secrets, PATs, private keys, webhook secrets, or similar values in the repository, Issue, PR, or handoff.
+- Do not merge while tests are failing.
+- Do not remove or weaken existing tests or Acceptance Criteria merely to make verification pass. Contract changes require an explicit `[Spec]` / `[Task]` or user instruction.
+- Preserve CRLF when adding `.cmd` files.
+- Use `.cmd` for Windows command entrypoints; do not introduce new `.bat` entrypoints.
 
 ## Command chaining policy
 
-- `&&` によるcommand chainingは、前段が成功した場合に次段を実行してもstate・副作用・evidence boundary上の曖昧さがないことが自明な場合だけ使用する。
-- state-changing operationやHuman evidenceを含む手順では、commandを分離し、各commandの成功/失敗を明示的に判定してから次へ進む。
-- Windows `.cmd` helperでは、外部commandの後に原則として明示的な `if errorlevel 1` 判定を置く。複数の重要操作を `&&` でまとめない。
-- 特に build → flash、flash → monitor、clean/fullclean → destructive operation、provisioning/reset/eFuse関連操作、Human Gate evidence生成操作を安易にchainしない。
-- build、flash、monitor、Human Gate helper等の責務を分けたentrypointが存在する場合は、利用者の明示的な次操作を境界として維持する。
+- Use `&&` command chaining only when it is self-evident that executing the next command after the previous command succeeds introduces no ambiguity in state, side effects, or evidence boundaries.
+- For procedures containing state-changing operations or Human evidence, separate commands and explicitly evaluate each command's success/failure before proceeding.
+- In Windows `.cmd` helpers, normally add an explicit `if errorlevel 1` check after external commands. Do not combine multiple important operations with `&&`.
+- In particular, do not casually chain build → flash, flash → monitor, clean/fullclean → destructive operation, provisioning/reset/eFuse operations, or Human Gate evidence generation.
+- When separate entrypoints exist for responsibilities such as build, flash, monitor, or Human Gate helpers, preserve an explicit user action as the boundary between them.
 
 ## Supporting rules
 
-- Issue planning、task分解、handoff、work item lifecycleを扱う場合は `agent/WORK-TRACKING.md` を参照する。
-- Security-sensitive changeでは `SECURITY.md` を必ず参照する。
-- `.agents/skills/` は特定タスク向けの再利用可能な手順・能力として扱う。
+- For Issue planning, task decomposition, handoff, or work-item lifecycle, consult `.agent/WORK-TRACKING.md`.
+- For security-sensitive changes, always consult `SECURITY.md`.
+- Treat `.agents/skills/` as reusable procedures/capabilities for specific tasks.
 
 ## Done
 
-`[Task]` を完了扱いにできるのは、次をすべて満たす場合だけとする。
+A `[Task]` may be treated as complete only when all of the following are true:
 
-- Acceptance Criteriaをすべて満たす。
-- 必要な自動テストまたは再現可能な検証がある。
-- repositoryで定義されたrequired checksがすべて成功する。
-- `SECURITY.md` に違反する既知のsecret exposure / security regressionがない。
-- `code-review` のblocking findingが解消されている。
-- 既知のregressionや未解決矛盾がない。
-- PRがmergeされ、`Closes #<task-number>` により対象Issueがclosedになっている。
+- All Acceptance Criteria are satisfied.
+- Required automated tests or reproducible verification exist.
+- All repository-defined required checks succeed.
+- There is no known secret exposure or security regression that violates `SECURITY.md`.
+- All blocking findings from `code-review` are resolved.
+- There is no known regression or unresolved contradiction.
+- The PR is merged and the target Issue is closed through `Closes #<task-number>`.
 
 ## Parallel implementation coordination
 
-複数chat / agent session / human workerが同一repositoryを並列に変更し得るため、implementationまたはrepository current truthの変更を開始するworkerは `agent/PARALLEL-WORK.md` を必ず参照し、そのMandatory preflightとParallel eligibility gateを適用する。
+Because multiple chat/agent sessions or human workers may modify the same repository concurrently, any worker starting implementation or a change to repository current truth must consult `.agent/PARALLEL-WORK.md` and apply its Mandatory preflight and Parallel eligibility gate.
 
-- chat内の会話や記憶ではなく、latest `main`、open/draft PR、non-main branch、open Task、commit、changed filesをshared coordination stateとして扱う。
-- open/draft PRとTaskへ合理的に対応付けられるnon-main branchはin-flight workであり、Taskおよびそのfile / subsystem / shared contractを予約しているものとして扱う。
-- 同一fileだけでなく、protocol、schema、public interface、runtime state machine、security boundary、build/release contract等のsemantic conflictもhard conflictとして評価する。
-- blocker Taskがgreen PRになっていても、mainへmergeされIssueがclosedになるまではblocker解消とみなさない。
-- safe parallel workは `agent/PARALLEL-WORK.md` のgateをすべて満たす場合だけ許可する。不明確な場合はfail closedで並列化しない。
-- preflightはTask選択時だけでなく、first write前、scope拡張前、push/PR作成前、merge直前にも必要な範囲で再実行する。
-- 作業中にmainが進んだ場合はfile overlapだけでなくsemantic/dependency overlapを再評価し、必要ならlatest mainへbranchを更新して再検証する。
-- process/documentation-only changeも同ruleで競合確認し、protected `main` へ直接commitしない。
-- 新しいproduction Taskはpreflight通過後、meaningful implementation前にremote `task/<issue-number>` branchをobserved latest mainから作成してatomic claimする。branchが既に存在する場合は別branchで迂回せず、`agent/WORK-TRACKING.md` のownership ruleに従う。
+- Treat latest `main`, open/draft PRs, non-main branches, open Tasks, commits, and changed files—not chat conversation or memory—as the shared coordination state.
+- Open/draft PRs and non-main branches that can reasonably be mapped to a Task are in-flight work and reserve the Task plus their file/subsystem/shared-contract surfaces.
+- Evaluate not only identical files but also semantic conflicts in protocols, schemas, public interfaces, runtime state machines, security boundaries, build/release contracts, and similar shared contracts as hard conflicts.
+- Even if a blocker Task has a green PR, it remains unresolved until the PR is merged to `main` and the Issue is closed.
+- Allow safe parallel work only when every gate in `.agent/PARALLEL-WORK.md` is satisfied. When uncertain, fail closed and do not parallelize.
+- Re-run the relevant preflight not only at Task selection but also before first write, before scope expansion, before push/PR creation, and immediately before merge as applicable.
+- If `main` advances during the work, re-evaluate semantic/dependency overlap as well as file overlap and update the branch to latest `main` and reverify when necessary.
+- Process/documentation-only changes follow the same conflict checks and must not be committed directly to protected `main`.
+- For a new production Task, after preflight and before meaningful implementation, create remote `task/<issue-number>` from the observed latest main as the atomic claim. If that branch already exists, do not bypass ownership with another branch; follow the ownership rules in `.agent/WORK-TRACKING.md`.
