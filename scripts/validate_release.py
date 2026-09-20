@@ -366,6 +366,10 @@ def validate_release(
     transport_header_path: Path = DEFAULT_TRANSPORT_HEADER,
     transport_cpp_path: Path = DEFAULT_TRANSPORT_CPP,
     project_cmake_path: Path = DEFAULT_PROJECT_CMAKE,
+    provisioning_cmake_path: Path = DEFAULT_PROVISIONING_CMAKE,
+    device_cmake_path: Path = DEFAULT_DEVICE_CMAKE,
+    time_cmake_path: Path = DEFAULT_TIME_CMAKE,
+    totp_cmake_path: Path = DEFAULT_TOTP_CMAKE,
 ) -> dict[str, Any]:
     profile = load_profile(profile_path)
     metadata = parse_metadata(metadata_path)
@@ -410,7 +414,13 @@ def validate_release(
         transport_header_path,
         transport_cpp_path,
     )
-    validate_release_build_surface(sdkconfig_path=sdkconfig_path)
+    validate_release_build_surface(
+        sdkconfig_path=sdkconfig_path,
+        provisioning_cmake_path=provisioning_cmake_path,
+        device_cmake_path=device_cmake_path,
+        time_cmake_path=time_cmake_path,
+        totp_cmake_path=totp_cmake_path,
+    )
 
     for name in REQUIRED_PARTITIONS:
         _require(name in partitions, f"missing required partition: {name}")
