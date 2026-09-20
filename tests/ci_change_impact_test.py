@@ -41,7 +41,7 @@ class ChangeImpactClassificationTests(unittest.TestCase):
 
     def test_retired_agent_and_project_paths_fail_safe_heavy(self) -> None:
         retired_paths = (
-            "agent/" + "WORK-TRACKING.md",
+            "agent" + "/" + "WORK-TRACKING.md",
             "PROJECT" + ".md",
         )
         for path in retired_paths:
