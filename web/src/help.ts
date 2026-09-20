@@ -20,11 +20,11 @@ interface HelpCopy {
 const COPY: Record<UiLanguage, HelpCopy> = {
   en: {
     title: "Using M5Authenticator",
-    intro: "M5Authenticator keeps TOTP credentials in the encrypted canonical Vault and uses the M5StickS3 as the OTP display device. Use this page as the normal end-to-end operating guide.",
+    intro: "M5Authenticator stores TOTP accounts in an encrypted Vault and uses M5StickS3 to display OTP codes. Use this page as the normal operating guide.",
     quickStartTitle: "Initial setup",
     quickStart: [
       "Open Firmware Flash. For a new or intentionally clean device, use First install. For an already provisioned device, use the state-preserving Update path instead of erasing user state.",
-      "Return to Provisioner and connect the M5StickS3 with Desktop Chrome. Import a standard TOTP QR image or a Google Authenticator export image. QR images and imported secrets are processed locally.",
+      "Return to Provisioner and connect the M5StickS3 with Desktop Chrome. Import a standard TOTP QR image or a Google Authenticator export image. QR images and imported secrets are processed locally in this browser and on the connected Device; M5Authenticator does not upload credential-bearing data to a service.",
       "For initial provisioning, choose and confirm a long unique Recovery Passphrase. M5Authenticator blocks obviously weak, repetitive, sequential, and common choices, but does not estimate or guarantee Passphrase entropy. Apply the imported accounts, then confirm the dedicated request on the M5StickS3 when prompted.",
       "After provisioning or reboot, use Unlock and confirm the UNLOCK REQUEST on the M5StickS3. A valid Trusted Browser registration does not bypass this physical confirmation.",
       "After an authorized connect to an already-UNLOCKED Device, or after a successful Trusted Browser Unlock, Provisioner may automatically sync PC time only when Time readiness is NOT SYNCED or STALE. A READY anchor is not overwritten automatically. PC time remains local-host asserted and is not cryptographically authenticated.",
@@ -59,11 +59,11 @@ const COPY: Record<UiLanguage, HelpCopy> = {
   },
   ja: {
     title: "M5Authenticator の使い方",
-    intro: "M5Authenticator はTOTP認証情報を暗号化Canonical Vaultに保存し、M5StickS3をOTP表示デバイスとして使用します。通常の操作はこのページの流れに沿って行ってください。",
+    intro: "M5AuthenticatorはTOTPアカウントを暗号化Vaultに保存し、M5StickS3でOTPコードを表示します。通常の操作はこのページの案内に沿って行ってください。",
     quickStartTitle: "初期セットアップ",
     quickStart: [
       "「ファームウェア」を開きます。新品または意図したクリーンDeviceでは「初回インストール」を使用します。すでにプロビジョニング済みのDeviceでは、ユーザー状態を消去せず通常の「更新」を使用してください。",
-      "「プロビジョニング」に戻り、Desktop ChromeからM5StickS3へ接続します。標準TOTP QR画像またはGoogle Authenticatorのエクスポート画像をインポートします。QR画像と秘密情報はローカルで処理されます。",
+      "「プロビジョニング」に戻り、Desktop ChromeからM5StickS3へ接続します。標準TOTP QR画像またはGoogle Authenticatorのエクスポート画像をインポートします。QR画像と秘密情報はこのブラウザと接続中のDeviceでローカルに処理され、M5Authenticatorは認証情報を含むデータをサービスへアップロードしません。",
       "初回プロビジョニングでは長く一意なRecovery Passphraseを設定して確認入力します。M5Authenticatorは明らかに弱い、反復的、連続的、一般的なPassphraseを拒否しますが、Passphraseのentropyを測定または保証するものではありません。インポートしたアカウントを適用し、要求されたらM5StickS3上の専用確認画面で物理確認してください。",
       "プロビジョニング後または再起動後は「ロック解除」を実行し、M5StickS3上のUNLOCK REQUESTを確認します。有効なTrusted Browser登録があっても、この物理確認は省略されません。",
       "すでにUNLOCKEDのDeviceへ認可済みTrusted Browserで接続した場合、またはTrusted Browserのロック解除に成功した後、「時刻の利用可否」がNOT SYNCEDまたはSTALEのときだけProvisionerがPC時刻を自動同期する場合があります。READYのanchorは自動上書きしません。PC時刻はローカルホスト申告であり、暗号学的に認証された時刻ではありません。",
