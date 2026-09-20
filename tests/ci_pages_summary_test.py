@@ -961,6 +961,136 @@ class PagesReleasedFirmwareVerifierTests(unittest.TestCase):
                     release_metadata=package_result["release_metadata"],
                 )
 
+    def test_signed_provenance_accepts_duplicate_digest_manifest_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, release, release_profile = synthetic_release_package(root)
+            package_result = ci_pages_released_firmware.verify_release_package(
+                package_dir=package,
+                release_payload=release,
+                release_tag="v1.0.0",
+                source_sha=SOURCE_SHA,
+                release_profile=release_profile,
+            )
+            standard, custom = synthetic_attestation_outputs(root, package, package_result)
+
+            alias_pairs = (
+                ("factory-manifest.json", f"factory-manifest-{SOURCE_SHA}.json"),
+                ("update-manifest.json", f"update-manifest-{SOURCE_SHA}.json"),
+            )
+            for stable_name, pinned_name in alias_pairs:
+                self.assertEqual(
+                    ci_pages_released_firmware.sha256(package / stable_name),
+                    ci_pages_released_firmware.sha256(package / pinned_name),
+                )
+                for result_dir in (standard, custom):
+                    stable_payload = json.loads(
+                        (result_dir / f"{stable_name}.json").read_text(encoding="utf-8")
+                    )
+                    pinned_payload = json.loads(
+                        (result_dir / f"{pinned_name}.json").read_text(encoding="utf-8")
+                    )
+                    combined = stable_payload + pinned_payload
+                    if result_dir == custom and stable_name == "factory-manifest.json":
+                        combined.append(copy.deepcopy(stable_payload[0]))
+                    write_json(result_dir / f"{stable_name}.json", combined)
+                    write_json(result_dir / f"{pinned_name}.json", combined)
+
+            verified = ci_pages_released_firmware.verify_attestations(
+                package_dir=package,
+                standard_dir=standard,
+                custom_dir=custom,
+                source_sha=SOURCE_SHA,
+                checksums=package_result["checksums"],
+                sha256sums_sha256=package_result["sha256sums_sha256"],
+                release_metadata=package_result["release_metadata"],
+            )
+            self.assertEqual(verified["publisher_workflow_sha"], PUBLISHER_SHA)
+
+    def test_attestation_identity_rejects_same_digest_wrong_asset_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, release, release_profile = synthetic_release_package(root)
+            package_result = ci_pages_released_firmware.verify_release_package(
+                package_dir=package,
+                release_payload=release,
+                release_tag="v1.0.0",
+                source_sha=SOURCE_SHA,
+                release_profile=release_profile,
+            )
+            standard, custom = synthetic_attestation_outputs(root, package, package_result)
+
+            stable_name = "factory-manifest.json"
+            pinned_name = f"factory-manifest-{SOURCE_SHA}.json"
+            self.assertEqual(
+                ci_pages_released_firmware.sha256(package / stable_name),
+                ci_pages_released_firmware.sha256(package / pinned_name),
+            )
+
+            pinned_standard = json.loads(
+                (standard / f"{pinned_name}.json").read_text(encoding="utf-8")
+            )
+            write_json(standard / f"{stable_name}.json", pinned_standard)
+            with self.assertRaisesRegex(ValueError, "standard attestation subject identity mismatch"):
+                ci_pages_released_firmware.verify_attestations(
+                    package_dir=package,
+                    standard_dir=standard,
+                    custom_dir=custom,
+                    source_sha=SOURCE_SHA,
+                    checksums=package_result["checksums"],
+                    sha256sums_sha256=package_result["sha256sums_sha256"],
+                    release_metadata=package_result["release_metadata"],
+                )
+
+            standard, custom = synthetic_attestation_outputs(root / "retry", package, package_result)
+            pinned_custom = json.loads(
+                (custom / f"{pinned_name}.json").read_text(encoding="utf-8")
+            )
+            write_json(custom / f"{stable_name}.json", pinned_custom)
+            with self.assertRaisesRegex(ValueError, "missing for exact asset identity"):
+                ci_pages_released_firmware.verify_attestations(
+                    package_dir=package,
+                    standard_dir=standard,
+                    custom_dir=custom,
+                    source_sha=SOURCE_SHA,
+                    checksums=package_result["checksums"],
+                    sha256sums_sha256=package_result["sha256sums_sha256"],
+                    release_metadata=package_result["release_metadata"],
+                )
+
+    def test_conflicting_custom_provenance_for_same_asset_identity_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package, release, release_profile = synthetic_release_package(root)
+            package_result = ci_pages_released_firmware.verify_release_package(
+                package_dir=package,
+                release_payload=release,
+                release_tag="v1.0.0",
+                source_sha=SOURCE_SHA,
+                release_profile=release_profile,
+            )
+            standard, custom = synthetic_attestation_outputs(root, package, package_result)
+
+            victim = custom / "factory-manifest.json.json"
+            payload = json.loads(victim.read_text(encoding="utf-8"))
+            conflicting = copy.deepcopy(payload[0])
+            conflicting["verificationResult"]["statement"]["predicate"]["workflow"]["run_id"] = 101
+            write_json(victim, payload + [conflicting])
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "conflicting custom provenance publisher identities",
+            ):
+                ci_pages_released_firmware.verify_attestations(
+                    package_dir=package,
+                    standard_dir=standard,
+                    custom_dir=custom,
+                    source_sha=SOURCE_SHA,
+                    checksums=package_result["checksums"],
+                    sha256sums_sha256=package_result["sha256sums_sha256"],
+                    release_metadata=package_result["release_metadata"],
+                )
+
     def test_missing_attestation_and_notice_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
