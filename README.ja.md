@@ -90,6 +90,6 @@ Provisionerの詳細動作、アカウント管理、Recovery、Firmware操作�
 
 FirmwareはESP-IDF/CMake、WebアプリはTypeScript/Viteで構成されています。開発環境、pinned toolchain、再現可能なcommandは[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)を参照してください。
 
-RepositoryへのContributionとwork trackingのルールは[AGENTS.md](AGENTS.md)と[agent/WORK-TRACKING.md](agent/WORK-TRACKING.md)にあります。これらの開発プロセス文書は、上記のProduct利用方法やSecurity contractとは分離されています。
+RepositoryへのContributionとwork trackingのルールは[AGENTS.md](AGENTS.md)と[.agent/WORK-TRACKING.md](.agent/WORK-TRACKING.md)にあります。これらの開発プロセス文書は、上記のProduct利用方法やSecurity contractとは分離されています。
 
 Repositoryへ変更を提出する際は、例やtest materialを必ずsyntheticな値にし、[SECURITY.md](SECURITY.md)に従ってください。
