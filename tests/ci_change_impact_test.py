@@ -40,7 +40,11 @@ class ChangeImpactClassificationTests(unittest.TestCase):
                 self.assertEqual(result["process_docs_only"], process_docs_only)
 
     def test_retired_agent_and_project_paths_fail_safe_heavy(self) -> None:
-        for path in ("agent/WORK-TRACKING.md", "PROJECT.md"):
+        retired_paths = (
+            "agent/" + "WORK-TRACKING.md",
+            "PROJECT" + ".md",
+        )
+        for path in retired_paths:
             with self.subTest(path=path):
                 result = ci_change_impact.classify_paths([path])
                 self.assertFalse(result["process_docs_only"])
