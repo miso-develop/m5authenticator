@@ -22,6 +22,7 @@ RECOVERY_FAILED_RUN_ID = 35454271560
 RECOVERY_WORKFLOW_ID = 361302600
 RECOVERY_REPOSITORY = "miso-develop/m5authenticator"
 RECOVERY_WORKFLOW_PATH = ".github/workflows/release-authorized.yml"
+LEGACY_WORKFLOW_ID = 354596449
 LEGACY_WORKFLOW_NAME = "Release"
 LEGACY_WORKFLOW_PATH = ".github/workflows/release.yml"
 LEGACY_WORKFLOW_DISABLED_STATE = "disabled_manually"
@@ -358,6 +359,7 @@ def require_legacy_workflow_disabled(payload: object) -> None:
     if not isinstance(payload, dict):
         raise ValueError("legacy Release workflow metadata must be an object")
     expected = {
+        "id": LEGACY_WORKFLOW_ID,
         "name": LEGACY_WORKFLOW_NAME,
         "path": LEGACY_WORKFLOW_PATH,
         "state": LEGACY_WORKFLOW_DISABLED_STATE,
@@ -365,11 +367,6 @@ def require_legacy_workflow_disabled(payload: object) -> None:
     for key, expected_value in expected.items():
         if payload.get(key) != expected_value:
             raise ValueError(f"legacy Release workflow metadata mismatch: {key}")
-    workflow_id = payload.get("id")
-    if not isinstance(workflow_id, int) or workflow_id <= 0:
-        raise ValueError("legacy Release workflow metadata has invalid id")
-
-
 def _run_git(
     repo_root: Path,
     arguments: list[str],
