@@ -226,16 +226,16 @@ class AgentDocumentationMigrationTests(unittest.TestCase):
 
     def test_tracked_files_have_no_retired_canonical_references(self) -> None:
         tracked = self.tracked_text()
-        retired = (
-            "agent/" + "WORK-TRACKING.md",
-            "agent/" + "PARALLEL-WORK.md",
-            "agent/" + "PARALLEL-WORK-CHECKLIST.md",
+        retired_root = "agent" + "/"
+        retired_root_pattern = re.compile(
+            r"(?<![A-Za-z0-9_.-])" + re.escape(retired_root)
         )
         failures: list[str] = []
         for path, text in tracked.items():
-            for needle in retired:
-                for match in re.finditer(r"(?<!\.)" + re.escape(needle), text):
-                    failures.append(f"{path}: {needle} at {match.start()}")
+            for match in retired_root_pattern.finditer(text):
+                failures.append(
+                    f"{path}: retired root Agent directory reference at {match.start()}"
+                )
             for match in re.finditer(r"(?<!\.agent/)PROJECT\.md", text):
                 failures.append(f"{path}: retired root project reference at {match.start()}")
         self.assertEqual(failures, [])
