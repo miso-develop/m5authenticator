@@ -17,9 +17,11 @@ jobs:
       contents: read
       checks: read
       statuses: read
+      actions: read
     outputs:
       requested-tag: ${{ steps.authorize.outputs.requested-tag }}
       source-sha: ${{ steps.authorize.outputs.source-sha }}
+      recovery-mode: ${{ steps.authorize.outputs.recovery-mode }}
     steps:
       - name: Checkout default-branch release candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,12 +31,16 @@ jobs:
           ref: ${{ github.sha }}
       - name: Require production release profile
         run: python scripts/validate_release.py --require-production
-      - name: Authorize dispatch request, exact protected main, tag, and required checks
+      - name: Authorize dispatch request, protected main, tag, checks, and optional incident recovery
         id: authorize
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ github.event.client_payload.tag }}
+          RECOVERY_ID: ${{ github.event.client_payload.recovery_id }}
+          APPROVED_RECOVERY_ID: v1.0.0-authorized-release-shell-repair
+          APPROVED_RECOVERY_SOURCE_SHA: 996378b07d8587c0d11e43362590e5d1062ad8c2
+          APPROVED_FAILED_RUN_ID: "35454271560"
         run: |
           set -euo pipefail
 
@@ -45,15 +51,6 @@ jobs:
           PY
           )"
 
-          if ! [[ "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Requested release tag must use exact vX.Y.Z syntax"
-            exit 1
-          fi
-          if [ "$REQUESTED_TAG" != "v$FIRMWARE_VERSION" ]; then
-            echo "Requested tag $REQUESTED_TAG does not match release profile v$FIRMWARE_VERSION"
-            exit 1
-          fi
-
           git fetch --no-tags origin main
           MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
           if [ "$GITHUB_SHA" != "$MAIN_SHA" ]; then
@@ -61,43 +58,142 @@ jobs:
             exit 1
           fi
 
-          git fetch --force --no-tags origin \\
+          git fetch --force --no-tags origin \
             "refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG"
           TAG_SHA="$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")"
 
-          gh api \\
-            -H "Accept: application/vnd.github+json" \\
-            -H "X-GitHub-Api-Version: 2026-03-10" \\
-            "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" \\
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" \
             > "$RUNNER_TEMP/main-rules.json"
-          gh api \\
-            -H "Accept: application/vnd.github+json" \\
-            -H "X-GitHub-Api-Version: 2026-03-10" \\
-            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100" \\
-            > "$RUNNER_TEMP/check-runs.json"
-          gh api \\
-            -H "Accept: application/vnd.github+json" \\
-            -H "X-GitHub-Api-Version: 2026-03-10" \\
-            "/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \\
-            > "$RUNNER_TEMP/statuses.json"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/commits/$MAIN_SHA/check-runs?filter=latest&per_page=100" \
+            > "$RUNNER_TEMP/main-check-runs.json"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/commits/$MAIN_SHA/status" \
+            > "$RUNNER_TEMP/main-statuses.json"
 
-          AUTHORIZED_TAG="$(python scripts/release_authorization.py \\
-            --source-sha "$GITHUB_SHA" \\
-            --main-sha "$MAIN_SHA" \\
-            --requested-tag "$REQUESTED_TAG" \\
-            --firmware-version "$FIRMWARE_VERSION" \\
-            --tag-sha "$TAG_SHA" \\
-            --main-rules "$RUNNER_TEMP/main-rules.json" \\
-            --check-runs "$RUNNER_TEMP/check-runs.json" \\
-            --statuses "$RUNNER_TEMP/statuses.json")"
+          RECOVERY_ARGS=()
+          if [ -n "$RECOVERY_ID" ]; then
+            if [ "$RECOVERY_ID" != "$APPROVED_RECOVERY_ID" ]; then
+              echo "Recovery ID is not the approved v1.0.0 incident"
+              exit 1
+            fi
+            if [ "$REQUESTED_TAG" != "v1.0.0" ]; then
+              echo "Recovery is authorized only for v1.0.0"
+              exit 1
+            fi
 
-          if [ "$AUTHORIZED_TAG" != "$REQUESTED_TAG" ]; then
-            echo "Authorized release tag output mismatch"
-            exit 1
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/commits/$APPROVED_RECOVERY_SOURCE_SHA/check-runs?filter=latest&per_page=100" \
+              > "$RUNNER_TEMP/source-check-runs.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/commits/$APPROVED_RECOVERY_SOURCE_SHA/status" \
+              > "$RUNNER_TEMP/source-statuses.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$APPROVED_FAILED_RUN_ID" \
+              > "$RUNNER_TEMP/failed-run.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$APPROVED_FAILED_RUN_ID/jobs?per_page=100" \
+              > "$RUNNER_TEMP/failed-run-jobs.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true" \
+              > "$RUNNER_TEMP/rulesets.json"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/actions/workflows/release.yml" \
+              > "$RUNNER_TEMP/legacy-workflow-metadata.json"
+
+            IMMUTABILITY_RULESET_ID="$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = json.loads((Path(os.environ["RUNNER_TEMP"]) / "rulesets.json").read_text(encoding="utf-8"))
+          matches = [
+              item for item in payload
+              if isinstance(item, dict)
+              and item.get("name") == "SemVer tag immutability"
+              and item.get("target") == "tag"
+              and item.get("enforcement") == "active"
+          ]
+          if len(matches) != 1 or not isinstance(matches[0].get("id"), int):
+              raise SystemExit("exact active SemVer tag immutability Ruleset was not found")
+          print(matches[0]["id"])
+          PY
+            )"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/rulesets/$IMMUTABILITY_RULESET_ID" \
+              > "$RUNNER_TEMP/tag-immutability-ruleset.json"
+
+            RELEASE_STATE=absent
+            if gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/repos/$GITHUB_REPOSITORY/releases/tags/$REQUESTED_TAG" \
+              > "$RUNNER_TEMP/existing-release.json" 2> "$RUNNER_TEMP/existing-release.err"; then
+              RELEASE_STATE=present
+            elif ! grep -q "HTTP 404" "$RUNNER_TEMP/existing-release.err"; then
+              cat "$RUNNER_TEMP/existing-release.err"
+              echo "Could not prove GitHub Release absence"
+              exit 1
+            fi
+
+            RECOVERY_ARGS=(
+              --recovery-id "$RECOVERY_ID"
+              --recovery-manifest ".github/release-recovery.json"
+              --source-check-runs "$RUNNER_TEMP/source-check-runs.json"
+              --source-statuses "$RUNNER_TEMP/source-statuses.json"
+              --failed-run "$RUNNER_TEMP/failed-run.json"
+              --failed-run-jobs "$RUNNER_TEMP/failed-run-jobs.json"
+              --tag-immutability-ruleset "$RUNNER_TEMP/tag-immutability-ruleset.json"
+              --release-state "$RELEASE_STATE"
+              --legacy-workflow ".github/workflows/release.yml"
+              --legacy-workflow-metadata "$RUNNER_TEMP/legacy-workflow-metadata.json"
+            )
           fi
 
-          echo "requested-tag=$AUTHORIZED_TAG" >> "$GITHUB_OUTPUT"
-          echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          python scripts/release_authorization.py \
+            --workflow-sha "$GITHUB_SHA" \
+            --main-sha "$MAIN_SHA" \
+            --requested-tag "$REQUESTED_TAG" \
+            --firmware-version "$FIRMWARE_VERSION" \
+            --tag-sha "$TAG_SHA" \
+            --main-rules "$RUNNER_TEMP/main-rules.json" \
+            --main-check-runs "$RUNNER_TEMP/main-check-runs.json" \
+            --main-statuses "$RUNNER_TEMP/main-statuses.json" \
+            "${RECOVERY_ARGS[@]}" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --github-output "$GITHUB_OUTPUT"
+
+          if [ -n "$RECOVERY_ID" ]; then
+            SOURCE_SHA="$(sed -n 's/^source-sha=//p' "$GITHUB_OUTPUT" | tail -n 1)"
+            if [ "$SOURCE_SHA" != "$APPROVED_RECOVERY_SOURCE_SHA" ]; then
+              echo "Authorized recovery source output mismatch"
+              exit 1
+            fi
+            RECOVERY_SOURCE_ROOT="$RUNNER_TEMP/recovery-source"
+            git worktree add --detach "$RECOVERY_SOURCE_ROOT" "$SOURCE_SHA"
+            python "$RECOVERY_SOURCE_ROOT/scripts/validate_release.py" --require-production
+            git worktree remove --force "$RECOVERY_SOURCE_ROOT"
+          fi
 
   build:
     name: build-firmware-unprivileged
@@ -129,15 +225,15 @@ jobs:
           set -euo pipefail
           ESP_IDF_IMAGE="$(python scripts/esp_idf_build_image.py --reference)"
           BUILD_ROOT="$RUNNER_TEMP/m5auth-release-build"
-          python scripts/ci_esp_idf_isolated_build.py \\
-            --source-root "$GITHUB_WORKSPACE" \\
-            --work-root "$BUILD_ROOT" \\
+          python scripts/ci_esp_idf_isolated_build.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --work-root "$BUILD_ROOT" \
             --image-reference "$ESP_IDF_IMAGE"
           git diff --exit-code
-          python scripts/ci_firmware_handoff.py create-build \\
-            --build-dir "$BUILD_ROOT/firmware/build" \\
-            --isolated-firmware-dir "$BUILD_ROOT/firmware" \\
-            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \\
+          python scripts/ci_firmware_handoff.py create-build \
+            --build-dir "$BUILD_ROOT/firmware/build" \
+            --isolated-firmware-dir "$BUILD_ROOT/firmware" \
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \
             --source-commit "$SOURCE_SHA"
       - name: Upload bounded raw build handoff
         id: upload-build
@@ -180,9 +276,9 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
-          python scripts/ci_firmware_handoff.py verify-build \\
-            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \\
-            --source-commit "$SOURCE_SHA" \\
+          python scripts/ci_firmware_handoff.py verify-build \
+            --artifact-dir "$RUNNER_TEMP/m5auth-build-handoff" \
+            --source-commit "$SOURCE_SHA" \
             --expected-lock firmware/dependencies.lock
       - name: Verify final firmware security surface
         run: python scripts/verify_firmware_image.py "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin"
@@ -190,14 +286,14 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
-          python scripts/package_firmware.py \\
-            --merged-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin" \\
-            --bootloader-binary "$RUNNER_TEMP/m5auth-build-handoff/bootloader.bin" \\
-            --partition-table-binary "$RUNNER_TEMP/m5auth-build-handoff/partition-table.bin" \\
-            --app-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator.bin" \\
-            --output-dir "$RUNNER_TEMP/m5auth-release" \\
-            --build-commit "$SOURCE_SHA" \\
-            --exact-release \\
+          python scripts/package_firmware.py \
+            --merged-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator-merged.bin" \
+            --bootloader-binary "$RUNNER_TEMP/m5auth-build-handoff/bootloader.bin" \
+            --partition-table-binary "$RUNNER_TEMP/m5auth-build-handoff/partition-table.bin" \
+            --app-binary "$RUNNER_TEMP/m5auth-build-handoff/m5authenticator.bin" \
+            --output-dir "$RUNNER_TEMP/m5auth-release" \
+            --build-commit "$SOURCE_SHA" \
+            --exact-release \
             --require-production
           git diff --exit-code
       - name: Verify final package provenance and checksums
@@ -207,9 +303,9 @@ jobs:
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
         run: |
           set -euo pipefail
-          CHECKSUMS_SHA256="$(python scripts/ci_firmware_handoff.py verify-release-package \\
-            --package-dir "$RUNNER_TEMP/m5auth-release" \\
-            --build-provenance "$RUNNER_TEMP/m5auth-build-handoff/build-provenance.json" \\
+          CHECKSUMS_SHA256="$(python scripts/ci_firmware_handoff.py verify-release-package \
+            --package-dir "$RUNNER_TEMP/m5auth-release" \
+            --build-provenance "$RUNNER_TEMP/m5auth-build-handoff/build-provenance.json" \
             --source-commit "$SOURCE_SHA")"
           echo "checksums-sha256=$CHECKSUMS_SHA256" >> "$GITHUB_OUTPUT"
       - name: Upload bounded verified release handoff
@@ -264,14 +360,14 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
-          python scripts/release_attestation.py \\
-            --package-dir "$RUNNER_TEMP/m5auth-release" \\
-            --source-commit "$SOURCE_SHA" \\
-            --repository "$GITHUB_REPOSITORY" \\
-            --workflow-ref "$WORKFLOW_REF" \\
-            --workflow-sha "$WORKFLOW_SHA" \\
-            --run-id "$GITHUB_RUN_ID" \\
-            --run-attempt "$GITHUB_RUN_ATTEMPT" \\
+          python scripts/release_attestation.py \
+            --package-dir "$RUNNER_TEMP/m5auth-release" \
+            --source-commit "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-ref "$WORKFLOW_REF" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --output "$RUNNER_TEMP/m5auth-release-provenance.json"
       - name: Attest standard GitHub build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -318,19 +414,19 @@ jobs:
           REQUESTED_TAG: ${{ needs.authorize.outputs.requested-tag }}
         run: |
           set -euo pipefail
-          gh release create "$REQUESTED_TAG" \\
-            --repo "$GITHUB_REPOSITORY" \\
-            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3.bin \\
-            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \\
-            "$RUNNER_TEMP"/m5auth-release/factory-manifest.json \\
-            "$RUNNER_TEMP"/m5auth-release/update-manifest.json \\
-            "$RUNNER_TEMP"/m5auth-release/factory-manifest-*.json \\
-            "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json \\
-            "$RUNNER_TEMP"/m5auth-release/firmware-target.json \\
-            "$RUNNER_TEMP"/m5auth-release/release-metadata.json \\
-            "$RUNNER_TEMP"/m5auth-release/SHA256SUMS \\
-            --verify-tag \\
-            --title "M5Authenticator $REQUESTED_TAG" \\
+          gh release create "$REQUESTED_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3.bin \
+            "$RUNNER_TEMP"/m5auth-release/m5authenticator-v*-m5sticks3-update-*.bin \
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest.json \
+            "$RUNNER_TEMP"/m5auth-release/update-manifest.json \
+            "$RUNNER_TEMP"/m5auth-release/factory-manifest-*.json \
+            "$RUNNER_TEMP"/m5auth-release/update-manifest-*.json \
+            "$RUNNER_TEMP"/m5auth-release/firmware-target.json \
+            "$RUNNER_TEMP"/m5auth-release/release-metadata.json \
+            "$RUNNER_TEMP"/m5auth-release/SHA256SUMS \
+            --verify-tag \
+            --title "M5Authenticator $REQUESTED_TAG" \
             --generate-notes
 
   cleanup:
