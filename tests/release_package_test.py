@@ -54,11 +54,11 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertEqual(profile["post_update_state"], "locked")
         self.assertTrue(profile["production_release_allowed"])
 
-    def test_product_version_sources_are_exactly_1_0_0(self) -> None:
+    def test_product_version_sources_are_exactly_1_0_1(self) -> None:
         result = validate_release.validate_release(require_production=True)
-        self.assertEqual(result["project_version"], "1.0.0")
-        self.assertEqual(result["metadata"]["firmware_version"], "1.0.0")
-        self.assertEqual(result["profile"]["firmware_version"], "1.0.0")
+        self.assertEqual(result["project_version"], "1.0.1")
+        self.assertEqual(result["metadata"]["firmware_version"], "1.0.1")
+        self.assertEqual(result["profile"]["firmware_version"], "1.0.1")
 
     def test_remaining_0_1_0_literals_are_only_classified_noncanonical_values(self) -> None:
         legacy_version = "0." + "1.0"
@@ -142,7 +142,7 @@ class ReleasePackagingTest(unittest.TestCase):
             cmake_path = root / "CMakeLists.txt"
             cmake_path.write_text(
                 validate_release.DEFAULT_PROJECT_CMAKE.read_text(encoding="utf-8").replace(
-                    "VERSION 1.0.0",
+                    "VERSION 1.0.1",
                     "VERSION 9.9.9",
                 ),
                 encoding="utf-8",
@@ -156,7 +156,7 @@ class ReleasePackagingTest(unittest.TestCase):
             metadata_path = root / "metadata.hpp"
             metadata_path.write_text(
                 validate_release.DEFAULT_METADATA.read_text(encoding="utf-8").replace(
-                    'kFirmwareVersion[] = "1.0.0"',
+                    'kFirmwareVersion[] = "1.0.1"',
                     'kFirmwareVersion[] = "9.9.9"',
                 ),
                 encoding="utf-8",
@@ -342,10 +342,10 @@ class ReleasePackagingTest(unittest.TestCase):
                 (root / "out" / "THIRD_PARTY_NOTICES.md").read_bytes(),
                 (REPO_ROOT / "THIRD_PARTY_NOTICES.md").read_bytes(),
             )
-            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3.bin", names)
-            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-bootloader.bin", names)
-            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-partition-table.bin", names)
-            self.assertIn("m5authenticator-v1.0.0-abcdef123456-m5sticks3-update-ota0.bin", names)
+            self.assertIn("m5authenticator-v1.0.1-abcdef123456-m5sticks3.bin", names)
+            self.assertIn("m5authenticator-v1.0.1-abcdef123456-m5sticks3-update-bootloader.bin", names)
+            self.assertIn("m5authenticator-v1.0.1-abcdef123456-m5sticks3-update-partition-table.bin", names)
+            self.assertIn("m5authenticator-v1.0.1-abcdef123456-m5sticks3-update-ota0.bin", names)
             self.assertFalse(any(name.endswith("-m5burner.zip") for name in names))
 
             factory = json.loads((root / "out" / "factory-manifest.json").read_text())
@@ -361,9 +361,9 @@ class ReleasePackagingTest(unittest.TestCase):
             self.assertEqual(factory["name"], "M5Authenticator")
             self.assertEqual(update["name"], "M5Authenticator")
             self.assertEqual(factory["version"], update["version"])
-            self.assertEqual(factory["version"], "1.0.0")
-            self.assertEqual(update["version"], "1.0.0")
-            self.assertEqual(target["version"], "1.0.0")
+            self.assertEqual(factory["version"], "1.0.1")
+            self.assertEqual(update["version"], "1.0.1")
+            self.assertEqual(target["version"], "1.0.1")
             self.assertEqual(factory["build_commit"], "abcdef123456")
             self.assertEqual(update["build_commit"], "abcdef123456")
             self.assertFalse(factory["exact_release"])
@@ -395,7 +395,7 @@ class ReleasePackagingTest(unittest.TestCase):
 
             metadata = json.loads((root / "out" / "release-metadata.json").read_text())
             self.assertEqual(metadata["format"], 2)
-            self.assertEqual(metadata["firmware_version"], "1.0.0")
+            self.assertEqual(metadata["firmware_version"], "1.0.1")
             self.assertEqual(metadata["protocol_version"], 2)
             self.assertEqual(metadata["storage_schema_version"], 2)
             self.assertEqual(metadata["vault_format_version"], 1)
