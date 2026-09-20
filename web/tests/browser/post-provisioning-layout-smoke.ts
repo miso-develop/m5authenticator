@@ -604,13 +604,38 @@ async function verifySharedRouteGeometryPolicy(): Promise<void> {
   try {
     for (const route of routes) frames.push(await loadRouteFrame(route, 6000));
 
+    const expectedHeadings = {
+      "index.html": {
+        en: "Set up and manage M5Authenticator",
+        ja: "M5Authenticator のセットアップと管理",
+      },
+      "flash.html": {
+        en: "Firmware Flash",
+        ja: "ファームウェア",
+      },
+      "help.html": {
+        en: "Using M5Authenticator",
+        ja: "M5Authenticator の使い方",
+      },
+    } as const;
+
     const geometries = frames.map((frame, index) => {
+      const route = routes[index]!;
       const doc = requiredFrameDocument(frame);
+      const win = requiredFrameWindow(frame);
       flushLayout(doc);
-      assert(getComputedStyle(doc.documentElement).scrollbarGutter.includes("stable"), `${routes[index]} must use the shared stable scrollbar policy`);
-      assert(doc.documentElement.scrollHeight <= requiredFrameWindow(frame).innerHeight, `${routes[index]} tall-viewport fixture must remain non-overflowing`);
+      assert(getComputedStyle(doc.documentElement).scrollbarGutter.includes("stable"), `${route} must use the shared stable scrollbar policy`);
+      assert(doc.documentElement.scrollHeight <= win.innerHeight, `${route} tall-viewport fixture must remain non-overflowing`);
+      assert(doc.documentElement.scrollWidth <= win.innerWidth, `${route} must not introduce horizontal overflow`);
+      const product = required<HTMLElement>(doc, "#site-header .product-mark");
+      const shellElement = required<HTMLElement>(doc, ".shell");
+      const heading = required<HTMLElement>(shellElement, ":scope > h1");
+      const language = doc.documentElement.lang === "ja" ? "ja" : "en";
+      assert(product.textContent === "M5Authenticator", `${route} shared header must retain the exact M5Authenticator product mark`);
+      assert(shellElement.querySelector(".eyebrow") === null, `${route} content shell must not render the redundant product eyebrow`);
+      assert(heading.textContent === expectedHeadings[route][language], `${route} must retain its page-specific h1`);
       const nav = required<HTMLElement>(doc, ".site-nav-shell").getBoundingClientRect();
-      const shell = required<HTMLElement>(doc, ".shell").getBoundingClientRect();
+      const shell = shellElement.getBoundingClientRect();
       return { nav, shell };
     });
 

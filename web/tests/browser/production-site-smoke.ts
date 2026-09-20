@@ -72,6 +72,30 @@ function assertProductionCsp(frame: HTMLIFrameElement, route: string): void {
   assert(csp.includes("base-uri 'self'"), `${route} CSP base-uri is not production-safe`);
 }
 
+function assertRouteIdentity(
+  frame: HTMLIFrameElement,
+  route: string,
+  expectedHeading: Readonly<{ en: string; ja: string }>,
+): void {
+  const doc = frame.contentDocument;
+  const win = frame.contentWindow;
+  assert(doc, `${route} document is unavailable`);
+  assert(win, `${route} window is unavailable`);
+
+  const product = doc.querySelector<HTMLElement>("#site-header .product-mark");
+  const shell = doc.querySelector<HTMLElement>(".shell");
+  assert(product, `${route} shared product mark is missing`);
+  assert(shell, `${route} content shell is missing`);
+  assert(product.textContent === "M5Authenticator", `${route} product mark changed`);
+  assert(shell.querySelector(".eyebrow") === null, `${route} restored the redundant product eyebrow`);
+
+  const heading = shell.querySelector<HTMLElement>(":scope > h1");
+  assert(heading, `${route} page-specific h1 is missing`);
+  const language = doc.documentElement.lang === "ja" ? "ja" : "en";
+  assert(heading.textContent === expectedHeading[language], `${route} page-specific h1 changed`);
+  assert(doc.documentElement.scrollWidth <= win.innerWidth, `${route} introduced horizontal overflow`);
+}
+
 async function loadJson<T>(url: URL): Promise<T> {
   assert(url.origin === expectedOrigin, `${url.pathname} escaped same origin`);
   const response = await fetch(url, { cache: "no-store" });
@@ -114,6 +138,19 @@ async function run(): Promise<void> {
   assertProductionCsp(provisioner, "Provisioner");
   assertProductionCsp(firmware, "Firmware");
   assertProductionCsp(help, "Help");
+
+  assertRouteIdentity(provisioner, "Provisioner", {
+    en: "Set up and manage M5Authenticator",
+    ja: "M5Authenticator のセットアップと管理",
+  });
+  assertRouteIdentity(firmware, "Firmware", {
+    en: "Firmware Flash",
+    ja: "ファームウェア",
+  });
+  assertRouteIdentity(help, "Help", {
+    en: "Using M5Authenticator",
+    ja: "M5Authenticator の使い方",
+  });
 
   await waitFor(
     () => Boolean(provisioner.contentDocument?.querySelector("#app > .shell")),
