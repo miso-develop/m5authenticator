@@ -17,7 +17,7 @@ These skills support the repository's Loop Engineering workflow.
 - `code-review`: review behavior, engineering quality, and security policy
 - `handoff`: leave durable resumable state on the active Issue/PR
 
-`AGENTS.md`, `PROJECT.md`, `SECURITY.md`, and `agent/WORK-TRACKING.md` remain authoritative over these skills.
+`AGENTS.md`, `.agent/PROJECT.md`, `SECURITY.md`, and `.agent/WORK-TRACKING.md` remain authoritative over these skills.
 
 Security handling is never relaxed by a Skill. Real authentication material must not enter repository content, GitHub work items, logs, artifacts, fixtures, screenshots, or external requests.
 
