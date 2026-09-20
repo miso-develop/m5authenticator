@@ -18,7 +18,6 @@ const app = queryRequired<HTMLElement>("#app", "Application root is missing");
 
 app.innerHTML = `
   <main class="shell">
-    <p class="eyebrow">M5 Authenticator</p>
     <h1>Set up and manage M5Authenticator</h1>
     <p class="description">QR images, account secrets, Wi-Fi credentials, recovery data, and device-management data are processed locally in this browser and on the connected M5StickS3. M5Authenticator does not upload credential-bearing data to a service.</p>
 
