@@ -23,7 +23,8 @@ class ChangeImpactClassificationTests(unittest.TestCase):
         cases = (
             (["README.md"], False, False, True),
             (["README.md", "docs/assets/hero.jpg"], False, False, True),
-            ([".agent/BOOTSTRAP.md", "agent/WORK-TRACKING.md"], False, False, True),
+            ([".agent/BOOTSTRAP.md", ".agent/WORK-TRACKING.md"], False, False, True),
+            ([".agent/PROJECT.md", ".agents/skills/README.md"], False, False, True),
             (["docs/ARCHITECTURE.md"], False, False, True),
             (["web/src/main.ts"], True, False, False),
             (["firmware/main/main.cpp"], False, True, False),
@@ -36,6 +37,17 @@ class ChangeImpactClassificationTests(unittest.TestCase):
                 result = ci_change_impact.classify_paths(paths)
                 self.assert_heavy(result, web=web, firmware=firmware)
                 self.assertEqual(result["process_docs_only"], process_docs_only)
+
+    def test_retired_agent_and_project_paths_fail_safe_heavy(self) -> None:
+        for path in ("agent/WORK-TRACKING.md", "PROJECT.md"):
+            with self.subTest(path=path):
+                result = ci_change_impact.classify_paths([path])
+                self.assertFalse(result["process_docs_only"])
+                self.assertTrue(result["web"])
+                self.assertTrue(result["firmware"])
+                self.assertTrue(result["pages"])
+                self.assertTrue(result["security_release_shared"])
+                self.assertFalse(result["uncertain"])
 
     def test_web_and_shared_paths_drive_pages_semantics(self) -> None:
         web = ci_change_impact.classify_paths(["web/src/main.ts"])
